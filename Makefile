@@ -21,6 +21,8 @@ test:
 	sh tests/check_expel_visitor_paths.sh
 	sh tests/check_sleep_paths.sh
 	sh tests/check_family_sign_paths.sh
+	sh tests/check_harvest_egg_paths.sh
+	sh tests/check_cuisine_feed_paths.sh
 	sh tests/check_panel_log_paths.sh
 
 $(TARGET): $(SOURCES)
