@@ -3,7 +3,7 @@ name: Build AntForest
 on:
   workflow_dispatch:
   push:
-    branches: [ "dev"]
+    branches: [ "dev" ]
 
 jobs:
   build:
@@ -14,29 +14,40 @@ jobs:
         with:
           submodules: true
 
-      - name: Check cache
+      - name: Build dylib
         run: |
-          echo upstream_heads=`git ls-remote https://github.com/theos/theos | head -n 1 | cut -f 1`-`git ls-remote https://github.com/theos/sdks | head -n 1 | cut -f 1` >> $GITHUB_ENV
+          make all
 
-      - name: Use cache
-        id: cache
-        uses: actions/cache@main
-        with:
-          path: ${{ github.workspace }}/theos
-          key: ${{ runner.os }}-${{ env.upstream_heads }}
-
-      - name: Prepare Theos
-        uses: Randomblock1/theos-action@main
-
-      - name: Build package
+      - name: Run tests
         run: |
-          rm -f packages/*
-          make package FINALPACKAGE=1
-          make package THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1
+          make test
 
-      - name: Upload packages
-        uses: actions/upload-artifact@main
+      - name: Install dpkg
+        run: |
+          brew install dpkg
+
+      - name: Package deb
+        run: |
+          mkdir -p Packages
+          rm -f Packages/*.deb
+
+          PKG=build/rootless-package
+          rm -rf "$PKG"
+          mkdir -p "$PKG/DEBIAN" "$PKG/var/jb/Library/MobileSubstrate/DynamicLibraries"
+
+          cp antforest/Package/DEBIAN/control "$PKG/DEBIAN/control"
+          cp antforest/Package/Library/MobileSubstrate/DynamicLibraries/antforest.plist "$PKG/var/jb/Library/MobileSubstrate/DynamicLibraries/antforest.plist"
+          cp build/AntForestPort-Ocean.dylib "$PKG/var/jb/Library/MobileSubstrate/DynamicLibraries/antforest.dylib"
+
+          sed -i.bak 's/^Architecture:.*/Architecture: iphoneos-arm64/' "$PKG/DEBIAN/control"
+          rm -f "$PKG/DEBIAN/control.bak"
+
+          VER=$(grep '^Version:' "$PKG/DEBIAN/control" | awk '{print $2}')
+          dpkg-deb -b "$PKG" "Packages/com.vknote.antforest_${VER}_iphoneos-arm64.deb"
+
+      - name: Upload deb
+        uses: actions/upload-artifact@v4
         with:
           name: AntForest
           path: |
-                ${{ github.workspace }}/Packages/*.deb
+            ${{ github.workspace }}/Packages/*.deb
