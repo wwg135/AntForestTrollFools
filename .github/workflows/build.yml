@@ -10,9 +10,7 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - uses: actions/checkout@main
-        with:
-          submodules: true
+      - uses: actions/checkout@v4
 
       - name: Build dylib
         run: |
@@ -26,28 +24,28 @@ jobs:
         run: |
           brew install dpkg
 
-      - name: Package deb
+      - name: Build rootful & rootless deb packages
         run: |
           mkdir -p Packages
-          rm -f Packages/*.deb
+          rm -rf Packages/*.deb build/rootful-tmp build/rootless-tmp
+          VER=$(grep '^Version:' antforest/Package/DEBIAN/control | awk '{print $2}')
+          echo "Package version: ${VER}"
 
-          PKG=build/rootless-package
-          rm -rf "$PKG"
-          mkdir -p "$PKG/DEBIAN" "$PKG/var/jb/Library/MobileSubstrate/DynamicLibraries"
+          cp -r antforest/Package build/rootful-tmp
+          cp build/AntForestPort‑Ocean.dylib build/rootful-tmp/Library/MobileSubstrate/DynamicLibraries/antforest.dylib
+          dpkg-deb -b build/rootful-tmp "Packages/com.vknote.antforest_${VER}_iphoneos-arm.deb"
 
-          cp antforest/Package/DEBIAN/control "$PKG/DEBIAN/control"
-          cp antforest/Package/Library/MobileSubstrate/DynamicLibraries/antforest.plist "$PKG/var/jb/Library/MobileSubstrate/DynamicLibraries/antforest.plist"
-          cp build/AntForestPort-Ocean.dylib "$PKG/var/jb/Library/MobileSubstrate/DynamicLibraries/antforest.dylib"
+          cp -r antforest/Package build/rootless-tmp
+          sed -i '' 's/^Architecture: iphoneos‑arm/Architecture: iphoneos‑arm64/' build/rootless-tmp/DEBIAN/control
+          mkdir -p build/rootless-tmp/var/jb/Library/MobileSubstrate/DynamicLibraries
+          cp build/AntForestPort‑Ocean.dylib build/rootless-tmp/var/jb/Library/MobileSubstrate/DynamicLibraries/antforest.dylib
+          dpkg-deb -b build/rootless-tmp "Packages/com.vknote.antforest_${VER}_iphoneos-arm64.deb"
 
-          sed -i.bak 's/^Architecture:.*/Architecture: iphoneos-arm64/' "$PKG/DEBIAN/control"
-          rm -f "$PKG/DEBIAN/control.bak"
+          ls -la Packages/
 
-          VER=$(grep '^Version:' "$PKG/DEBIAN/control" | awk '{print $2}')
-          dpkg-deb -b "$PKG" "Packages/com.vknote.antforest_${VER}_iphoneos-arm64.deb"
-
-      - name: Upload deb
+      - name: Upload deb artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: AntForest
+          name: AntForest‑Packages
           path: |
             ${{ github.workspace }}/Packages/*.deb
