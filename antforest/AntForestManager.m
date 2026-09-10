@@ -5130,6 +5130,104 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
     [bridge _doFlushMessageQueue:enterArg url:url];
 }
 
+#pragma mark - 高级饲料（菜谱）逐个投喂
+
+// 服务端抓包口径（manor_rpc 33 实证）：com.alipay.antfarm.useFarmFood 为扁平结构，一次只喂 1 个
+// （顶层 cookbookId/cuisineId/useCuisine，无 cuisineList）；库存 1~N 个都正确，喂不动（不足/已饱）即停转普通饲料
+static NSString * const kManorCuisineSource  = @"chInfo_ch_appcenter__chsub_9patch";
+static NSString * const kManorCuisineVersion = @"1.8.2302070202.46";
+
+static NSArray *manorAdvancedCuisineList(void) {
+    static NSArray *list = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        list = @[
+            @{@"cookbookId": @"231001qiurichiyinong",       @"cuisineId": @"231001jianluobogao"},
+            @{@"cookbookId": @"260301chuchunshiyanshi",     @"cuisineId": @"260301taohuaoufengeng"},
+            @{@"cookbookId": @"260301chuchunshiyanshi",     @"cuisineId": @"260301jicaituantuan"},
+            @{@"cookbookId": @"240701shengxiashiqingliang", @"cuisineId": @"240701huluobojiangzaotang"},
+            @{@"cookbookId": @"240501chuxiaqiangxianchang", @"cuisineId": @"240501basimiju"},
+            @{@"cookbookId": @"240701shengxiashiqingliang", @"cuisineId": @"240701huameibale"},
+            @{@"cookbookId": @"240701shengxiashiqingliang", @"cuisineId": @"240701xingrenqingjiangyimian"}
+        ];
+    });
+    return list;
+}
+
+static BOOL isManorCuisineSkipMemo(NSString *memo) {
+    if (!memo.length) return NO;
+    return ([memo containsString:@"还没吃完"] || [memo containsString:@"不要着急"] ||
+            [memo containsString:@"已满"] || [memo containsString:@"睡觉"] || [memo containsString:@"外出"]);
+}
+
+static NSUInteger gManorCuisineFedCount = 0;       // 本轮已投喂个数（单轮上限 15 个，防死循环）
+static BOOL gManorCuisineInFlight = NO;            // 有请求在飞：等回包再喂下一个，防止同轮重复发送
+static BOOL gManorCuisineRunning = NO;             // 本轮高级饲料投喂是否进行中
+static NSTimeInterval gManorCuisineStopUntil = 0;  // 喂不动/喂完后的冷却（30 分钟），避免每轮回包都重试
+
+- (void)feedManorChickenWithAdvancedFood {
+    if (!self.enableAutoManor) return;
+    if (self.isManorChickenEating) {
+        [self feedManorChicken];
+        return;
+    }
+    if (gManorCuisineInFlight) return;
+    
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    if (gManorCuisineStopUntil > 0 && now < gManorCuisineStopUntil) {
+        [self feedManorChicken];
+        return;
+    }
+    
+    PSDJsBridge *bridge = (self.manorBridge && self.manorBridge != self.jsBridge) ? self.manorBridge : nil;
+    if (!bridge) {
+        [self feedManorChicken];
+        return;
+    }
+    
+    if (!gManorCuisineRunning) {
+        gManorCuisineRunning = YES;
+        gManorCuisineFedCount = 0;
+        [self recordStage:@"蚂蚁庄园：优先投喂高级饲料（逐个投喂）..."];
+    }
+    if (gManorCuisineFedCount >= 15) {
+        [self stopManorAdvancedFoodFeed:@"已连喂 15 个，达单轮上限"];
+        return;
+    }
+    
+    NSArray *cuisineList = manorAdvancedCuisineList();
+    NSDictionary *cuisine = cuisineList[gManorCuisineFedCount % cuisineList.count];
+    NSString *timeStamp = [NSString stringWithFormat:@"%ld", (long)(now * 1000)];
+    NSString *randNum = [AntForestManager getNumberRandom:15];
+    NSString *url = self.manorH5Url ?: @"https://66666674.h5app.alipay.com/www/index.html";
+    NSString *cuisineArg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antfarm.useFarmFood\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"%@\",\"ags-source\":\"%@\"},\"requestData\":[{\"cookbookId\":\"%@\",\"cuisineId\":\"%@\",\"useCuisine\":true,\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"%@\",\"version\":\"%@\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", kManorCuisineSource, kManorCuisineSource, cuisine[@"cookbookId"], cuisine[@"cuisineId"], kManorCuisineSource, kManorCuisineVersion, timeStamp, randNum];
+    [bridge _doFlushMessageQueue:cuisineArg url:url];
+    gManorCuisineInFlight = YES;
+    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：正在投喂第 %lu 个高级饲料（%@）...", (unsigned long)(gManorCuisineFedCount + 1), cuisine[@"cuisineId"]]];
+    
+    // 4 秒无回包：按"没喂进去"处理，1.2 秒后继续下一个（仍受单轮上限约束）
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4000 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+        if (!gManorCuisineInFlight) return;
+        gManorCuisineInFlight = NO;
+        gManorCuisineFedCount++;
+        if (gManorCuisineFedCount >= 15) {
+            [self stopManorAdvancedFoodFeed:@"连喂 15 个未收到成功回执"];
+            return;
+        }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1200 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+            [self feedManorChickenWithAdvancedFood];
+        });
+    });
+}
+
+- (void)stopManorAdvancedFoodFeed:(NSString *)reason {
+    gManorCuisineRunning = NO;
+    gManorCuisineInFlight = NO;
+    gManorCuisineStopUntil = [[NSDate date] timeIntervalSince1970] + 1800;
+    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：高级饲料投喂暂停（%@），转普通饲料投喂", reason]];
+    [self feedManorChicken];
+}
+
 - (void)feedManorChicken {
     if (!self.enableAutoManor) return;
     if (self.isManorChickenEating) {
@@ -5295,6 +5393,50 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
      "  }"
      "}"
      "}catch(e){}})();"];
+}
+
+#pragma mark - 收鸡蛋（harvestProduce）
+
+// 收鸡蛋 RPC 口径（AntManor autoHarvest 实测）：operationType=com.alipay.antfarm.harvestProduce，harvestType=NORMALEGG
+// 请求体 source 用 "antfarm"（非 H5），headers.source 沿用 9patch 口径；成功后补一条 syncAnimalStatus 刷新蛋巢
+static NSString * const kManorEggRPCSource = @"chInfo_ch_appcenter__chsub_9patch";
+static NSString * const kManorEggRPCVersion = @"1.8.2302070202.46";
+
+// 收蛋诊断日志：同一句每天最多输出一条，避免每 60 秒重复刷屏
+static NSMutableSet *gEggDiagLoggedKeys = nil;
+static void recordEggDiagOnce(AntForestManager *mgr, NSString *key, NSString *message) {
+    if (!gEggDiagLoggedKeys) gEggDiagLoggedKeys = [NSMutableSet set];
+    NSString *fullKey = [NSString stringWithFormat:@"%@|%@", getCurrentDateString(), key];
+    if ([gEggDiagLoggedKeys containsObject:fullKey]) return;
+    [gEggDiagLoggedKeys addObject:fullKey];
+    [mgr recordStage:message];
+}
+
+- (void)harvestManorEgg {
+    if (!self.enableAutoManor) return;
+    
+    PSDJsBridge *bridge = (self.manorBridge && self.manorBridge != self.jsBridge) ? self.manorBridge : nil;
+    if (!bridge) {
+        recordEggDiagOnce(self, @"bridge", @"蚂蚁庄园：收鸡蛋跳过（庄园桥接未就绪）");
+        return;
+    }
+    
+    NSString *farmId = self.lastManorFarmId ?: @"";
+    if (!farmId.length) {
+        recordEggDiagOnce(self, @"farmid", @"蚂蚁庄园：收鸡蛋跳过（尚未获取到庄园 ID）");
+        return;
+    }
+    
+    static NSTimeInterval lastEggHarvestTime = 0;
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    if (now - lastEggHarvestTime < 60) return;
+    lastEggHarvestTime = now;
+    
+    NSString *timeStamp = [NSString stringWithFormat:@"%ld", (long)(now * 1000)];
+    NSString *randNum = [AntForestManager getNumberRandom:15];
+    NSString *url = self.manorH5Url ?: @"https://66666674.h5app.alipay.com/www/index.html";
+    NSString *eggArg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antfarm.harvestProduce\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"%@\",\"ags-source\":\"%@\"},\"requestData\":[{\"farmId\":\"%@\",\"harvestType\":\"NORMALEGG\",\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"antfarm\",\"version\":\"%@\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", kManorEggRPCSource, kManorEggRPCSource, farmId, kManorEggRPCVersion, timeStamp, randNum];
+    [bridge _doFlushMessageQueue:eggArg url:url];
 }
 
 // 赶走访客：记录最近一次请求的访客尾号，供回包确认时输出面板日志
@@ -5591,9 +5733,9 @@ static NSTimeInterval gLastManorCheckTime = 0;
         });
     }
     
-    // 4. 自动投喂小鸡
+    // 4. 自动投喂小鸡（优先逐个投喂高级饲料，喂不动/喂完转普通 180g 饲料兜底）
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3200 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
-        [self feedManorChicken];
+        [self feedManorChickenWithAdvancedFood];
     });
     
     // 5. 庄园任务体检与做任务
@@ -5610,6 +5752,11 @@ static NSTimeInterval gLastManorCheckTime = 0;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6000 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
         [self signManorFamily];
     });
+
+    // 8. 收鸡蛋（有蛋才收：蛋巢无蛋时服务端回绝，静默不打扰；60s 冷却防重发）
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(7000 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+        [self harvestManorEgg];
+    });
 }
 
 - (void)retryManorPendingAutomations {
@@ -5624,6 +5771,7 @@ static NSTimeInterval gLastManorCheckTime = 0;
     if (!isManorFamilySignDoneToday()) {
         [self signManorFamily];
     }
+    [self harvestManorEgg];
 }
 
 - (void)handleManorResponse:(NSDictionary *)dict {
@@ -5718,11 +5866,11 @@ static NSTimeInterval gLastManorCheckTime = 0;
             } else {
                 NSLog(@"🐔 [蚂蚁庄园·小鸡状态] 饭盆空闲 | 盆内:%ld/%ldg | 饲料存量:%ldg", (long)foodInTrough, (long)foodLimit, (long)foodStock);
                 if (foodStock >= 180) {
-                    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：检测到小鸡饭盆空闲（盆内 %ldg / 背包存量 %ldg），正在自动投喂 180g 饲料...", (long)foodInTrough, (long)foodStock]];
-                    [self feedManorChicken];
+                    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：检测到小鸡饭盆空闲（盆内 %ldg / 背包存量 %ldg），正在自动投喂（优先高级饲料）...", (long)foodInTrough, (long)foodStock]];
+                    [self feedManorChickenWithAdvancedFood];
                 } else if (foodStock > 0) {
-                    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：检测到小鸡饭盆空闲，背包存量不足 180g（当前 %ldg），尝试投喂...", (long)foodStock]];
-                    [self feedManorChicken];
+                    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：检测到小鸡饭盆空闲，背包存量不足 180g（当前 %ldg），尝试投喂（优先高级饲料）...", (long)foodStock]];
+                    [self feedManorChickenWithAdvancedFood];
                 } else {
                     [self recordStage:@"蚂蚁庄园：小鸡饭盆空闲，但背包饲料存量为 0g，需先做任务赚饲料"];
                 }
@@ -5882,6 +6030,56 @@ static NSTimeInterval gLastManorCheckTime = 0;
         // K. 链外补跑：庄园页面停留期间每来一条回包都顺带体检睡觉/家庭签到
         //    （两者各有「当天一次」标记 + 30 分钟冷却，重复调用不会刷请求）
         [self retryManorPendingAutomations];
+
+        // L. 收鸡蛋回包处理 (harvestProduce)：服务端确认收到蛋才输出日志，蛋巢无蛋被回绝则静默
+        if ([opType containsString:@"harvestProduce"]) {
+            BOOL eggOk = [resData[@"success"] boolValue] || [dict[@"success"] boolValue] ||
+                         [resData[@"memo"] isEqualToString:@"SUCCESS"] || [dict[@"memo"] isEqualToString:@"SUCCESS"] ||
+                         [resData[@"resultCode"] isEqualToString:@"100"] || [dict[@"resultCode"] isEqualToString:@"100"];
+            if (eggOk) {
+                [self recordStage:@"蚂蚁庄园：已收取小鸡下的鸡蛋（蛋巢已刷新）"];
+                NSString *eggFarmId = self.lastManorFarmId ?: @"";
+                if (eggFarmId.length) {
+                    NSString *eggTs = [NSString stringWithFormat:@"%ld", (long)([[NSDate date] timeIntervalSince1970] * 1000)];
+                    NSString *syncArg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antfarm.syncAnimalStatus\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"%@\",\"ags-source\":\"%@\"},\"requestData\":[{\"farmId\":\"%@\",\"operTag\":\"SYNC_RESUME\",\"operType\":\"QUERY_ALL\",\"recall\":false,\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"H5\",\"version\":\"%@\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", kManorEggRPCSource, kManorEggRPCSource, eggFarmId, kManorEggRPCVersion, eggTs, [AntForestManager getNumberRandom:15]];
+                    PSDJsBridge *eggBridge = (self.manorBridge && self.manorBridge != self.jsBridge) ? self.manorBridge : nil;
+                    if (eggBridge) [eggBridge _doFlushMessageQueue:syncArg url:(self.manorH5Url ?: @"https://66666674.h5app.alipay.com/www/index.html")];
+                }
+            } else {
+                NSString *eggMemo = resData[@"memo"] ?: dict[@"memo"];
+                if (![eggMemo isKindOfClass:NSString.class]) eggMemo = nil;
+                NSString *eggReason = eggMemo.length ? eggMemo : @"未知原因";
+                recordEggDiagOnce(self, @"noegg", [NSString stringWithFormat:@"蚂蚁庄园：蛋巢暂无可收鸡蛋（%@），下次自动重试", eggReason]);
+            }
+        }
+        
+        // M. 高级饲料投喂回包处理 (useFarmFood)：成功 → 1.2 秒后继续喂下一个；喂不动/喂完 → 转普通饲料兜底
+        if ([opType containsString:@"useFarmFood"]) {
+            if (gManorCuisineInFlight) {
+                gManorCuisineInFlight = NO;
+                id cuisineMemoRaw = resData[@"memo"] ?: dict[@"memo"];
+                NSString *cuisineMemo = [cuisineMemoRaw isKindOfClass:NSString.class] ? cuisineMemoRaw : @"";
+                BOOL cuisineOk = [resData[@"success"] boolValue] || [dict[@"success"] boolValue] ||
+                                 [resData[@"resultCode"] isEqualToString:@"100"] || [dict[@"resultCode"] isEqualToString:@"100"] ||
+                                 [cuisineMemo containsString:@"SUCCESS"] || [cuisineMemo containsString:@"成功"];
+                if (cuisineOk && isManorCuisineSkipMemo(cuisineMemo)) cuisineOk = NO;
+                if (cuisineOk) {
+                    gManorCuisineFedCount++;
+                    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：高级饲料投喂成功（第 %lu 个）", (unsigned long)gManorCuisineFedCount]];
+                    if (gManorCuisineFedCount >= 15) {
+                        [self stopManorAdvancedFoodFeed:@"已连喂 15 个，达单轮上限"];
+                    } else {
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1200 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+                            [self feedManorChickenWithAdvancedFood];
+                        });
+                    }
+                } else if (isManorCuisineSkipMemo(cuisineMemo) || [cuisineMemo containsString:@"正在吃"]) {
+                    [self stopManorAdvancedFoodFeed:(cuisineMemo.length ? cuisineMemo : @"小鸡正在吃，暂不需要")];
+                } else {
+                    [self stopManorAdvancedFoodFeed:(cuisineMemo.length ? cuisineMemo : @"高级饲料不可用")];
+                }
+            }
+        }
     } @catch (NSException *e) {
         NSLog(@"[AntForestPort] Exception in handleManorResponse: %@", e);
     }
