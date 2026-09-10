@@ -27,7 +27,7 @@ fi
 
 echo "[3/7] Checking gates (total switch / bridge / cooldown / single-round cap 15)..."
 grep -Fq 'if (!self.enableAutoManor) return;' "$source_file"
-grep -Fq 'self.manorBridge && self.manorBridge != self.jsBridge' "$source_file"
+grep -Fq 'bridge == self.jsBridge' "$source_file"   # 桥接判定已收敛进 activeManorBridge
 grep -Fq 'gManorCuisineInFlight' "$source_file"
 grep -Fq 'gManorCuisineStopUntil' "$source_file"
 grep -Fq '+ 1800;' "$source_file"
