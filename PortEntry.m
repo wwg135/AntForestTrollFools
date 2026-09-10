@@ -2433,8 +2433,68 @@ static id portCallRPC(id self, SEL _cmd, id rpcConfig, id completeBlock) {
     return nil;
 }
 
+static IMP portOriginalIMPFor(id self) {
+    IMP original = NULL;
+    for (Class cls = object_getClass(self); cls && !original; cls = class_getSuperclass(cls)) {
+        original = [objc_getAssociatedObject(cls, PortRPCOriginalIMPKey) pointerValue];
+    }
+    return original;
+}
+
+static void portObserveManorRPCRequest(id arg) {
+    if (!arg) return;
+    static NSTimeInterval lastObserve = 0;
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    if (now - lastObserve < 0.2) return;
+    if ([arg isKindOfClass:NSString.class]) {
+        if ([(NSString *)arg rangeOfString:@"antfarm"].location == NSNotFound) return;
+    } else if (![arg isKindOfClass:NSDictionary.class] && ![arg isKindOfClass:NSArray.class]) {
+        return;
+    }
+    lastObserve = now;
+    [[AntForestManager sharedInstance] noteManorPageRPCRequest:arg];
+}
+
+static id portRPCSendProbe(id self, SEL _cmd, id arg1, id arg2) {
+    @try {
+        portObserveManorRPCRequest(arg1);
+    } @catch (NSException *e) {}
+    IMP original = portOriginalIMPFor(self);
+    if (original) return ((id (*)(id, SEL, id, id))original)(self, _cmd, arg1, arg2);
+    return nil;
+}
+
+static id portRPCCallHandlerProbe(id self, SEL _cmd, id handler, id data, id callback) {
+    @try {
+        portObserveManorRPCRequest(data ?: handler);
+    } @catch (NSException *e) {}
+    IMP original = portOriginalIMPFor(self);
+    if (original) return ((id (*)(id, SEL, id, id, id))original)(self, _cmd, handler, data, callback);
+    return nil;
+}
+
 static BOOL hookRPCProbeMethod(Class cls) {
-    return NO;
+    if (!cls) return NO;
+    const char *clsName = class_getName(cls);
+    if (!clsName) return NO;
+    if (strcmp(clsName, "PSDJsBridge") != 0 && strcmp(clsName, "RVKJsBridge") != 0) return NO;
+
+    BOOL installed = NO;
+    SEL sendSel = @selector(send:responseCallback:);
+    SEL handlerSel = @selector(callHandler:data:responseCallback:);
+    Method sendMethod = class_getInstanceMethod(cls, sendSel);
+    Method handlerMethod = class_getInstanceMethod(cls, handlerSel);
+    if (sendMethod && class_getMethodImplementation(cls, sendSel) != (IMP)portRPCSendProbe) {
+        objc_setAssociatedObject(cls, PortRPCOriginalIMPKey, [NSValue valueWithPointer:(IMP)class_getMethodImplementation(cls, sendSel)], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        class_replaceMethod(cls, sendSel, (IMP)portRPCSendProbe, method_getTypeEncoding(sendMethod));
+        installed = YES;
+    }
+    if (handlerMethod && class_getMethodImplementation(cls, handlerSel) != (IMP)portRPCCallHandlerProbe) {
+        objc_setAssociatedObject(cls, PortRPCOriginalIMPKey, [NSValue valueWithPointer:(IMP)class_getMethodImplementation(cls, handlerSel)], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        class_replaceMethod(cls, handlerSel, (IMP)portRPCCallHandlerProbe, method_getTypeEncoding(handlerMethod));
+        installed = YES;
+    }
+    return installed;
 }
 
 
