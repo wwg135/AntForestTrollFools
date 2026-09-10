@@ -3,7 +3,7 @@ name: Build AntForest
 on:
   workflow_dispatch:
   push:
-    branches: [ "dev-1" ]
+    branches: [ "dev-2" ]
 
 jobs:
   build:
