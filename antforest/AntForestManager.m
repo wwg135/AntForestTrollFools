@@ -545,7 +545,7 @@ static NSInteger reviveDailyCount(void) {
 }
 
 - (void)waterSendRPC:(NSString *)operation body:(NSDictionary *)body {
-    if (!self.jsBridge) { [self waterStopWithReason:@"H5 Bridge 未连接"]; return; }
+    if (!self.jsBridge) { [self waterStopWithReason:@"页面通道未连接"]; return; }
     NSString *timestamp = [NSString stringWithFormat:@"%ld", (long)(NSDate.date.timeIntervalSince1970 * 1000)];
     NSString *callback = [NSString stringWithFormat:@"water_%@.%@", timestamp, [AntForestManager getNumberRandom:12]];
     NSDictionary *data = @{ @"handlerName": @"rpc", @"data": @{ @"operationType": operation, @"headers": @{ @"source": @"chInfo_ch_appcenter__chsub_9patch", @"ags-source": @"chInfo_ch_appcenter__chsub_9patch" }, @"requestData": @[body], @"getResponse": @YES }, @"callbackId": callback };
@@ -647,7 +647,7 @@ static NSInteger reviveDailyCount(void) {
     if (waterRunning) { [self recordStage:@"浇水 · 当前任务仍在执行"]; return; }
     NSArray *friends = [[NSOrderedSet orderedSetWithArray:self.waterFriendIds ?: @[]].array filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(NSString *uid, __unused NSDictionary *bindings) { return uid.length > 0; }]];
     if (!friends.count) { [self recordStage:@"浇水 · 未选择好友"]; return; }
-    if (!self.jsBridge) { [self recordStage:@"浇水 · H5 Bridge 未连接"]; return; }
+    if (!self.jsBridge) { [self recordStage:@"浇水 · 页面通道未连接"]; return; }
     waterRunning = YES;
     waterQueue = friends;
     waterQueueIndex = 0;
@@ -5261,11 +5261,6 @@ static void manorScanCuisinePairs(id obj, NSMutableDictionary *out, NSUInteger *
     }
 }
 
-static BOOL isManorProbeOp(NSString *op) {
-    return [op containsString:@"useFarmFood"] || [op containsString:@"feedAnimal"] ||
-           [op containsString:@"harvestProduce"] || [op containsString:@"syncAnimalStatus"];
-}
-
 // 识别优先、写死兜底：高级饲料种类多、活动常换，写死的 7 组可能早过期；识别到账号真实菜谱就只用真实菜谱
 static NSArray *manorAdvancedCuisineList(void) {
     manorLoadLearnedCuisines();
@@ -5283,7 +5278,37 @@ static NSArray *manorAdvancedCuisineList(void) {
 static BOOL isManorCuisineSkipMemo(NSString *memo) {
     if (!memo.length) return NO;
     return ([memo containsString:@"还没吃完"] || [memo containsString:@"不要着急"] ||
-            [memo containsString:@"已满"] || [memo containsString:@"睡觉"] || [memo containsString:@"外出"]);
+            [memo containsString:@"已满"] || [memo containsString:@"睡觉"] || [memo containsString:@"外出"] ||
+            [memo containsString:@"not finish"] || [memo containsString:@"eating"] ||
+            [memo containsString:@"full"] || [memo containsString:@"sleep"]);
+}
+
+// 睡觉类 memo：服务端说小鸡在睡觉，此时高级饲料与普通饲料都投不进去（9/11 真机实证）
+static BOOL isManorSleepMemo(NSString *memo) {
+    if (!memo.length) return NO;
+    return ([memo containsString:@"睡觉"] || [memo containsString:@"休息"] || [memo containsString:@"无法操作"] ||
+            [memo containsString:@"sleep"] || [memo containsString:@"Sleep"]);
+}
+
+// 回包英文 memo 中文化（日志全中文口径，照 AntManor cnReason）
+static NSString *manorCnReason(NSString *reason) {
+    if (!reason.length) return reason;
+    static NSDictionary *map = nil;
+    if (!map) {
+        map = @{ @"SUCCESS": @"成功", @"success": @"成功",
+                 @"not finish": @"还没吃完", @"not finished": @"还没吃完", @"eating": @"小鸡正在进食",
+                 @"has food": @"食物槽还有食物", @"full": @"饲料已满",
+                 @"sleeping": @"小鸡在睡觉", @"sleep": @"小鸡在睡觉",
+                 @"already": @"已领取过", @"claimed": @"已领取过", @"repeat": @"重复领取",
+                 @"not enough": @"饲料不足", @"insufficient": @"饲料不足" };
+    }
+    NSString *text = reason;
+    for (NSString *key in map) {
+        if ([text rangeOfString:key].location != NSNotFound) {
+            text = [text stringByReplacingOccurrencesOfString:key withString:map[key]];
+        }
+    }
+    return text;
 }
 
 static NSUInteger gManorCuisineFedCount = 0;       // 本轮已投喂个数（单轮上限 15 个，防死循环）
@@ -5293,6 +5318,13 @@ static NSTimeInterval gManorCuisineStopUntil = 0;  // 喂不动/喂完后的冷�
 static NSMutableSet *gManorCuisineBadIds = nil;    // 本轮被服务端明确拒掉的菜谱，不再重复撞
 static NSString *gManorCuisineInFlightId = nil;    // 在飞的菜谱 ID：回包失败时用它拉黑
 static NSUInteger gManorCuisineCursor = 0;         // 轮转游标：跳过被拒的菜谱继续下一个
+static NSTimeInterval gManorChickenSleepUntil = 0;  // 小鸡在睡觉：这段时间内不投喂（高级/普通饲料服务端都拒）
+static const NSTimeInterval kManorChickenSleepQuiet = 300.0;  // 睡觉静默 5 分钟，醒了由 60 秒监控自动接上
+
+// 睡觉静默期内？投喂入口先查这里，避免明知服务端会拒还发请求
+static BOOL manorChickenSleeping(void) {
+    return (gManorChickenSleepUntil > 0 && [[NSDate date] timeIntervalSince1970] < gManorChickenSleepUntil);
+}
 
 static NSString *manorFindOperationType(id obj, NSUInteger *budget) {
     if (!obj || *budget == 0) return nil;
@@ -5313,6 +5345,19 @@ static NSString *manorFindOperationType(id obj, NSUInteger *budget) {
     return nil;
 }
 
+static NSString *manorOperationDisplayName(NSString *op) {
+    if (!op.length) return @"未知操作";
+    if ([op containsString:@"useFarmFood"]) return @"高级饲料投喂";
+    if ([op containsString:@"feedAnimal"]) return @"普通饲料投喂";
+    if ([op containsString:@"harvestProduce"]) return @"收鸡蛋";
+    if ([op containsString:@"syncAnimalStatus"]) return @"同步小鸡状态";
+    if ([op containsString:@"enterFamily"]) return @"进入家庭";
+    if ([op containsString:@"sleep"]) return @"小鸡睡觉";
+    if ([op containsString:@"sign"]) return @"家庭签到";
+    if ([op containsString:@"receiveFarmTaskAward"]) return @"领取饲料奖励";
+    return @"庄园操作";
+}
+
 // 轮转取下一个还没被拒的菜谱；全被拒返回 nil（那才真的转普通饲料）
 static NSDictionary *manorNextCuisineToFeed(NSArray *list) {
     if (!gManorCuisineBadIds) gManorCuisineBadIds = [NSMutableSet set];
@@ -5326,6 +5371,7 @@ static NSDictionary *manorNextCuisineToFeed(NSArray *list) {
 
 - (void)feedManorChickenWithAdvancedFood {
     if (!self.enableAutoManor) return;
+    if (manorChickenSleeping()) return;   // 小鸡在睡觉：饲料投不进去，等静默期过再试
     if (self.isManorChickenEating) {
         [self feedManorChicken];
         return;
@@ -5390,13 +5436,21 @@ static NSDictionary *manorNextCuisineToFeed(NSArray *list) {
 - (void)stopManorAdvancedFoodFeed:(NSString *)reason {
     gManorCuisineRunning = NO;
     gManorCuisineInFlight = NO;
+    if (isManorSleepMemo(reason)) {
+        gManorChickenSleepUntil = [[NSDate date] timeIntervalSince1970] + kManorChickenSleepQuiet;
+        gManorCuisineStopUntil = 0;
+        recordEggDiagOnce(self, @"cuisine_sleep",
+                          [NSString stringWithFormat:@"蚂蚁庄园：小鸡在睡觉，暂不投喂饲料（%@）", manorCnReason(reason)]);
+        return;   // 睡觉期间普通饲料同样喂不进，不再转普通饲料（省一次无效请求）
+    }
     gManorCuisineStopUntil = [[NSDate date] timeIntervalSince1970] + 1800;
-    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：高级饲料投喂暂停（%@），转普通饲料投喂", reason]];
+    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：高级饲料投喂暂停（%@），转普通饲料投喂", manorCnReason(reason)]];
     [self feedManorChicken];
 }
 
 - (void)feedManorChicken {
     if (!self.enableAutoManor) return;
+    if (manorChickenSleeping()) return;   // 睡觉静默期内不投喂（普通饲料服务端同样拒）
     if (self.isManorChickenEating) {
         if (!self.isManorFeedProbe) [self recordStage:@"蚂蚁庄园：小鸡当前正在进食中，暂无需投喂"];
         return;
@@ -5672,8 +5726,8 @@ static NSString *getCurrentHourString(void) {
     NSUInteger budget = 600;
     NSString *opType = manorFindOperationType(obj, &budget);
     recordEggDiagOnce(self, [@"pagereq_" stringByAppendingString:(opType.length ? opType : @"unknown")],
-                      [NSString stringWithFormat:@"蚂蚁庄园 · 页面自身请求：%@（cookbookId=%@，cuisineId=%@，本次识别 %lu 种菜谱）",
-                       opType.length ? opType : @"未知操作", cookbookId, cuisineId, (unsigned long)pairs.count]);
+                      [NSString stringWithFormat:@"蚂蚁庄园 · 捕获到页面自己发的请求：%@（菜谱书 %@，菜谱 %@，本次识别 %lu 种）",
+                       manorOperationDisplayName(opType), cookbookId, cuisineId, (unsigned long)pairs.count]);
 }
 
 #pragma mark - 收蛋监控（60 秒一轮常驻探测，照 AntManor 实时监听定时器）
@@ -6188,6 +6242,8 @@ static NSTimeInterval gLastManorCheckTime = 0;
                         [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：小鸡正在进食中（背包存量 %ldg），暂无需喂食", (long)foodStock]];
                     }
                 }
+            } else if (manorChickenSleeping()) {
+                NSLog(@"🐔 [蚂蚁庄园·小鸡状态] 小鸡在睡觉，不投喂 | 盆内:%ld/%ldg | 饲料存量:%ldg", (long)foodInTrough, (long)foodLimit, (long)foodStock);
             } else {
                 NSLog(@"🐔 [蚂蚁庄园·小鸡状态] 饭盆空闲 | 盆内:%ld/%ldg | 饲料存量:%ldg", (long)foodInTrough, (long)foodLimit, (long)foodStock);
                 if (foodStock >= 180) {
@@ -6282,20 +6338,7 @@ static NSTimeInterval gLastManorCheckTime = 0;
             if (assocOp.length) {
                 opType = assocOp;
                 self.lastRpcOperationType = assocOp;
-                if ([assocOp containsString:@"feedAnimal"] || [assocOp containsString:@"useFarmFood"] || [assocOp containsString:@"harvestProduce"]) {
-                    recordEggDiagOnce(self, [@"assoc_" stringByAppendingString:assocOp],
-                                      [NSString stringWithFormat:@"蚂蚁庄园 · 回包关联：%@（回包未带 operationType，按发送顺序关联）", assocOp]);
-                }
             }
-        }
-        // 回包到达探针：摊开「服务端到底回没回、回的什么」，一个 operationType 一天一条
-        if (!opType.length || isManorProbeOp(opType)) {
-            NSString *probeMemo = [resData[@"memo"] isKindOfClass:NSString.class] ? resData[@"memo"] : ([dict[@"memo"] isKindOfClass:NSString.class] ? dict[@"memo"] : @"");
-            BOOL probeOk = [resData[@"success"] boolValue] || [dict[@"success"] boolValue] || [probeMemo isEqualToString:@"SUCCESS"];
-            recordEggDiagOnce(self, opType.length ? [@"rsp_" stringByAppendingString:opType] : @"rsp_noop",
-                              [NSString stringWithFormat:@"蚂蚁庄园 · 回包到达：%@（success=%d，memo=%@）",
-                               opType.length ? opType : @"无 operationType", probeOk ? 1 : 0,
-                               probeMemo.length ? probeMemo : @"空"]);
         }
         if (!gManorFamilySignPending && (resData[@"haveAddFoodStock"] || [opType containsString:@"receiveFarmTaskAward"])) {
             NSInteger addFood = [resData[@"haveAddFoodStock"] integerValue];
@@ -6321,6 +6364,16 @@ static NSTimeInterval gLastManorCheckTime = 0;
                 [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：小鸡投喂成功（消耗 %ldg 饲料，背包剩余 %ldg）", (long)fed, (long)curFood]];
             } else {
                 [self recordStage:@"蚂蚁庄园：小鸡投喂成功（已倒入 180g 饲料）"];
+            }
+        }
+
+        // G2. 普通饲料被「小鸡在睡觉」拒：同样立 5 分钟静默闸门（睡醒前不再发投喂请求）
+        if ([opType containsString:@"feedAnimal"]) {
+            NSString *feedMemo = [NSString stringWithFormat:@"%@", resData[@"memo"] ?: (dict[@"memo"] ?: @"")];
+            if (isManorSleepMemo(feedMemo)) {
+                gManorChickenSleepUntil = [[NSDate date] timeIntervalSince1970] + kManorChickenSleepQuiet;
+                recordEggDiagOnce(self, @"cuisine_sleep",
+                                  [NSString stringWithFormat:@"蚂蚁庄园：小鸡在睡觉，暂不投喂饲料（%@）", manorCnReason(feedMemo)]);
             }
         }
 
@@ -6423,10 +6476,12 @@ static NSTimeInterval gLastManorCheckTime = 0;
                             [self feedManorChickenWithAdvancedFood];
                         });
                     }
+                } else if (isManorSleepMemo(cuisineMemo)) {
+                    [self stopManorAdvancedFoodFeed:(cuisineMemo.length ? cuisineMemo : @"我的小鸡在睡觉中，无法操作")];
                 } else if (isManorCuisineSkipMemo(cuisineMemo) || [cuisineMemo containsString:@"正在吃"]) {
                     [self stopManorAdvancedFoodFeed:(cuisineMemo.length ? cuisineMemo : @"小鸡正在吃，暂不需要")];
                 } else {
-                    NSString *why = cuisineMemo.length ? cuisineMemo : @"高级饲料不可用";
+                    NSString *why = manorCnReason(cuisineMemo.length ? cuisineMemo : @"高级饲料不可用");
                     if (gManorCuisineInFlightId.length) [gManorCuisineBadIds addObject:gManorCuisineInFlightId];
                     if (manorNextCuisineToFeed(manorAdvancedCuisineList())) {
                         [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：高级饲料 %@ 被服务端拒（%@），换下一个菜谱", gManorCuisineInFlightId, why]];
