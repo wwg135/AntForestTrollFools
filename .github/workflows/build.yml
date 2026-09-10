@@ -10,8 +10,7 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - uses: actions/checkout@v4
-
+      - uses: actions/checkout@main
       - name: Build dylib
         run: |
           rm -rf build
@@ -27,16 +26,15 @@ jobs:
 
       - name: Build packages
         run: |
-          mkdir -p Packages build/rootful-tmp build/rootless-tmp
-          rm -rf Packages/*.deb build/rootful-tmp/* build/rootless-tmp/*
-
+          mkdir -p Packages build/rootless-tmp
+          rm -rf Packages/*.deb build/rootless-tmp/*
           VER=$(grep '^Version:' antforest/Package/DEBIAN/control | awk '{print $2}')
           echo "Package version: ${VER}"
 
           # Rootful
-          cp -r antforest/Package/* build/rootful-tmp/
-          cp build/AntForestPort-Ocean.dylib build/rootful-tmp/Library/MobileSubstrate/DynamicLibraries/antforest.dylib
-          dpkg-deb -b build/rootful-tmp "Packages/com.vknote.antforest_${VER}_iphoneos-arm.deb"
+          #cp -r antforest/Package/* build/rootful-tmp/
+          #cp build/AntForestPort-Ocean.dylib build/rootful-tmp/Library/MobileSubstrate/DynamicLibraries/antforest.dylib
+          #dpkg-deb -b build/rootful-tmp "Packages/com.vknote.antforest_${VER}_iphoneos-arm.deb"
 
           # Rootless
           cp -r antforest/Package/* build/rootless-tmp/
@@ -46,7 +44,7 @@ jobs:
           dpkg-deb -b build/rootless-tmp "Packages/com.vknote.antforest_${VER}_iphoneos-arm64.deb"
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@main
         with:
           name: AntForest‑Packages
           path: |
