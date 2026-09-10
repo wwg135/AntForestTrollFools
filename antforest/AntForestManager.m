@@ -2352,7 +2352,7 @@ static NSString *sLastQueriedSceneCode = nil;
     BOOL isOpenGreenScene = isLotteryScene || isMonopolyScene || isOceanScene || isAIFishScene;
     PSDJsBridge *bridge = nil;
     if (isManorScene) {
-        bridge = (self.manorBridge && self.manorBridge != self.jsBridge) ? self.manorBridge : nil;
+        bridge = [self activeManorBridge];
     } else if (isAIFishScene) {
         bridge = self.aiFishBridge ?: self.oceanBridge ?: self.rewardTaskBridge ?: self.jsBridge;
     } else if (isOceanScene) {
@@ -2407,7 +2407,7 @@ static NSString *sLastQueriedSceneCode = nil;
     BOOL isOpenGreenScene = isLotteryScene || isMonopolyScene || isOceanScene || isAIFishScene;
     PSDJsBridge *bridge = nil;
     if (isManorScene) {
-        bridge = (self.manorBridge && self.manorBridge != self.jsBridge) ? self.manorBridge : nil;
+        bridge = [self activeManorBridge];
     } else if (isAIFishScene) {
         bridge = self.aiFishBridge ?: self.oceanBridge ?: self.rewardTaskBridge ?: self.jsBridge;
     } else if (isOceanScene) {
@@ -4608,7 +4608,7 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
     
     [self recordStage:@"蚂蚁庄园：检测到今日未签到，正在自动签到领 180g 饲料..."];
     
-    PSDJsBridge *bridge = (self.manorBridge && self.manorBridge != self.jsBridge) ? self.manorBridge : nil;
+    PSDJsBridge *bridge = [self activeManorBridge];
     if (bridge) {
         NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
         NSString *timeStamp = [NSString stringWithFormat:@"%ld", (long)(now * 1000)];
@@ -4922,7 +4922,7 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
 
 - (void)queryManorFarmTasks {
     if (!self.enableAutoManor) return;
-    PSDJsBridge *bridge = (self.manorBridge && self.manorBridge != self.jsBridge) ? self.manorBridge : nil;
+    PSDJsBridge *bridge = [self activeManorBridge];
     if (!bridge) return;
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     NSString *timeStamp = [NSString stringWithFormat:@"%ld", (long)(now * 1000)];
@@ -4934,7 +4934,7 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
 
 - (void)doManorFarmTaskWithBizKey:(NSString *)bizKey {
     if (!self.enableAutoManor || !bizKey.length) return;
-    PSDJsBridge *bridge = (self.manorBridge && self.manorBridge != self.jsBridge) ? self.manorBridge : nil;
+    PSDJsBridge *bridge = [self activeManorBridge];
     if (!bridge) return;
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     NSString *timeStamp = [NSString stringWithFormat:@"%ld", (long)(now * 1000)];
@@ -4946,7 +4946,7 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
 
 - (void)receiveManorFarmTaskAwardWithTaskId:(NSString *)taskId title:(NSString *)title {
     if (!self.enableAutoManor || !taskId.length) return;
-    PSDJsBridge *bridge = (self.manorBridge && self.manorBridge != self.jsBridge) ? self.manorBridge : nil;
+    PSDJsBridge *bridge = [self activeManorBridge];
     if (!bridge) return;
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     NSString *timeStamp = [NSString stringWithFormat:@"%ld", (long)(now * 1000)];
@@ -5111,7 +5111,7 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
 
 - (void)enterManorFarm {
     if (!self.enableAutoManor) return;
-    PSDJsBridge *bridge = (self.manorBridge && self.manorBridge != self.jsBridge) ? self.manorBridge : nil;
+    PSDJsBridge *bridge = [self activeManorBridge];
     if (!bridge) return;
     
     NSString *uid = self.myUserId.length ? self.myUserId : ([[NSUserDefaults standardUserDefaults] stringForKey:@"lastKnownUserId"] ?: @"");
@@ -5179,7 +5179,7 @@ static NSTimeInterval gManorCuisineStopUntil = 0;  // 喂不动/喂完后的冷�
         return;
     }
     
-    PSDJsBridge *bridge = (self.manorBridge && self.manorBridge != self.jsBridge) ? self.manorBridge : nil;
+    PSDJsBridge *bridge = [self activeManorBridge];
     if (!bridge) {
         [self feedManorChicken];
         return;
@@ -5231,7 +5231,7 @@ static NSTimeInterval gManorCuisineStopUntil = 0;  // 喂不动/喂完后的冷�
 - (void)feedManorChicken {
     if (!self.enableAutoManor) return;
     if (self.isManorChickenEating) {
-        [self recordStage:@"蚂蚁庄园：小鸡当前正在进食中，暂无需投喂"];
+        if (!self.isManorFeedProbe) [self recordStage:@"蚂蚁庄园：小鸡当前正在进食中，暂无需投喂"];
         return;
     }
     
@@ -5243,9 +5243,9 @@ static NSTimeInterval gManorCuisineStopUntil = 0;  // 喂不动/喂完后的冷�
     // 1. 投喂前，先关闭抽屉面板，确保院子小鸡与饲料袋完全暴露
     [self closeManorTaskPanelOnWebView];
     
-    [self recordStage:@"蚂蚁庄园：正在投喂小鸡（180g 饲料）..."];
+    if (!self.isManorFeedProbe) [self recordStage:@"蚂蚁庄园：正在投喂小鸡（180g 饲料）..."];
     
-    PSDJsBridge *bridge = (self.manorBridge && self.manorBridge != self.jsBridge) ? self.manorBridge : nil;
+    PSDJsBridge *bridge = [self activeManorBridge];
     if (bridge) {
         NSString *timeStamp = [NSString stringWithFormat:@"%ld", (long)(now * 1000)];
         NSString *randNum = [AntForestManager getNumberRandom:15];
@@ -5271,6 +5271,9 @@ static NSTimeInterval gManorCuisineStopUntil = 0;  // 喂不动/喂完后的冷�
             [self enterManorFarm];
         }
     }
+    
+    // 静默探针模式只发底层 RPC（照 AntManor quietWatchTick），不做界面触控模拟
+    if (self.isManorFeedProbe) return;
     
     // 2. 界面触控模拟：针对 Canvas 与饲料袋精准投喂
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(300 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
@@ -5359,7 +5362,7 @@ static NSTimeInterval gManorCuisineStopUntil = 0;  // 喂不动/喂完后的冷�
 
 - (void)collectManorChickenManurePot:(NSString *)potNo {
     if (!self.enableAutoManor || !potNo.length) return;
-    PSDJsBridge *bridge = (self.manorBridge && self.manorBridge != self.jsBridge) ? self.manorBridge : nil;
+    PSDJsBridge *bridge = [self activeManorBridge];
     if (!bridge) return;
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     NSString *timeStamp = [NSString stringWithFormat:@"%ld", (long)(now * 1000)];
@@ -5402,6 +5405,13 @@ static NSTimeInterval gManorCuisineStopUntil = 0;  // 喂不动/喂完后的冷�
 static NSString * const kManorEggRPCSource = @"chInfo_ch_appcenter__chsub_9patch";
 static NSString * const kManorEggRPCVersion = @"1.8.2302070202.46";
 
+// 庄园 H5 Bridge 强持有（照 AntManor gManorBridge）：离开庄园页后 WebView 不释放，60 秒监控定时器才能持续收蛋
+static id gManorHeldBridge = nil;
+// 收蛋监控心跳（秒）：照 AntManor「实时监听」口径，最短 1 分钟一轮
+static NSTimeInterval const kManorEggWatchInterval = 60.0;
+// 喂鸡静默探针间隔（秒）：照 AntManor quietWatchTick 口径，5 分钟一轮盲探，服务端裁决、失败静默
+static NSTimeInterval const kManorFeedProbeInterval = 300.0;
+
 // 收蛋诊断日志：同一句每天最多输出一条，避免每 60 秒重复刷屏
 static NSMutableSet *gEggDiagLoggedKeys = nil;
 static void recordEggDiagOnce(AntForestManager *mgr, NSString *key, NSString *message) {
@@ -5412,10 +5422,91 @@ static void recordEggDiagOnce(AntForestManager *mgr, NSString *key, NSString *me
     [mgr recordStage:message];
 }
 
+// 监控计数：面板只保留最近 100 条日志，收蛋 60 秒 / 喂鸡 5 分钟一轮的心跳若逐条记会刷屏、
+// 把真正的事件（签到/投喂成功/收蛋成功）挤出面板，所以心跳按「每小时一条汇总」输出；成功类逐次记录、不封顶
+static NSString *gLastWatchSummaryHour = nil;
+static NSUInteger gWatchEggSent = 0;    // 本小时发出的收蛋请求次数
+static NSUInteger gWatchEggOk = 0;      // 本小时成功收到蛋的次数
+static NSUInteger gWatchFeedProbe = 0;  // 本小时喂鸡探针次数
+static NSUInteger gWatchFeedOk = 0;     // 本小时投喂成功次数
+
+static NSString *getCurrentHourString(void) {
+    NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
+    fmt.dateFormat = @"yyyy-MM-dd HH";
+    return [fmt stringFromDate:[NSDate date]];
+}
+
+// 每小时一条监控汇总：让「收蛋/喂鸡每天不止一次」在面板上按次数可见（成功类仍逐次记录）
+- (void)flushManorWatchSummaryIfNeeded {
+    NSString *hour = getCurrentHourString();
+    if (!gLastWatchSummaryHour.length) {
+        gLastWatchSummaryHour = hour;
+        return;
+    }
+    if ([hour isEqualToString:gLastWatchSummaryHour]) return;
+    gLastWatchSummaryHour = hour;
+    if (!(gWatchEggSent || gWatchEggOk || gWatchFeedProbe || gWatchFeedOk)) return;
+    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园 · 监控汇总（近 1 小时）：收蛋探测 %lu 次 / 成功 %lu 次，喂鸡探测 %lu 次 / 成功 %lu 次",
+                      (unsigned long)gWatchEggSent, (unsigned long)gWatchEggOk,
+                      (unsigned long)gWatchFeedProbe, (unsigned long)gWatchFeedOk]];
+    gWatchEggSent = 0;
+    gWatchEggOk = 0;
+    gWatchFeedProbe = 0;
+    gWatchFeedOk = 0;
+}
+
+#pragma mark - 收蛋监控（60 秒一轮常驻探测，照 AntManor 实时监听定时器）
+
+// 当前可用的庄园 Bridge：优先实时绑定，庄园页面关闭后回落到强持有引用（照 AntManor gManorBridge 做法）
+- (id)activeManorBridge {
+    id bridge = self.manorBridge ?: gManorHeldBridge;
+    if (!bridge || bridge == self.jsBridge) return nil;
+    return bridge;
+}
+
+- (void)startManorEggWatchTimer {
+    if (self.manorEggWatchTimer.isValid) return;
+    if (![self activeManorBridge]) return;
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self startManorEggWatchTimer];
+        });
+        return;
+    }
+    self.manorEggWatchTimer = [NSTimer scheduledTimerWithTimeInterval:kManorEggWatchInterval target:self selector:@selector(manorEggWatchTick) userInfo:nil repeats:YES];
+    [self recordStage:@"蚂蚁庄园 · 收蛋/喂鸡监控已启动（60 秒一轮，喂鸡每 5 分钟静默探一次）"];
+}
+
+// 每一轮心跳：睡觉 / 家庭签到 / 收鸡蛋 全部按各自「当天一次 + 冷却」规则补跑，重复调用不刷请求
+- (void)manorEggWatchTick {
+    if (!self.enableAutoManor) return;
+    if (![self activeManorBridge]) return;
+    [self flushManorWatchSummaryIfNeeded];
+    [self retryManorPendingAutomations];
+    [self probeFeedManorChicken];
+}
+
+// 喂鸡静默探针（照 AntManor quietWatchTick）：探测即动作，能不能喂由服务端裁决；
+// 「还没吃完 / 小鸡睡觉 / 外出」等拒绝情形回包静默丢弃，不写面板日志，喂成功由回包分支记录
+- (void)probeFeedManorChicken {
+    if (!self.enableAutoManor) return;
+    if (![self activeManorBridge]) return;
+    
+    static NSTimeInterval lastProbeTime = 0;
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    if (now - lastProbeTime < kManorFeedProbeInterval) return;
+    lastProbeTime = now;
+    gWatchFeedProbe++;
+    
+    self.isManorFeedProbe = YES;
+    [self feedManorChicken];
+    self.isManorFeedProbe = NO;
+}
+
 - (void)harvestManorEgg {
     if (!self.enableAutoManor) return;
     
-    PSDJsBridge *bridge = (self.manorBridge && self.manorBridge != self.jsBridge) ? self.manorBridge : nil;
+    PSDJsBridge *bridge = [self activeManorBridge];
     if (!bridge) {
         recordEggDiagOnce(self, @"bridge", @"蚂蚁庄园：收鸡蛋跳过（庄园桥接未就绪）");
         return;
@@ -5437,6 +5528,10 @@ static void recordEggDiagOnce(AntForestManager *mgr, NSString *key, NSString *me
     NSString *url = self.manorH5Url ?: @"https://66666674.h5app.alipay.com/www/index.html";
     NSString *eggArg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antfarm.harvestProduce\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"%@\",\"ags-source\":\"%@\"},\"requestData\":[{\"farmId\":\"%@\",\"harvestType\":\"NORMALEGG\",\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"antfarm\",\"version\":\"%@\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", kManorEggRPCSource, kManorEggRPCSource, farmId, kManorEggRPCVersion, timeStamp, randNum];
     [bridge _doFlushMessageQueue:eggArg url:url];
+    
+    NSString *eggTail = farmId.length > 6 ? [farmId substringFromIndex:farmId.length - 6] : farmId;
+    gWatchEggSent++;
+    recordEggDiagOnce(self, @"eggsent", [NSString stringWithFormat:@"蚂蚁庄园：已发出收蛋请求（农场尾号 %@），此后每小时汇总一次", eggTail]);
 }
 
 // 赶走访客：记录最近一次请求的访客尾号，供回包确认时输出面板日志
@@ -5445,7 +5540,7 @@ static NSString *gLastExpelledTail = nil;
 - (void)sendBackManorAnimal:(NSString *)animalId masterFarmId:(NSString *)masterFarmId {
     if (!self.enableAutoManor || !animalId.length || !masterFarmId.length) return;
     
-    PSDJsBridge *bridge = (self.manorBridge && self.manorBridge != self.jsBridge) ? self.manorBridge : nil;
+    PSDJsBridge *bridge = [self activeManorBridge];
     if (!bridge) return;
     
     NSString *farmId = self.lastManorFarmId ?: @"";
@@ -5577,7 +5672,7 @@ static void markManorSleepDone(void) {
     }
     lastSleepAttempt = now;
 
-    PSDJsBridge *bridge = (self.manorBridge && self.manorBridge != self.jsBridge) ? self.manorBridge : nil;
+    PSDJsBridge *bridge = [self activeManorBridge];
     if (!bridge) {
         [self recordStage:@"蚂蚁庄园：睡觉跳过（庄园桥接未就绪）"];
         return;
@@ -5633,7 +5728,7 @@ static void markManorFamilySignDone(void) {
         return;
     }
 
-    PSDJsBridge *bridge = (self.manorBridge && self.manorBridge != self.jsBridge) ? self.manorBridge : nil;
+    PSDJsBridge *bridge = [self activeManorBridge];
     if (!bridge) {
         [self recordStage:@"蚂蚁庄园：家庭签到跳过（庄园桥接未就绪）"];
         return;
@@ -5676,7 +5771,7 @@ static void markManorFamilySignDone(void) {
 
 - (void)syncManorFamilyStatusAndAnimal {
     if (!self.enableAutoManor) return;
-    PSDJsBridge *bridge = (self.manorBridge && self.manorBridge != self.jsBridge) ? self.manorBridge : nil;
+    PSDJsBridge *bridge = [self activeManorBridge];
     if (!bridge) return;
 
     [self recordStage:@"蚂蚁庄园：正在同步家庭状态（亲密值）与小鸡状态..."];
@@ -5776,6 +5871,9 @@ static NSTimeInterval gLastManorCheckTime = 0;
 
 - (void)handleManorResponse:(NSDictionary *)dict {
     if (!self.enableAutoManor) return;
+    // 收蛋监控：强持有庄园 Bridge，并启动 60 秒一轮常驻探测（页面关闭后仍持续收蛋）
+    if (self.manorBridge) gManorHeldBridge = self.manorBridge;
+    [self startManorEggWatchTimer];
     if (![dict isKindOfClass:NSDictionary.class]) return;
     
     @try {
@@ -5964,6 +6062,7 @@ static NSTimeInterval gLastManorCheckTime = 0;
         // G. 投喂小鸡回包处理 (feedAnimal)
         if ([opType containsString:@"feedAnimal"] && ([resData[@"memo"] isEqualToString:@"SUCCESS"] || [dict[@"memo"] isEqualToString:@"SUCCESS"] || [resData[@"resultCode"] isEqualToString:@"100"] || [dict[@"resultCode"] isEqualToString:@"100"] || resData[@"foodStock"] != nil)) {
             self.isManorChickenEating = YES;
+            gWatchFeedOk++;   // 投喂成功逐次记录（不封顶）
             NSInteger curFood = [resData[@"foodStock"] integerValue];
             if (curFood > 0 || resData[@"foodStock"] != nil) {
                 NSInteger prevFood = self.lastManorFoodStock;
@@ -6037,12 +6136,13 @@ static NSTimeInterval gLastManorCheckTime = 0;
                          [resData[@"memo"] isEqualToString:@"SUCCESS"] || [dict[@"memo"] isEqualToString:@"SUCCESS"] ||
                          [resData[@"resultCode"] isEqualToString:@"100"] || [dict[@"resultCode"] isEqualToString:@"100"];
             if (eggOk) {
+                gWatchEggOk++;   // 收到蛋逐次记录（不封顶）
                 [self recordStage:@"蚂蚁庄园：已收取小鸡下的鸡蛋（蛋巢已刷新）"];
                 NSString *eggFarmId = self.lastManorFarmId ?: @"";
                 if (eggFarmId.length) {
                     NSString *eggTs = [NSString stringWithFormat:@"%ld", (long)([[NSDate date] timeIntervalSince1970] * 1000)];
                     NSString *syncArg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antfarm.syncAnimalStatus\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"%@\",\"ags-source\":\"%@\"},\"requestData\":[{\"farmId\":\"%@\",\"operTag\":\"SYNC_RESUME\",\"operType\":\"QUERY_ALL\",\"recall\":false,\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"H5\",\"version\":\"%@\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", kManorEggRPCSource, kManorEggRPCSource, eggFarmId, kManorEggRPCVersion, eggTs, [AntForestManager getNumberRandom:15]];
-                    PSDJsBridge *eggBridge = (self.manorBridge && self.manorBridge != self.jsBridge) ? self.manorBridge : nil;
+                    PSDJsBridge *eggBridge = [self activeManorBridge];
                     if (eggBridge) [eggBridge _doFlushMessageQueue:syncArg url:(self.manorH5Url ?: @"https://66666674.h5app.alipay.com/www/index.html")];
                 }
             } else {
