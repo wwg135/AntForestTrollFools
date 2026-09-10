@@ -1549,7 +1549,9 @@ static void initDailyTaskCache(void) {
                     ![key containsString:@"ANTFARM"] &&
                     ![key containsString:@"antfarm"] &&
                     ![key containsString:@"MONOPOLY"] &&
-                    ![key containsString:@"HSDWY"]) {
+                    ![key containsString:@"HSDWY"] &&
+                    ![key containsString:@"VITALITY"] &&
+                    ![key containsString:@"acc_task"]) {
                     [clearedFailed addObject:key];
                 }
             }
@@ -2632,6 +2634,8 @@ static NSInteger sVitalityAutoRefreshRounds = 0;
                 bridge = self.monopolyBridge;
             } else if (isLotteryScene) {
                 bridge = self.lotteryBridge ?: self.rewardTaskBridge ?: self.jsBridge;
+            } else if (!bridge) {
+                bridge = self.jsBridge;
             }
             if (!bridge) {
                 NSString *modTag = isMonopolyScene ? @"新版保护地" : (isLotteryScene ? @"森林寻宝" : (isOceanScene ? @"神奇海洋" : (isFarmScene ? @"芭芭农场" : ([sceneCode containsString:@"AIFISH"] ? @"AI摸鱼" : @"领奖励"))));
@@ -3118,7 +3122,6 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
     // 5. 农场乐园小游戏多阶段浮球任务（如保卫向日葵、寻道大千等）按轮次默认阶梯倒计时
     NSString *upperType = taskType.uppercaseString;
     BOOL isFloatBallGame = [upperType containsString:@"FLOATBALL"] || [upperType containsString:@"NCLY"] ||
-                           [title containsString:@"玩一玩"] ||
                            [[baseInfo objectForKey:@"actionType"] isEqualToString:@"MULTI_STAGE"];
     if (isFloatBallGame) {
         if (rTimes <= 2) {
@@ -3244,20 +3247,29 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
                     [gDailyCompletedTasks addObject:signTaskKey];
                 }
             } else if (signId.length) {
-                // 核心业务依赖：每日零点后必须先完成签到，服务端才会重置并激活今日累计任务阶梯（40g/60g/100g）。
-                // 若未签到就执行普通任务，任务完成次数不会被计入今日累计进度，导致阶梯奖励无法生效领取！
-                // 因此未签到时强制优先执行签到，并彻底阻断后续普通任务解析入队，待签到成功并刷新列表后再执行。
+                // 优先执行能量签到以激活今日累计阶梯奖励，但绝不阻断后续常规任务解析入队，杜绝死锁与零点任务瘫痪
+                BOOL alreadyInQueue = NO;
                 @synchronized(self) {
-                    [gDailyCompletedTasks removeObject:signTaskKey];
+                    if ([gDailyCompletedTasks containsObject:signTaskKey]) {
+                        alreadyInQueue = YES;
+                    } else {
+                        for (NSDictionary *q in vitalityTaskQueue) {
+                            if ([q[@"action"] isEqualToString:@"sign"]) { alreadyInQueue = YES; break; }
+                        }
+                    }
                 }
-                [self recordStage:@"领奖励：检测到今日尚未签到，正在优先执行能量签到以激活今日累计阶梯奖励..."];
-                [self signVitalityTask:signId];
-                
-                // 延时 1.8 秒后主动刷新任务列表，此时服务端已完成签到处理与今日阶梯重置，届时再正常执行常规任务
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                    [self queryVitalityTaskListWithForce:YES];
-                });
-                return;
+                if (!alreadyInQueue) {
+                    [self recordStage:@"领奖励：检测到今日尚未签到，优先执行能量签到以激活今日累计阶梯奖励..."];
+                    @synchronized(self) {
+                        [vitalityTaskQueue insertObject:@{
+                            @"action": @"sign",
+                            @"signId": signId,
+                            @"title": @"每日签到",
+                            @"awardName": @"能量",
+                            @"sceneCode": @"ANTFOREST_VITALITY_TASK"
+                        } atIndex:0];
+                    }
+                }
             }
         }
         
@@ -3441,9 +3453,48 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
                 continue;
             }
 
-            // 防死循环熔断：如果该任务已连续尝试 2 次以上未成功，立即熔断加入失败缓存
+            // 阶梯大奖 (阶段宝箱 / 额外累计奖励) 优先提取处理，坚决排除出普通任务熔断与过滤体系
+            NSDictionary *groupInfo = [t[@"taskGroupInfo"] isKindOfClass:NSDictionary.class] ? t[@"taskGroupInfo"] : nil;
+            NSString *groupType = groupInfo[@"taskGroupType"] ?: @"";
+            NSString *taskMode = baseInfo[@"taskMode"] ?: t[@"taskMode"] ?: @"";
+            BOOL isAccTask = ([groupType containsString:@"ACC"] || [groupType containsString:@"STAGE"] || [groupType containsString:@"LADDER"] ||
+                              [taskMode containsString:@"ACC"] ||
+                              [taskType hasPrefix:@"acc_"] || [taskType containsString:@"_acc_"] || [taskType containsString:@"ACC_"] || [taskType containsString:@"_ACC_"] ||
+                              [taskType containsString:@"stage_"] || [taskType containsString:@"STAGE_"]);
+            
+            if (isAccTask) {
+                NSInteger awardCount = [rights[@"awardCount"] integerValue];
+                if (awardCount <= 0) {
+                    awardCount = [bizInfo[@"awardCount"] integerValue];
+                }
+                if (awardCount <= 0) {
+                    awardCount = [bizInfo[@"energy"] integerValue];
+                }
+                
+                BOOL isProgressMet = (taskRequire > 0 && taskProgress >= taskRequire);
+                BOOL canClaim = (![taskStatus isEqualToString:@"RECEIVED"] &&
+                                 ([taskStatus isEqualToString:@"FINISHED"] ||
+                                  [taskStatus isEqualToString:@"CAN_RECEIVE"] ||
+                                  isProgressMet ||
+                                  (rightsTimesLimit > 0 && alreadyReceive < rightsTimesLimit && rightsTimes > alreadyReceive) ||
+                                  (alreadyReceive == 0 && rightsTimes > 0)));
+                
+                if (canClaim) {
+                    [accTasks addObject:@{
+                        @"action": @"receive",
+                        @"taskType": taskType,
+                        @"sceneCode": sceneCode,
+                        @"title": taskTitle.length ? taskTitle : [NSString stringWithFormat:@"今日累计阶梯奖励（%ldg）", (long)awardCount],
+                        @"awardName": (awardCount > 0) ? [NSString stringWithFormat:@"%ldg 能量", (long)awardCount] : @"阶梯能量",
+                        @"isAcc": @YES
+                    }];
+                }
+                continue;
+            }
+
+            // 防死循环熔断：如果该任务已连续尝试 5 次以上未成功，判定为需端内手动交互，加入失败缓存（杜绝网络偶发延迟误熔断）
             NSInteger vRetries = [gVitalityTaskRetryCounts[taskKey] integerValue];
-            if (vRetries >= 2) {
+            if (vRetries >= 5) {
                 @synchronized(self) {
                     [gDailyFailedTasks addObject:taskKey];
                     saveDailyTaskCache();
@@ -3458,7 +3509,7 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
                 } else if ([sceneCode containsString:@"MONOPOLY"] || [sceneCode containsString:@"HSDWY"]) {
                     moduleTag = @"新版保护地";
                 }
-                [self recordStage:[NSString stringWithFormat:@"%@：任务 [%@] 连续尝试未成功，触发熔断跳过", moduleTag, taskTitle]];
+                [self recordStage:[NSString stringWithFormat:@"%@：任务 [%@] 连续尝试多次未成功，触发熔断跳过", moduleTag, taskTitle]];
                 continue;
             }
             
@@ -3486,41 +3537,6 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
                 if (!hasPendingAward && ![taskStatus isEqualToString:@"CAN_RECEIVE"]) {
                     if (![taskStatus isEqualToString:@"FINISHED"] && !isSafeRewardTask(taskType, taskTitle)) continue;
                 }
-            }
-            
-            // 阶梯大奖 (阶段宝箱 / 额外累计奖励)
-            NSDictionary *groupInfo = [t[@"taskGroupInfo"] isKindOfClass:NSDictionary.class] ? t[@"taskGroupInfo"] : nil;
-            NSString *groupType = groupInfo[@"taskGroupType"] ?: @"";
-            BOOL isAccTask = ([groupType containsString:@"ACC"] || [groupType containsString:@"STAGE"] || [groupType containsString:@"LADDER"] ||
-                              [taskType hasPrefix:@"acc_"] || [taskType containsString:@"_acc_"] || [taskType containsString:@"ACC_"] || [taskType containsString:@"_ACC_"] ||
-                              [taskType containsString:@"stage_"] || [taskType containsString:@"STAGE_"]);
-            
-            if (isAccTask) {
-                NSInteger awardCount = [rights[@"awardCount"] integerValue];
-                if (awardCount <= 0) {
-                    awardCount = [bizInfo[@"awardCount"] integerValue];
-                }
-                if (awardCount <= 0) {
-                    awardCount = [bizInfo[@"energy"] integerValue];
-                }
-                
-                BOOL canClaim = (![taskStatus isEqualToString:@"RECEIVED"] &&
-                                 ([taskStatus isEqualToString:@"FINISHED"] ||
-                                  [taskStatus isEqualToString:@"CAN_RECEIVE"] ||
-                                  (rightsTimesLimit > 0 && alreadyReceive < rightsTimesLimit && rightsTimes > alreadyReceive) ||
-                                  (alreadyReceive == 0 && rightsTimes > 0)));
-                
-                if (canClaim) {
-                    [accTasks addObject:@{
-                        @"action": @"receive",
-                        @"taskType": taskType,
-                        @"sceneCode": sceneCode,
-                        @"title": taskTitle.length ? taskTitle : [NSString stringWithFormat:@"阶段累计额外奖励（%ldg）", (long)awardCount],
-                        @"awardName": (awardCount > 0) ? [NSString stringWithFormat:@"%ldg 能量", (long)awardCount] : @"额外奖励",
-                        @"isAcc": @YES
-                    }];
-                }
-                continue;
             }
             
             NSString *prodPlayType = baseInfo[@"taskProdPlayType"] ?: @"";
