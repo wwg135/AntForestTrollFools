@@ -17,6 +17,11 @@ test:
 	sh tests/check_ocean_task_paths.sh
 	sh tests/check_manor_automation_paths.sh
 	sh tests/check_farm_task_paths.sh
+	sh tests/check_hide_finance_paths.sh
+	sh tests/check_expel_visitor_paths.sh
+	sh tests/check_sleep_paths.sh
+	sh tests/check_family_sign_paths.sh
+	sh tests/check_panel_log_paths.sh
 
 $(TARGET): $(SOURCES)
 	@mkdir -p build
