@@ -20,8 +20,8 @@ grep -Fq 'ANTOCEAN_TASK' "$source_file"
 
 grep -Fq 'isOceanURL' "$entry_file"
 grep -Fq 'toggleAutoOceanTasks:' "$entry_file"
-grep -Fq '神奇海洋 · 已绑定海洋 H5 Bridge' "$entry_file"
-grep -Fq 'AntForestPort-Ocean 收取日志' "$entry_file"
+grep -Fq '神奇海洋 · 已绑定海洋页面通道' "$entry_file"
+grep -Fq '蚂蚁森林 · 运行日志' "$entry_file"
 
 grep -Fq 'isSafeOceanTask' "$source_file"
 grep -Fq 'sLastExecutedSceneCode containsString:@"OCEAN"' "$source_file"

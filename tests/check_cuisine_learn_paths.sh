@@ -41,10 +41,11 @@ echo "[6/12] Checking 面板日志（识别结果，每天汇总一条）..."
 grep -Fq '蚂蚁庄园 · 高级饲料识别：新增 %lu 种菜谱' "$source_file"
 grep -Fq 'recordEggDiagOnce(self, @"cuisine_learn"' "$source_file"
 
-echo "[7/12] Checking 回包到达探针（只限庄园三个关键 op + 无 op 兜底，一天一条）..."
-grep -Fq 'static BOOL isManorProbeOp(NSString *op) {' "$source_file"
-grep -Fq '蚂蚁庄园 · 回包到达：%@（success=%d，memo=%@）' "$source_file"
-grep -Fq 'recordEggDiagOnce(self, opType.length ? [@"rsp_" stringByAppendingString:opType] : @"rsp_noop"' "$source_file"
+echo "[7/12] Checking 负向：诊断探针已删除（睡觉根因已坐实，回包到达/回包关联不再残留）..."
+if grep -Fq '回包到达' "$source_file" || grep -Fq '回包关联' "$source_file" || grep -Fq 'isManorProbeOp' "$source_file"; then
+    echo "❌ 诊断探针应已删除，不允许残留"
+    exit 1
+fi
 
 echo "[8/12] Checking 负向（识别不是开关 / 不落 AntManor 独立开关 / 测试已挂载）..."
 if grep -Fq 'enableAdvancedFood' "$source_file" "$header_file"; then
@@ -81,9 +82,13 @@ grep -Fq 'gManorCuisineInFlightId = cuisine[@"cuisineId"]' "$source_file"
 grep -Fq '[gManorCuisineBadIds removeAllObjects]' "$source_file"
 grep -Fq 'gManorCuisineCursor = 0;' "$source_file"
 
-echo "[12/12] Checking 回包到达探针 / 操作类型识别 仍在位..."
-grep -Fq '回包到达' "$source_file"
+echo "[12/12] Checking 操作类型识别 / 中文操作名 / 页面请求日志仍在位..."
 grep -Fq 'manorFindOperationType' "$source_file"
-grep -Fq '页面自身请求' "$source_file"
+grep -Fq 'manorOperationDisplayName' "$source_file"
+grep -Fq '捕获到页面自己发的请求' "$source_file"
+if grep -Fq 'cookbookId=%@' "$source_file"; then
+    echo "❌ 面板日志不应出现英文键名 cookbookId=…（应中文化）"
+    exit 1
+fi
 
 echo "✅ All advanced-feed (cuisine) recognition checks passed successfully!"

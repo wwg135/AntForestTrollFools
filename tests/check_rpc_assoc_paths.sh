@@ -45,7 +45,10 @@ echo "[6/9] Checking 回包关联（自带 op 优先，否则按发送顺序 FIF
 grep -Fq 'NSString *assocOp = manorPopPendingOp();' "$source_file"
 grep -Fq 'manorRemovePendingOp(opType);' "$source_file"
 grep -Fq 'self.lastRpcOperationType = assocOp;' "$source_file"
-grep -Fq '回包未带 operationType，按发送顺序关联' "$source_file"
+if grep -Fq '回包未带 operationType，按发送顺序关联' "$source_file"; then
+    echo "❌ 关联探针日志应已删除（根因已坐实，面板不再刷英文 op 名）"
+    exit 1
+fi
 
 echo "[7/9] Checking 负向：不再把从未赋值的 lastRpcOperationType 当唯一兜底..."
 if grep -Fq 'resData[@"operationType"] ?: (self.lastRpcOperationType ?: @"")' "$source_file"; then
