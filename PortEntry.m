@@ -182,7 +182,7 @@ static void startSilentRewardContext(id forestController) {
     id bridge = rewardBridgeFromController(daemonView) ?: forestBridgeFromController(forestController) ?: manager.jsBridge;
     BOOL ready = bridge && (![bridge respondsToSelector:@selector(isBridgeReady)] || ((BOOL (*)(id, SEL))objc_msgSend)(bridge, @selector(isBridgeReady)));
     NSLog(@"[AntForestPort][RewardSessionProbe] controller=%@ session=%@ daemon=%@ bridge=%@ ready=%d", forestController ? NSStringFromClass([forestController class]) : @"nil", session ? NSStringFromClass([session class]) : @"nil", daemonView ? NSStringFromClass([daemonView class]) : @"nil", bridge ? NSStringFromClass([bridge class]) : @"nil", ready);
-    [manager recordStage:[NSString stringWithFormat:@"首页后台：会话探针 session=%@ daemon=%@ bridge=%d ready=%d", session ? NSStringFromClass([session class]) : @"无", daemonView ? NSStringFromClass([daemonView class]) : @"无", bridge != nil, ready]];
+    [manager recordStage:[NSString stringWithFormat:@"首页后台：会话状态（会话=%@，后台页=%@，页面通道=%d，就绪=%d）", session ? NSStringFromClass([session class]) : @"无", daemonView ? NSStringFromClass([daemonView class]) : @"无", bridge != nil, ready]];
     if (bridge) {
         manager.rewardTaskBridge = bridge;
         [manager recordStage:@"首页后台：后台会话奖励桥接已就绪"];
@@ -204,7 +204,7 @@ static void finishForestHomeStart(id controller, id bridge) {
     AntForestManager *manager = AntForestManager.sharedInstance;
     manager.jsBridge = bridge;
     objc_setAssociatedObject(controller, ForestHomeStartKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    [manager recordStage:@"收取 · 森林首页 H5 Bridge 已就绪"];
+    [manager recordStage:@"收取 · 森林首页页面通道已就绪"];
     startSilentRewardContext(controller);
     if (manager.enableWaterOnLaunch) [manager startLaunchWateringThenCollect];
     else if (manager.enableAutoCollect) {
@@ -235,7 +235,7 @@ static void startForestHomeWhenBridgeReady(id controller) {
         }
         if (++attempts >= 10) {
             objc_setAssociatedObject(currentController, ForestHomeStartKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            [AntForestManager.sharedInstance recordStage:@"收取 · 森林首页 H5 Bridge 等待超时"];
+            [AntForestManager.sharedInstance recordStage:@"收取 · 森林首页页面通道等待超时"];
             waitForBridge = nil;
             return;
         }
@@ -1859,7 +1859,7 @@ static void installEarnEnergyCollector(id controller) {
         return log.length > 0 && ![log containsString:@"[Diag]"] && ![log containsString:@"诊断 ·"];
     }];
     NSArray *records = [logs filteredArrayUsingPredicate:predicate];
-    NSString *header = [NSString stringWithFormat:@"AntForestPort-Ocean 收取日志\n导出时间：%@\n配置：自动收取=%@，收取自己=%@，自动能量雨=%@，赚能量（打地鼠玩法）=%@，神奇海洋清理=%@，神奇海洋任务=%@，领奖励与森林寻宝=%@，AI摸鱼=%@，芭芭农场做任务集肥料=%@，蚂蚁庄园=%@，新版保护地（大富翁）=%@，自动复活好友过期能量=%@，后台循环=%@，循环间隔=%ld 秒，定时收取=%@，打开蚂蚁森林自动浇水=%@，定时自动浇水=%@（%ld g，%lu 位好友），步数模拟=%@\n统计：今日=%ld g，累计=%ld g，日志条目=%lu\n\n",
+    NSString *header = [NSString stringWithFormat:@"蚂蚁森林 · 运行日志\n导出时间：%@\n配置：自动收取=%@，收取自己=%@，自动能量雨=%@，赚能量（打地鼠玩法）=%@，神奇海洋清理=%@，神奇海洋任务=%@，领奖励与森林寻宝=%@，AI摸鱼=%@，芭芭农场做任务集肥料=%@，蚂蚁庄园=%@，新版保护地（大富翁）=%@，自动复活好友过期能量=%@，后台循环=%@，循环间隔=%ld 秒，定时收取=%@，打开蚂蚁森林自动浇水=%@，定时自动浇水=%@（%ld g，%lu 位好友），步数模拟=%@\n统计：今日=%ld g，累计=%ld g，日志条目=%lu\n\n",
                       getCurrentDateTimeString(), manager.enableAutoCollect ? @"开" : @"关", manager.enableSelfCollect ? @"开" : @"关", manager.enableAutoRain ? @"开" : @"关", manager.enableAutoEarn ? @"开" : @"关", manager.enableCleanOcean ? @"开" : @"关", manager.enableAutoOceanTasks ? @"开" : @"关", manager.enableAutoRewardTasks ? @"开" : @"关", manager.enableAutoAIFish ? @"开" : @"关", manager.enableAutoFarmTasks ? @"开" : @"关", manager.enableAutoManor ? @"开" : @"关", manager.enableAutoPatrolNew ? @"开" : @"关", manager.enableAutoRevive ? @"开" : @"关", manager.enableBackgroundLoop ? @"开" : @"关", (long)manager.collectInterval, manager.enableScheduledCollect ? @"开" : @"关", manager.enableWaterOnLaunch ? @"开" : @"关", manager.enableAutoWater ? @"开" : @"关", (long)manager.waterGrams, (unsigned long)manager.waterFriendIds.count, AFStepSimulator.shared.enabled ? @"开" : @"关", (long)manager.todayCollectedEnergy, (long)manager.totalCollectedEnergy, (unsigned long)records.count];
     NSMutableString *fullOutput = [NSMutableString stringWithString:header];
     if (records.count) {
@@ -2209,7 +2209,7 @@ static void portViewDidAppear(id self, SEL _cmd, BOOL animated) {
     id pageBridge = isSelfHome ? forestBridgeFromController(self) : nil;
     if (pageBridge && manager.jsBridge != pageBridge) {
         manager.jsBridge = pageBridge;
-        [manager recordStage:@"诊断 · 已绑定森林首页 H5 Bridge"];
+        [manager recordStage:@"诊断 · 已绑定森林首页页面通道"];
     }
     if (isSelfHome) {
         currentForestHomeController = self;
@@ -2234,7 +2234,7 @@ static void portViewDidAppear(id self, SEL _cmd, BOOL animated) {
         if (bridge && [bridge respondsToSelector:@selector(_doFlushMessageQueue:url:)]) {
             manager.monopolyBridge = bridge;
             manager.monopolyH5Url = url.absoluteString;
-            [manager recordStage:@"新版保护地：进入保护地界面，已绑定 Bridge"];
+            [manager recordStage:@"新版保护地：进入保护地界面，已绑定页面通道"];
         }
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(300 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
             [manager queryMonopolyTaskListWithForce:YES];
@@ -2252,7 +2252,7 @@ static void portViewDidAppear(id self, SEL _cmd, BOOL animated) {
                         if (manager.monopolyBridge != b) {
                             manager.monopolyBridge = b;
                             manager.monopolyH5Url = cur.absoluteString ?: url.absoluteString;
-                            [manager recordStage:@"新版保护地：轮询中成功就绪并绑定 Bridge"];
+                            [manager recordStage:@"新版保护地：轮询中成功就绪并绑定页面通道"];
                         }
                     }
                     [manager queryMonopolyTaskListWithForce:YES];
@@ -2276,7 +2276,7 @@ static void portViewDidAppear(id self, SEL _cmd, BOOL animated) {
             manager.lotteryH5Url = url.absoluteString;
         }
         NSLog(@"[AntForestPort] 🎰 进入森林寻宝，已就绪 Bridge: %@", bridge);
-        [manager recordStage:@"森林寻宝：进入寻宝界面，已就绪 Bridge，开始拉取寻宝任务与抽奖机会..."];
+        [manager recordStage:@"森林寻宝：进入寻宝界面，页面通道已就绪，开始拉取寻宝任务与抽奖机会..."];
         NSArray<NSNumber *> *delays = @[@400, @1200, @2500];
         for (NSNumber *d in delays) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)([d integerValue] * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
@@ -2336,7 +2336,7 @@ static void portViewDidAppear(id self, SEL _cmd, BOOL animated) {
         }
         if (manager.enableAutoFarmTasks) {
             NSLog(@"[AntForestPort] 🌾 进入芭芭农场，已就绪 Bridge: %@", bridge);
-            [manager recordStage:@"芭芭农场：进入农场，已就绪 Bridge，开始监听与调度任务/肥料..."];
+            [manager recordStage:@"芭芭农场：进入农场，页面通道已就绪，开始监听与调度任务/肥料..."];
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(800 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
                 [manager queryFarmTaskListWithForce:YES];
                 [manager openFarmTaskPanelOnWebView];
@@ -2555,7 +2555,7 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
         if (ctrlUrl && isForestHomeURL(ctrlUrl)) {
             if (manager.jsBridge != self) {
                 manager.jsBridge = self;
-                [manager recordStage:@"诊断 · 已绑定森林响应 H5 Bridge"];
+                [manager recordStage:@"诊断 · 已绑定森林响应页面通道"];
             }
         }
     }
@@ -2564,7 +2564,7 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
             BOOL isFirstBind = (manager.farmBridge != self);
             if (isFirstBind) {
                 manager.farmBridge = self;
-                [manager recordStage:@"芭芭农场 · 已绑定农场 H5 Bridge"];
+                [manager recordStage:@"芭芭农场 · 已绑定农场页面通道"];
                 if (manager.enableAutoFarmTasks) {
                     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1000 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
                         [manager queryFarmTaskList];
@@ -2583,7 +2583,7 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
             BOOL isFirstBind = (manager.manorBridge != self);
             if (isFirstBind) {
                 manager.manorBridge = self;
-                [manager recordStage:@"蚂蚁庄园 · 已绑定庄园 H5 Bridge"];
+                [manager recordStage:@"蚂蚁庄园 · 已绑定庄园页面通道"];
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(500 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
                     [manager checkAndRunManorAutomations];
                 });
@@ -2593,7 +2593,7 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
         if (resData[@"antOceanTaskVOList"] || [dict[@"antOceanTaskVOList"] isKindOfClass:NSArray.class]) {
             if (manager.oceanBridge != self) {
                 manager.oceanBridge = self;
-                [manager recordStage:@"神奇海洋 · 已绑定海洋 H5 Bridge"];
+                [manager recordStage:@"神奇海洋 · 已绑定海洋页面通道"];
             }
         }
         BOOL isMonopolyRpcResp = (gLastRpcOperationType.length && ([gLastRpcOperationType containsString:@"monopoly"] || [gLastRpcOperationType containsString:@"antisle"] || [gLastRpcOperationType containsString:@"hsdwy"]));
@@ -2602,7 +2602,7 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
             BOOL isFirstBind = (manager.monopolyBridge != self);
             if (isFirstBind) {
                 manager.monopolyBridge = self;
-                [manager recordStage:@"新版保护地 · 已绑定大富翁 H5 Bridge (RPC响应)"];
+                [manager recordStage:@"新版保护地 · 已绑定大富翁页面通道（回包）"];
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(300 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
                     [manager queryMonopolyTaskListWithForce:YES];
                     if (!manager.monopolyDrawerOpened) {
@@ -2643,7 +2643,7 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
                 BOOL isFirstBind = (manager.monopolyBridge != self);
                 manager.monopolyBridge = self;
                 if (isFirstBind) {
-                    [manager recordStage:@"新版保护地 · 已绑定大富翁 H5 Bridge (任务列表)"];
+                    [manager recordStage:@"新版保护地 · 已绑定大富翁页面通道（任务列表）"];
                 }
                 manager.monopolyDrawerOpened = YES;
             }
