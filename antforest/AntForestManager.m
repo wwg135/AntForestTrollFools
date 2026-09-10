@@ -5297,6 +5297,250 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
      "}catch(e){}})();"];
 }
 
+// 赶走访客：记录最近一次请求的访客尾号，供回包确认时输出面板日志
+static NSString *gLastExpelledTail = nil;
+
+- (void)sendBackManorAnimal:(NSString *)animalId masterFarmId:(NSString *)masterFarmId {
+    if (!self.enableAutoManor || !animalId.length || !masterFarmId.length) return;
+    
+    PSDJsBridge *bridge = (self.manorBridge && self.manorBridge != self.jsBridge) ? self.manorBridge : nil;
+    if (!bridge) return;
+    
+    NSString *farmId = self.lastManorFarmId ?: @"";
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    NSString *timeStamp = [NSString stringWithFormat:@"%ld", (long)(now * 1000)];
+    NSString *randNum = [AntForestManager getNumberRandom:15];
+    NSString *url = self.manorH5Url ?: @"https://66666674.h5app.alipay.com/www/index.html";
+    
+    // 真实标准底层 RPC: com.alipay.antfarm.sendBackAnimal（把访客小鸡送回它自己家的农场）
+    NSString *expelArg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antfarm.sendBackAnimal\",\"showError\":false,\"showLoading\":false,\"requestData\":[{\"animalId\":\"%@\",\"currentFarmId\":\"%@\",\"masterFarmId\":\"%@\",\"receiveNPCReward\":false,\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"sendType\":\"NORMAL\",\"source\":\"H5\",\"version\":\"1.8.2302070202.46\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", animalId, farmId, masterFarmId, timeStamp, randNum];
+    [bridge _doFlushMessageQueue:expelArg url:url];
+    
+    NSString *tail = masterFarmId.length > 6 ? [masterFarmId substringFromIndex:masterFarmId.length - 6] : masterFarmId;
+    gLastExpelledTail = tail;
+    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：正在赶走偷吃的小鸡（访客尾号 %@）...", tail]];
+    
+    // 赶走后同步访客列表，让院子里的小鸡从页面上消失
+    NSString *syncUserId = self.myUserId;
+    if (!syncUserId.length && farmId.length > 2) {
+        syncUserId = [farmId substringFromIndex:farmId.length / 2];
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1200 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+        NSString *syncArg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antfarm.syncAnimalStatus\",\"showError\":false,\"showLoading\":false,\"requestData\":[{\"farmId\":\"%@\",\"operTag\":\"SYNC_RESUME\",\"operType\":\"QUERY_ALL\",\"recall\":false,\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"H5\",\"userId\":\"%@\",\"version\":\"1.8.2302070202.46\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", farmId ?: @"", syncUserId ?: @"", [NSString stringWithFormat:@"%ld", (long)([[NSDate date] timeIntervalSince1970] * 1000)], [AntForestManager getNumberRandom:15]];
+        [bridge _doFlushMessageQueue:syncArg url:url];
+    });
+    
+    // 顺手给来偷吃的访客发个生气表情（与蚂蚁庄园手动流程一致）
+    if (masterFarmId.length >= 16) {
+        NSString *friendUserId = [masterFarmId substringFromIndex:masterFarmId.length - 16];
+        NSString *chatArg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antfarm.liveChat\",\"showError\":false,\"showLoading\":false,\"requestData\":[{\"friendUserId\":\"%@\",\"requestType\":\"NORMAL\",\"scene\":\"ANGER_03\",\"sceneCode\":\"ANTFARM\",\"source\":\"H5\",\"type\":\"HURT\",\"version\":\"1.8.2302070202.46\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", friendUserId, [NSString stringWithFormat:@"%ld", (long)([[NSDate date] timeIntervalSince1970] * 1000)], [AntForestManager getNumberRandom:15]];
+        [bridge _doFlushMessageQueue:chatArg url:url];
+    }
+}
+
+- (void)expelManorVisitors:(NSArray *)animals {
+    if (!self.enableAutoManor) return;
+    if (![animals isKindOfClass:NSArray.class] || !animals.count) return;
+    if (!self.lastManorFarmId.length) return;
+    
+    static NSTimeInterval lastExpelScanTime = 0;
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    if (now - lastExpelScanTime < 20.0) return;
+    lastExpelScanTime = now;
+    
+    static NSMutableSet *expelledFarmIds = nil;
+    if (!expelledFarmIds) expelledFarmIds = [NSMutableSet set];
+    
+    NSMutableArray *queue = [NSMutableArray array];
+    for (NSDictionary *animal in animals) {
+        if (![animal isKindOfClass:NSDictionary.class]) continue;
+        NSString *mFarmId = [NSString stringWithFormat:@"%@", animal[@"masterFarmId"] ?: @""];
+        if (!mFarmId.length || [mFarmId isEqualToString:self.lastManorFarmId]) continue;  // 院子里自己的小鸡不赶
+        if ([expelledFarmIds containsObject:mFarmId]) continue;                           // 本次运行已赶过，不重复发请求
+        NSString *aid = [NSString stringWithFormat:@"%@", animal[@"animalId"] ?: @""];
+        if (!aid.length && mFarmId.length > 1) {
+            // 回包未带 animalId 时推导：animalId = "2" + masterFarmId 去掉首位
+            aid = [NSString stringWithFormat:@"2%@", [mFarmId substringFromIndex:1]];
+        }
+        if (!aid.length) continue;
+        [queue addObject:@[aid, mFarmId]];
+        [expelledFarmIds addObject:mFarmId];
+    }
+    if (!queue.count) return;
+    
+    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：发现 %lu 只来偷吃的小鸡，正在逐个赶走...", (unsigned long)queue.count]];
+    
+    NSInteger index = 0;
+    for (NSArray *pair in queue) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(index * 3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self sendBackManorAnimal:pair[0] masterFarmId:pair[1]];
+        });
+        index++;
+    }
+}
+
+#pragma mark - 小鸡睡觉（家庭别墅）
+
+// 睡觉 RPC 口径：AntManor rpc31 抓包实证 —— 家庭别墅 = 先 enterFamily 再 sleep，source=aixinxiaowutojiating
+// 本插件只送小鸡去家庭别墅睡觉，爱心小屋不启用
+static NSString * const kManorSleepSource      = @"aixinxiaowutojiating";
+static NSString * const kManorSleepRPCSource   = @"chInfo_ch_appcenter__chsub_9patch";
+static NSString * const kManorSleepDoneDateKey = @"antforest_manor_sleep_date";
+// 家庭组 ID（rpc31 抓包实证，与 AntManor 同一账号）
+static NSString * const kManorFamilyGroupId    = @"0372620009220250119202832812";
+
+// 每天 20:00 之后才送小鸡回别墅睡觉
+static BOOL isManorSleepTime(void) {
+    NSDateComponents *comp = [[NSCalendar currentCalendar] components:NSCalendarUnitHour fromDate:[NSDate date]];
+    return comp.hour >= 20;
+}
+
+// 当天是否已睡过（落盘，跨启动有效，避免夜里反复重发）
+static BOOL isManorSleepDoneToday(void) {
+    NSString *last = [[NSUserDefaults standardUserDefaults] stringForKey:kManorSleepDoneDateKey];
+    return [last isEqualToString:getCurrentDateString()];
+}
+
+static void markManorSleepDone(void) {
+    [[NSUserDefaults standardUserDefaults] setObject:getCurrentDateString() forKey:kManorSleepDoneDateKey];
+}
+
+- (void)sleepManorChicken {
+    if (!self.enableAutoManor) return;
+    if (!isManorSleepTime()) {
+        [self recordStage:@"蚂蚁庄园：还没到 20:00，小鸡先在外面玩"];
+        return;
+    }
+    if (isManorSleepDoneToday()) {
+        [self recordStage:@"蚂蚁庄园：小鸡今天已经在家庭别墅睡过了"];
+        return;
+    }
+
+    // 失败重试节流：同一晚每 30 分钟最多一次（小鸡外出或正在进食时服务端会拒）
+    static NSTimeInterval lastSleepAttempt = 0;
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    if (lastSleepAttempt > 0 && now - lastSleepAttempt < 1800) {
+        [self recordStage:@"蚂蚁庄园：睡觉重试冷却中（每 30 分钟一次）"];
+        return;
+    }
+    lastSleepAttempt = now;
+
+    PSDJsBridge *bridge = (self.manorBridge && self.manorBridge != self.jsBridge) ? self.manorBridge : nil;
+    if (!bridge) {
+        [self recordStage:@"蚂蚁庄园：睡觉跳过（庄园桥接未就绪）"];
+        return;
+    }
+
+    NSString *url = self.manorH5Url ?: @"https://66666674.h5app.alipay.com/www/index.html";
+    NSString *farmId = self.lastManorFarmId ?: @"";
+    NSString *timeStamp = [NSString stringWithFormat:@"%ld", (long)(now * 1000)];
+    NSString *randNum = [AntForestManager getNumberRandom:15];
+
+    [self recordStage:@"蚂蚁庄园：天黑了，正在送小鸡回家庭别墅睡觉..."];
+
+    // 1. 家庭别墅需先进家庭（rpc31：enterFamily source=aixinxiaowutojiating）
+    NSString *enterArg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antfarm.enterFamily\",\"headers\":{\"source\":\"%@\",\"ags-source\":\"%@\"},\"showError\":false,\"showLoading\":false,\"requestData\":[{\"farmId\":\"%@\",\"fromAnn\":false,\"recall\":false,\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"%@\",\"timeZoneId\":\"Asia/Shanghai\",\"version\":\"1.8.2302070202.46\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", kManorSleepRPCSource, kManorSleepRPCSource, farmId, kManorSleepSource, timeStamp, randNum];
+    [bridge _doFlushMessageQueue:enterArg url:url];
+
+    // 2. 进家庭 2s 后发 sleep（version=unknown / requestType=RPC 沿用抓包口径）
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        NSString *sleepTs = [NSString stringWithFormat:@"%ld", (long)([[NSDate date] timeIntervalSince1970] * 1000)];
+        NSString *sleepArg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antfarm.sleep\",\"headers\":{\"source\":\"%@\",\"ags-source\":\"%@\"},\"showError\":false,\"showLoading\":false,\"requestData\":[{\"groupId\":\"%@\",\"recall\":false,\"requestType\":\"RPC\",\"sceneCode\":\"ANTFARM\",\"source\":\"%@\",\"spaceType\":\"ChickFamily\",\"version\":\"unknown\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", kManorSleepRPCSource, kManorSleepRPCSource, kManorFamilyGroupId, kManorSleepSource, sleepTs, [AntForestManager getNumberRandom:15]];
+        [bridge _doFlushMessageQueue:sleepArg url:url];
+
+        // 3. 睡后同步动物状态，刷新页面显示
+        if (!farmId.length) return;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            NSString *syncTs = [NSString stringWithFormat:@"%ld", (long)([[NSDate date] timeIntervalSince1970] * 1000)];
+            NSString *syncArg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antfarm.syncAnimalStatus\",\"headers\":{\"source\":\"%@\",\"ags-source\":\"%@\"},\"showError\":false,\"showLoading\":false,\"requestData\":[{\"farmId\":\"%@\",\"operTag\":\"SYNC_RESUME\",\"operType\":\"QUERY_ALL\",\"recall\":false,\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"%@\",\"version\":\"1.8.2302070202.46\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", kManorSleepRPCSource, kManorSleepRPCSource, farmId, kManorSleepRPCSource, syncTs, [AntForestManager getNumberRandom:15]];
+            [bridge _doFlushMessageQueue:syncArg url:url];
+        });
+    });
+}
+
+// ---------------- 家庭签到（AntManor 移植）----------------
+// 抓包口径 manor_rpc(14)：enterFamily -> refinedOperation(ENTERFAMILY)
+//   -> receiveFarmTaskAward(FAMILY_SIGN_TASK / ANTFARM_FAMILY_TASK / FAMILY_INTIMACY)
+//   -> 成功后 syncFamilyStatus(INTIMACY_VALUE) + syncAnimalStatus(SYNC_RESUME_FAMILY)
+static NSString * const kManorFamilySignDateKey = @"antforest_manor_family_sign_date";
+static BOOL gManorFamilySignPending = NO;
+
+static BOOL isManorFamilySignDoneToday(void) {
+    NSString *last = [[NSUserDefaults standardUserDefaults] stringForKey:kManorFamilySignDateKey];
+    return [last isEqualToString:getCurrentDateString()];
+}
+
+static void markManorFamilySignDone(void) {
+    [[NSUserDefaults standardUserDefaults] setObject:getCurrentDateString() forKey:kManorFamilySignDateKey];
+}
+
+- (void)signManorFamily {
+    if (!self.enableAutoManor) return;
+    if (isManorFamilySignDoneToday()) {
+        [self recordStage:@"☑️ 家庭签到今天已完成，无需重复"];
+        return;
+    }
+
+    PSDJsBridge *bridge = (self.manorBridge && self.manorBridge != self.jsBridge) ? self.manorBridge : nil;
+    if (!bridge) {
+        [self recordStage:@"蚂蚁庄园：家庭签到跳过（庄园桥接未就绪）"];
+        return;
+    }
+
+    NSString *url = self.manorH5Url ?: @"https://66666674.h5app.alipay.com/www/index.html";
+    NSString *timeStamp = [NSString stringWithFormat:@"%ld", (long)([[NSDate date] timeIntervalSince1970] * 1000)];
+    NSString *randNum = [AntForestManager getNumberRandom:15];
+
+    [self recordStage:@"蚂蚁庄园：正在执行家庭签到..."];
+
+    // 1. 家庭签到前置：先进入家庭（与睡觉共用同一条 enterFamily）
+    NSString *enterArg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antfarm.enterFamily\",\"headers\":{\"source\":\"%@\",\"ags-source\":\"%@\"},\"showError\":false,\"showLoading\":false,\"requestData\":[{\"fromAnn\":false,\"recall\":false,\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"H5\",\"timeZoneId\":\"Asia/Shanghai\",\"version\":\"1.8.2302070202.46\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", kManorSleepRPCSource, kManorSleepRPCSource, timeStamp, randNum];
+    [bridge _doFlushMessageQueue:enterArg url:url];
+
+    // 2. +1.5s 进入家庭场景（ENTERFAMILY）
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1500 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+        NSString *refineArg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antfarm.refinedOperation\",\"headers\":{\"source\":\"%@\",\"ags-source\":\"%@\"},\"showError\":false,\"showLoading\":false,\"requestData\":[{\"actionId\":\"ENTERFAMILY\",\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"H5\",\"version\":\"1.8.2302070202.46\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", kManorSleepRPCSource, kManorSleepRPCSource, [NSString stringWithFormat:@"%ld", (long)([[NSDate date] timeIntervalSince1970] * 1000)], [AntForestManager getNumberRandom:15]];
+        [bridge _doFlushMessageQueue:refineArg url:url];
+    });
+
+    // 3. +3.0s 领取家庭签到奖励（FAMILY_SIGN_TASK / FAMILY_INTIMACY）
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3000 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+        NSString *awardArg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antfarm.receiveFarmTaskAward\",\"headers\":{\"source\":\"%@\",\"ags-source\":\"%@\"},\"showError\":false,\"showLoading\":false,\"requestData\":[{\"awardType\":\"FAMILY_INTIMACY\",\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"H5\",\"taskId\":\"FAMILY_SIGN_TASK\",\"taskSceneCode\":\"ANTFARM_FAMILY_TASK\",\"version\":\"1.8.2302070202.46\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", kManorSleepRPCSource, kManorSleepRPCSource, [NSString stringWithFormat:@"%ld", (long)([[NSDate date] timeIntervalSince1970] * 1000)], [AntForestManager getNumberRandom:15]];
+        [bridge _doFlushMessageQueue:awardArg url:url];
+        gManorFamilySignPending = YES;   // 等这条回包判定成功/已签到
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6000 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+            if (!gManorFamilySignPending) return;   // 已收到回包，无需处理
+            gManorFamilySignPending = NO;           // 回包超时复位，避免挡住饲料奖励解析
+            [self recordStage:@"蚂蚁庄园：家庭签到回包超时，下次自动重试"];
+        });
+    });
+}
+
+- (void)syncManorFamilyStatusAndAnimal {
+    PSDJsBridge *bridge = (self.manorBridge && self.manorBridge != self.jsBridge) ? self.manorBridge : nil;
+    if (!bridge) return;
+
+    [self recordStage:@"蚂蚁庄园：正在同步家庭状态（亲密值）与小鸡状态..."];
+
+    NSString *farmId = self.lastManorFarmId ?: @"";
+    NSString *userId = self.myUserId;
+    if (!userId.length && farmId.length > 2) {
+        userId = [farmId substringFromIndex:farmId.length / 2];
+    }
+    NSString *url = self.manorH5Url ?: @"https://66666674.h5app.alipay.com/www/index.html";
+
+    // 1. 同步家庭状态（亲密值）
+    NSString *familyArg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antfarm.syncFamilyStatus\",\"headers\":{\"source\":\"%@\",\"ags-source\":\"%@\"},\"showError\":false,\"showLoading\":false,\"requestData\":[{\"groupId\":\"%@\",\"operType\":\"INTIMACY_VALUE\",\"recall\":false,\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"H5\",\"syncUserIds\":[\"%@\"],\"version\":\"1.8.2302070202.46\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", kManorSleepRPCSource, kManorSleepRPCSource, kManorFamilyGroupId, userId ?: @"", [NSString stringWithFormat:@"%ld", (long)([[NSDate date] timeIntervalSince1970] * 1000)], [AntForestManager getNumberRandom:15]];
+    [bridge _doFlushMessageQueue:familyArg url:url];
+
+    // 2. +1.2s 同步小鸡状态（家庭场景），刷新页面显示
+    if (!farmId.length) return;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1200 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+        NSString *animalArg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antfarm.syncAnimalStatus\",\"headers\":{\"source\":\"%@\",\"ags-source\":\"%@\"},\"showError\":false,\"showLoading\":false,\"requestData\":[{\"farmId\":\"%@\",\"operTag\":\"SYNC_RESUME_FAMILY\",\"operType\":\"QUERY_ALL|QUERY_FAMILY_ANIMAL\",\"recall\":false,\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"H5\",\"version\":\"1.8.2302070202.46\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", kManorSleepRPCSource, kManorSleepRPCSource, farmId, [NSString stringWithFormat:@"%ld", (long)([[NSDate date] timeIntervalSince1970] * 1000)], [AntForestManager getNumberRandom:15]];
+        [bridge _doFlushMessageQueue:animalArg url:url];
+    });
+}
+
 - (void)checkAndRunManorAutomations {
     if (!self.enableAutoManor) return;
     
@@ -5336,6 +5580,16 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
     // 5. 庄园任务体检与做任务
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4000 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
         [self queryManorFarmTasks];
+    });
+
+    // 6. 夜间睡觉（每天 20:00 后送小鸡回家庭别墅，当天只睡一次）
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5200 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+        [self sleepManorChicken];
+    });
+
+    // 7. 家庭签到（每天一次，领家庭亲密值；已签到/成功即落盘当日完成）
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6000 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+        [self signManorFamily];
     });
 }
 
@@ -5378,6 +5632,11 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
                 }
             } else if (ownAnimal[@"animalId"]) {
                 self.lastManorAnimalId = [NSString stringWithFormat:@"%@", ownAnimal[@"animalId"]];
+            }
+            
+            // 访客小鸡检查：院子里 masterFarmId 不是自己农场的，就是来偷吃饲料的访客，逐个赶走
+            if (animals.count > 0) {
+                [self expelManorVisitors:animals];
             }
             
             NSInteger foodStock = 0;
@@ -5509,7 +5768,7 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
         
         // E. 领饲料奖励回包处理 (receiveFarmTaskAward)
         NSString *opType = [NSString stringWithFormat:@"%@", dict[@"operationType"] ?: (resData[@"operationType"] ?: (self.lastRpcOperationType ?: @""))];
-        if (resData[@"haveAddFoodStock"] || [opType containsString:@"receiveFarmTaskAward"]) {
+        if (!gManorFamilySignPending && (resData[@"haveAddFoodStock"] || [opType containsString:@"receiveFarmTaskAward"])) {
             NSInteger addFood = [resData[@"haveAddFoodStock"] integerValue];
             NSInteger curFood = [resData[@"foodStock"] integerValue];
             if (addFood > 0) {
@@ -5533,6 +5792,58 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
             } else {
                 [self recordStage:@"蚂蚁庄园：小鸡投喂成功（已倒入 180g 饲料）"];
             }
+        }
+
+        // H. 去睡觉回包处理 (sleep)：以服务端回执为准标记当天已完成
+        if ([opType containsString:@"antfarm.sleep"]) {
+            NSString *sleepMemo = [NSString stringWithFormat:@"%@", resData[@"memo"] ?: (dict[@"memo"] ?: @"")];
+            BOOL sleepOk = [resData[@"memo"] isEqualToString:@"SUCCESS"] || [dict[@"memo"] isEqualToString:@"SUCCESS"] ||
+                           [resData[@"resultCode"] isEqualToString:@"100"] || [dict[@"resultCode"] isEqualToString:@"100"] ||
+                           [resData[@"success"] boolValue] || [dict[@"success"] boolValue];
+            if (sleepOk) {
+                markManorSleepDone();
+                [self recordStage:@"蚂蚁庄园：小鸡已在家庭别墅睡着（今日完成）"];
+            } else if ([sleepMemo containsString:@"已经睡"] || [sleepMemo containsString:@"睡觉中"]) {
+                markManorSleepDone();
+                [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：小鸡已经在睡觉了（%@）", sleepMemo]];
+            } else {
+                [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：小鸡暂时睡不着（%@），30 分钟后自动重试", sleepMemo.length ? sleepMemo : @"未知原因"]];
+            }
+        }
+
+        // I. 家庭签到回包处理：以服务端回执为准标记当天已完成
+        if (gManorFamilySignPending && [opType containsString:@"receiveFarmTaskAward"]) {
+            gManorFamilySignPending = NO;
+            NSString *fsMemo = [NSString stringWithFormat:@"%@", resData[@"memo"] ?: (dict[@"memo"] ?: @"")];
+            BOOL fsOk = [resData[@"success"] boolValue] || [dict[@"success"] boolValue] ||
+                        [resData[@"memo"] isEqualToString:@"SUCCESS"] || [dict[@"memo"] isEqualToString:@"SUCCESS"] ||
+                        [resData[@"resultCode"] isEqualToString:@"100"] || [dict[@"resultCode"] isEqualToString:@"100"];
+            if (fsOk) {
+                markManorFamilySignDone();
+                [self recordStage:@"☑️ 家庭签到成功（+亲密值）"];
+                [self syncManorFamilyStatusAndAnimal];
+            } else if ([fsMemo containsString:@"已签到"] || [fsMemo containsString:@"重复"] ||
+                       [fsMemo containsString:@"已领取"] || [fsMemo containsString:@"签到过"]) {
+                markManorFamilySignDone();
+                [self recordStage:@"☑️ 家庭签到已签到（今日完成）"];
+            } else {
+                [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：家庭签到未成功（%@），下次自动重试", fsMemo.length ? fsMemo : @"未知原因"]];
+            }
+        }
+
+        // J. 赶走访客回包处理 (sendBackAnimal)：以服务端回执为准输出结果
+        if ([opType containsString:@"sendBackAnimal"]) {
+            NSString *expelMemo = [NSString stringWithFormat:@"%@", resData[@"memo"] ?: (dict[@"memo"] ?: @"")];
+            BOOL expelOk = [resData[@"success"] boolValue] || [dict[@"success"] boolValue] ||
+                           [resData[@"memo"] isEqualToString:@"SUCCESS"] || [dict[@"memo"] isEqualToString:@"SUCCESS"] ||
+                           [resData[@"resultCode"] isEqualToString:@"100"] || [dict[@"resultCode"] isEqualToString:@"100"];
+            NSString *tailSuffix = gLastExpelledTail.length ? [NSString stringWithFormat:@"（访客尾号 %@）", gLastExpelledTail] : @"";
+            if (expelOk) {
+                [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：已赶走一只偷吃的小鸡%@（服务端已确认）", tailSuffix]];
+            } else {
+                [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：赶走小鸡未成功%@（%@），下次自动重试", tailSuffix, expelMemo.length ? expelMemo : @"未知原因"]];
+            }
+            gLastExpelledTail = nil;
         }
     } @catch (NSException *e) {
         NSLog(@"[AntForestPort] Exception in handleManorResponse: %@", e);

@@ -127,6 +127,10 @@ NS_ASSUME_NONNULL_BEGIN
 -(void)handleManorTaskList:(NSArray *)taskList;
 -(void)finishManorTask:(NSString *)taskType sceneCode:(NSString *)sceneCode taskTitle:(NSString *)title;
 -(void)receiveManorTaskAward:(NSString *)taskType sceneCode:(NSString *)sceneCode taskTitle:(NSString *)title awardName:(NSString *)awardName;
+-(void)queryManorFarmTasks;
+-(void)doManorFarmTaskWithBizKey:(NSString *)bizKey;
+-(void)receiveManorFarmTaskAwardWithTaskId:(NSString *)taskId title:(NSString *)title;
+-(void)executeManorTaskProcessScript;
 -(void)executeManorScriptOnWebView:(NSString *)js;
 -(void)openManorTaskPanelOnWebView;
 -(void)closeManorTaskPanelOnWebView;
@@ -137,6 +141,12 @@ NS_ASSUME_NONNULL_BEGIN
 -(void)runManorTasks;
 -(void)feedManorChicken;
 -(void)collectManorChickenManure;
+-(void)collectManorChickenManurePot:(NSString *)potNo;
+-(void)expelManorVisitors:(NSArray *)animals;
+-(void)sendBackManorAnimal:(NSString *)animalId masterFarmId:(NSString *)masterFarmId;
+-(void)sleepManorChicken;
+-(void)signManorFamily;
+-(void)syncManorFamilyStatusAndAnimal;
 
 -(void)queryTotalRank;
 -(void)queryRobFlag:(NSString*)uids;
