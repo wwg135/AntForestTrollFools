@@ -2393,7 +2393,7 @@ static inline BOOL isRelevantPluginURL(NSString *urlStr) {
 }
 
 #ifndef ENABLE_PROBE_LOGS
-#define ENABLE_PROBE_LOGS 0
+#define ENABLE_PROBE_LOGS 1
 #endif
 #define AFProbeLog(...) do { if (ENABLE_PROBE_LOGS) NSLog(__VA_ARGS__); } while(0)
 
@@ -2408,9 +2408,43 @@ static id portCallRPC(id self, SEL _cmd, id rpcConfig, id completeBlock) {
         }
         if (!str) str = [rpcConfig description];
         
+        NSString *opType = nil;
+        id reqDataObj = nil;
+        if ([rpcConfig isKindOfClass:NSDictionary.class]) {
+            opType = rpcConfig[@"operationType"];
+            reqDataObj = rpcConfig[@"requestData"];
+        } else {
+            @try {
+                id val = [rpcConfig valueForKey:@"operationType"];
+                if ([val isKindOfClass:NSString.class]) opType = val;
+            } @catch (NSException *e) {}
+            @try {
+                reqDataObj = [rpcConfig valueForKey:@"requestData"];
+            } @catch (NSException *e) {}
+        }
+        
+        NSString *reqDataStr = nil;
+        if ([NSJSONSerialization isValidJSONObject:reqDataObj]) {
+            NSData *d = [NSJSONSerialization dataWithJSONObject:reqDataObj options:0 error:nil];
+            if (d) reqDataStr = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
+        } else if (reqDataObj) {
+            reqDataStr = [reqDataObj description];
+        }
+        
+        if (opType.length && reqDataStr.length && (!str.length || [str containsString:@"<"])) {
+            str = [NSString stringWithFormat:@"{\"operationType\":\"%@\",\"requestData\":%@}", opType, reqDataStr];
+        }
+        
         if (str.length && !isNoiseProbeLog(str)) {
             AFProbeLog(@"\n🔍 [PatrolProbe-RPC-REQ]\n📦 %@", str);
             [[AntForestManager sharedInstance] recordProbeLog:[NSString stringWithFormat:@"[RPC-REQ] %@", str]];
+            
+            BOOL isSignRelated = [str containsString:@"sign"] || [str containsString:@"Sign"] || [str containsString:@"SIGN"] ||
+                                 (opType.length && ([opType containsString:@"sign"] || [opType containsString:@"Sign"] || [opType containsString:@"antiep"])) ||
+                                 (reqDataStr.length && ([reqDataStr containsString:@"sign"] || [reqDataStr containsString:@"Sign"] || [reqDataStr containsString:@"antiep"]));
+            if (isSignRelated) {
+                [[AntForestManager sharedInstance] recordStage:[NSString stringWithFormat:@"🎯 探针捕获·原生RPC请求：\n方法：%@\n入参：%@", opType ?: @"-", reqDataStr ?: str]];
+            }
         }
     } @catch (NSException *e) {}
     
@@ -2425,7 +2459,57 @@ static id portCallRPC(id self, SEL _cmd, id rpcConfig, id completeBlock) {
 }
 
 static BOOL hookRPCProbeMethod(Class cls) {
+#if !ENABLE_PROBE_LOGS
     return NO;
+#else
+    SEL selector = @selector(callRPC:completeBlock:);
+    unsigned int methodCount = 0;
+    Method *methods = class_copyMethodList(cls, &methodCount);
+    Method target = NULL;
+    for (unsigned int i = 0; i < methodCount; i++) {
+        if (method_getName(methods[i]) == selector) { target = methods[i]; break; }
+    }
+    if (!target || method_getImplementation(target) == (IMP)portCallRPC) {
+        if (methods) free(methods);
+        return NO;
+    }
+    IMP original = method_getImplementation(target);
+    objc_setAssociatedObject(cls, PortRPCOriginalIMPKey, [NSValue valueWithPointer:original], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    method_setImplementation(target, (IMP)portCallRPC);
+    if (methods) free(methods);
+    return YES;
+#endif
+}
+
+static void (*originalDoFlushMessageQueue)(id, SEL, id, id);
+static void portDoFlushMessageQueue(id self, SEL _cmd, id msg, id url) {
+    @try {
+        NSString *urlStr = [url isKindOfClass:NSString.class] ? url : ([url respondsToSelector:@selector(absoluteString)] ? [url absoluteString] : @"");
+        NSString *msgStr = nil;
+        if ([msg isKindOfClass:NSString.class]) {
+            msgStr = msg;
+        } else if ([NSJSONSerialization isValidJSONObject:msg]) {
+            NSData *d = [NSJSONSerialization dataWithJSONObject:msg options:0 error:nil];
+            if (d) msgStr = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
+        }
+        if (!msgStr) msgStr = [msg description];
+        
+        if (msgStr.length && !isNoiseProbeLog(msgStr)) {
+            AFProbeLog(@"\n🔍 [PatrolProbe-REQ]\n📍 URL: %@\n📦 Request: %@\n", urlStr, msgStr);
+            [[AntForestManager sharedInstance] recordProbeLog:[NSString stringWithFormat:@"[REQ] URL: %@\nData: %@", urlStr, msgStr]];
+            
+            BOOL isSignRelated = [msgStr containsString:@"sign"] || [msgStr containsString:@"Sign"] || [msgStr containsString:@"SIGN"] ||
+                                 [msgStr containsString:@"antiep"] || [msgStr containsString:@"vitality"] || [msgStr containsString:@"ANTFOREST_ENERGY"];
+            if (isSignRelated) {
+                NSString *preview = msgStr.length > 500 ? [msgStr substringToIndex:500] : msgStr;
+                [[AntForestManager sharedInstance] recordStage:[NSString stringWithFormat:@"🎯 探针捕获·JSBridge调用：\n%@", preview]];
+            }
+        }
+    } @catch (NSException *e) {}
+    
+    if (originalDoFlushMessageQueue) {
+        originalDoFlushMessageQueue(self, _cmd, msg, url);
+    }
 }
 
 
@@ -2440,6 +2524,28 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
         }
         return value;
     }
+
+#if ENABLE_PROBE_LOGS
+    @try {
+        NSString *resStr = nil;
+        if ([NSJSONSerialization isValidJSONObject:value]) {
+            NSData *d = [NSJSONSerialization dataWithJSONObject:value options:0 error:nil];
+            if (d) resStr = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
+        }
+        if (!resStr) resStr = [value description];
+        
+        if (resStr.length && !isNoiseProbeLog(resStr)) {
+            [[AntForestManager sharedInstance] recordProbeLog:[NSString stringWithFormat:@"[RES] %@", resStr]];
+            
+            BOOL isSignRelated = [resStr containsString:@"sign"] || [resStr containsString:@"Sign"] || [resStr containsString:@"SIGN"] ||
+                                 [resStr containsString:@"antiep"] || [resStr containsString:@"vitality"] || [resStr containsString:@"ANTFOREST_ENERGY"];
+            if (isSignRelated) {
+                NSString *preview = resStr.length > 500 ? [resStr substringToIndex:500] : resStr;
+                [[AntForestManager sharedInstance] recordStage:[NSString stringWithFormat:@"🎯 探针捕获·服务端RPC回包：\n%@", preview]];
+            }
+        }
+    } @catch (NSException *e) {}
+#endif
 
     AntForestManager *manager = [AntForestManager sharedInstance];
     NSDictionary *dict = [value isKindOfClass:NSDictionary.class] ? value : nil;
@@ -2695,6 +2801,9 @@ static void installHooks(void) {
         if (targetBridgeClass) {
             hookMethod(targetBridgeClass, @selector(transformResponseData:), (IMP)portTransformResponseData, (IMP *)&originalTransformResponseData);
             hookMethod(targetBridgeClass, @selector(updateBridgeReadyStatus:), (IMP)portUpdateBridgeReadyStatus, (IMP *)&originalUpdateBridgeReadyStatus);
+#if ENABLE_PROBE_LOGS
+            hookMethod(targetBridgeClass, @selector(_doFlushMessageQueue:url:), (IMP)portDoFlushMessageQueue, (IMP *)&originalDoFlushMessageQueue);
+#endif
         }
         
         int classCount = objc_getClassList(NULL, 0);
