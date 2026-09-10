@@ -6,7 +6,7 @@ entry_file="$(dirname "$0")/../PortEntry.m"
 header_file="$(dirname "$0")/../antforest/AntForestManager.h"
 makefile="$(dirname "$0")/../Makefile"
 
-echo "[1/4] Checking AntForestManager.h Manor declarations..."
+echo "[1/6] Checking AntForestManager.h Manor declarations..."
 grep -Fq 'enableAutoManor' "$header_file"
 grep -Fq 'manorBridge' "$header_file"
 grep -Fq 'manorH5Url' "$header_file"
@@ -23,7 +23,7 @@ grep -Fq 'feedManorChicken' "$header_file"
 grep -Fq 'enterManorFarm' "$header_file"
 grep -Fq 'collectManorChickenManure' "$header_file"
 
-echo "[2/4] Checking AntForestManager.m Manor implementation..."
+echo "[2/6] Checking AntForestManager.m Manor implementation..."
 grep -Fq 'executeManorScriptOnWebView:' "$source_file"
 grep -Fq 'signManorDaily' "$source_file"
 grep -Fq 'executeClassroomAnswerScript' "$source_file"
@@ -58,7 +58,7 @@ grep -Fq 'TRIGGER' "$source_file"
 grep -Fq 'taskDelayIndex' "$source_file"
 grep -Fq 'lastKnownUserId' "$source_file"
 
-echo "[3/4] Checking PortEntry.m UI & Hook integration..."
+echo "[3/6] Checking PortEntry.m UI & Hook integration..."
 grep -Fq 'toggleAutoManor:' "$entry_file"
 grep -Fq '蚂蚁庄园' "$entry_file"
 grep -Fq '蚂蚁庄园=' "$entry_file"
@@ -68,8 +68,27 @@ grep -Fq 'checkAndRunManorAutomations' "$entry_file"
 grep -Fq 'handleManorResponse:' "$entry_file"
 grep -Fq 'ManorProbe-RPC-REQ' "$entry_file"
 
-echo "[4/4] Checking dylib build outputs..."
+echo "[4/6] Checking dylib build outputs..."
 test -f "$(dirname "$0")/../build/AntForestPort-Ocean.dylib"
 test -f "$(dirname "$0")/../build/AntForestPort-Ocean-iOS14.dylib"
+
+echo "[5/6] Checking merged features are gated by enableAutoManor (no independent switches)..."
+for sel in 'sendBackManorAnimal:' 'expelManorVisitors:' 'sleepManorChicken' 'signManorFamily' 'syncManorFamilyStatusAndAnimal'; do
+    if ! grep -A2 "^- (void)$sel" "$source_file" | grep -Fq 'self.enableAutoManor'; then
+        echo "❌ $sel 未受 enableAutoManor 闸门控制"
+        exit 1
+    fi
+done
+grep -Fq '赶走访客' "$header_file"
+grep -Fq '小鸡睡觉' "$header_file"
+grep -Fq '家庭签到' "$header_file"
+
+echo "[6/6] Checking nightly retry is wired into manor response pipeline..."
+grep -Fq 'retryManorPendingAutomations' "$header_file"
+grep -Fq '[self retryManorPendingAutomations];' "$source_file"
+grep -Fq 'gLastManorCheckTime' "$source_file"
+grep -Fq 'lastFamilySignAttempt' "$source_file"
+grep -Fq 'if (gManorFamilySignPending) return;' "$source_file"
+grep -Fq 'isManorSleepTime() && !isManorSleepDoneToday()' "$source_file"
 
 echo "✅ All Manor automation checks passed successfully!"
