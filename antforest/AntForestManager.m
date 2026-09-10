@@ -5351,6 +5351,16 @@ static NSString *gLastExpelledTail = nil;
     static NSMutableSet *expelledFarmIds = nil;
     if (!expelledFarmIds) expelledFarmIds = [NSMutableSet set];
     
+    // 来偷吃的访客清单是「当前院子状态」：清单里已经不存在的农场，说明那只小鸡已经走了，
+    // 顺手清掉它的去重记录 —— 否则同一只小鸡下次再来会被永久跳过（进程不重启就再也不赶）
+    NSMutableSet *presentFarmIds = [NSMutableSet set];
+    for (NSDictionary *animal in animals) {
+        if (![animal isKindOfClass:NSDictionary.class]) continue;
+        NSString *pf = [NSString stringWithFormat:@"%@", animal[@"masterFarmId"] ?: @""];
+        if (pf.length) [presentFarmIds addObject:pf];
+    }
+    [expelledFarmIds intersectSet:presentFarmIds];
+    
     NSMutableArray *queue = [NSMutableArray array];
     for (NSDictionary *animal in animals) {
         if (![animal isKindOfClass:NSDictionary.class]) continue;
@@ -5486,6 +5496,12 @@ static void markManorFamilySignDone(void) {
         [self recordStage:@"蚂蚁庄园：家庭签到跳过（庄园桥接未就绪）"];
         return;
     }
+    // 防重入 + 失败重试节流：链外补跑时 30 分钟内最多发一次
+    if (gManorFamilySignPending) return;
+    static NSTimeInterval lastFamilySignAttempt = 0;
+    NSTimeInterval signNow = [[NSDate date] timeIntervalSince1970];
+    if (lastFamilySignAttempt > 0 && signNow - lastFamilySignAttempt < 1800) return;
+    lastFamilySignAttempt = signNow;
 
     NSString *url = self.manorH5Url ?: @"https://66666674.h5app.alipay.com/www/index.html";
     NSString *timeStamp = [NSString stringWithFormat:@"%ld", (long)([[NSDate date] timeIntervalSince1970] * 1000)];
@@ -5517,6 +5533,7 @@ static void markManorFamilySignDone(void) {
 }
 
 - (void)syncManorFamilyStatusAndAnimal {
+    if (!self.enableAutoManor) return;
     PSDJsBridge *bridge = (self.manorBridge && self.manorBridge != self.jsBridge) ? self.manorBridge : nil;
     if (!bridge) return;
 
@@ -5541,13 +5558,15 @@ static void markManorFamilySignDone(void) {
     });
 }
 
+// 庄园体检链上次执行时间（链外补跑据此避免插队、打乱原有 RPC 时序）
+static NSTimeInterval gLastManorCheckTime = 0;
+
 - (void)checkAndRunManorAutomations {
     if (!self.enableAutoManor) return;
     
-    static NSTimeInterval lastCheckTime = 0;
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-    if (now - lastCheckTime < 15.0) return;
-    lastCheckTime = now;
+    if (now - gLastManorCheckTime < 15.0) return;
+    gLastManorCheckTime = now;
     
     self.isManorChickenEating = NO;
     
@@ -5591,6 +5610,20 @@ static void markManorFamilySignDone(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6000 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
         [self signManorFamily];
     });
+}
+
+- (void)retryManorPendingAutomations {
+    if (!self.enableAutoManor) return;
+    
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    if (gLastManorCheckTime > 0 && now - gLastManorCheckTime < 15.0) return;
+    
+    if (isManorSleepTime() && !isManorSleepDoneToday()) {
+        [self sleepManorChicken];
+    }
+    if (!isManorFamilySignDoneToday()) {
+        [self signManorFamily];
+    }
 }
 
 - (void)handleManorResponse:(NSDictionary *)dict {
@@ -5845,6 +5878,10 @@ static void markManorFamilySignDone(void) {
             }
             gLastExpelledTail = nil;
         }
+        
+        // K. 链外补跑：庄园页面停留期间每来一条回包都顺带体检睡觉/家庭签到
+        //    （两者各有「当天一次」标记 + 30 分钟冷却，重复调用不会刷请求）
+        [self retryManorPendingAutomations];
     } @catch (NSException *e) {
         NSLog(@"[AntForestPort] Exception in handleManorResponse: %@", e);
     }
