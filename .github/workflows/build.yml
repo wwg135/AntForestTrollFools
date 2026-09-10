@@ -46,6 +46,6 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@main
         with:
-          name: AntForest‑Packages
+          name: AntForest
           path: |
             ${{ github.workspace }}/Packages/*.deb
