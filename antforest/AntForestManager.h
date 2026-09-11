@@ -163,6 +163,7 @@ NS_ASSUME_NONNULL_BEGIN
 -(void)expelManorVisitors:(NSArray *)animals;
 -(void)sendBackManorAnimal:(NSString *)animalId masterFarmId:(NSString *)masterFarmId;
 -(void)sleepManorChicken;
+-(void)runManorDrawMachineDaily;
 -(void)signManorFamily;
 -(void)syncManorFamilyStatusAndAnimal;
 
