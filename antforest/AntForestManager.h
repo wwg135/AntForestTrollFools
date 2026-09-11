@@ -170,6 +170,7 @@ NS_ASSUME_NONNULL_BEGIN
 -(void)openMonopolyTaskPanelOnWebView;
 -(void)handleVitalityTaskListResponse:(id)args;
 -(void)signVitalityTask:(NSString *)signId;
+-(void)signVitalityTask:(NSString *)signId sceneCode:(NSString *)sceneCode;
 -(void)finishVitalityTask:(NSString *)taskType sceneCode:(NSString *)sceneCode taskTitle:(NSString *)title;
 -(void)notifyActiveH5PageToRefresh;
 -(void)receiveVitalityTaskAward:(NSString *)taskType sceneCode:(NSString *)sceneCode taskTitle:(NSString *)title awardName:(NSString *)awardName;

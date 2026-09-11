@@ -1417,17 +1417,9 @@ static NSTimeInterval lastMyBubblesQueryTime = 0;
     }
 }
 
-//复活能量 执行不成功 不知道是不是 检测了什么事件
 -(void)reviveEnergy:(NSString*)uid signId:(NSString*)signId {
-    NSString *timeStamp = [NSString stringWithFormat:@"%ld",(long)[[NSDate  date] timeIntervalSince1970]*1000];
-    NSString *randNum=[AntForestManager getNumberRandom:15];
-    NSString *arg1=[NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antiep.sign\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"ags-source\":\"chInfo_ch_appcenter__chsub_9patch\"},\"requestData\":[{\"source\":\"ANTFOREST\",\"sceneCode\":\"ANTFOREST_ENERGY_SIGN\",\"requestType\":\"rpc\",\"userId\":\"%@\",\"entityId\":\"%@\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]",uid,signId,timeStamp,randNum];
-    NSString *arg2 = [NSString stringWithFormat:@"https://render.alipay.com/p/yuyan/180020010001247580/home.html?caprMode=sync&__webview_options__=bc%%3D3194732"];
-    if([self jsBridge]) {
-        [self reportClickTime];
-        [[self jsBridge] _doFlushMessageQueue:arg1 url:arg2];
-        //FileLog(@"anthook reviveEnergy: %@ | [%@] ",uid,signId);
-    }
+    if (!signId.length) return;
+    [self signVitalityTask:signId sceneCode:@"ANTFOREST_ENERGY_TASK_SIGN"];
 }
 
 static NSInteger myOceanCleanCount = 0;
@@ -2260,15 +2252,20 @@ static NSString *sLastQueriedSceneCode = nil;
 }
 
 -(void)signVitalityTask:(NSString *)signId {
+    [self signVitalityTask:signId sceneCode:@"ANTFOREST_ENERGY_TASK_SIGN"];
+}
+
+-(void)signVitalityTask:(NSString *)signId sceneCode:(NSString *)sceneCode {
     if (!self.rewardTaskBridge && self.jsBridge) {
         self.rewardTaskBridge = self.jsBridge;
     }
-    PSDJsBridge *bridge = self.rewardTaskBridge;
+    PSDJsBridge *bridge = self.rewardTaskBridge ?: self.jsBridge;
     if (!signId.length || !bridge) return;
     NSString *timeStamp = [NSString stringWithFormat:@"%ld",(long)[[NSDate date] timeIntervalSince1970]*1000];
     NSString *randNum = [AntForestManager getNumberRandom:15];
     NSString *url = [self effectiveUrlForBridge:bridge] ?: [self effectiveUrlForSceneCode:@"ANTFOREST_VITALITY_TASK"];
-    NSString *arg1 = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antiep.sign\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"ags-source\":\"chInfo_ch_appcenter__chsub_9patch\"},\"requestData\":[{\"source\":\"ANTFOREST\",\"sceneCode\":\"ANTFOREST_ENERGY_TASK_SIGN\",\"requestType\":\"RPC\",\"userId\":\"%@\",\"entityId\":\"%@\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", self.myUserId ?: @"", signId, timeStamp, randNum];
+    NSString *scene = sceneCode.length ? sceneCode : @"ANTFOREST_ENERGY_TASK_SIGN";
+    NSString *arg1 = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antiep.sign\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"ags-source\":\"chInfo_ch_appcenter__chsub_9patch\"},\"requestData\":[{\"source\":\"ANTFOREST\",\"sceneCode\":\"%@\",\"requestType\":\"rpc\",\"userId\":\"%@\",\"entityId\":\"%@\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", scene, self.myUserId ?: @"", signId, timeStamp, randNum];
     [bridge _doFlushMessageQueue:arg1 url:url];
 }
 
@@ -2709,8 +2706,9 @@ static NSInteger sVitalityAutoRefreshRounds = 0;
             
             if ([action isEqualToString:@"sign"]) {
                 NSString *signId = [item[@"signId"] isKindOfClass:NSString.class] ? [item[@"signId"] copy] : @"";
+                NSString *signScene = [item[@"sceneCode"] isKindOfClass:NSString.class] ? [item[@"sceneCode"] copy] : @"ANTFOREST_ENERGY_TASK_SIGN";
                 [self recordStage:[NSString stringWithFormat:@"%@：正在完成每日签到...", scenePrefix]];
-                [self signVitalityTask:signId];
+                [self signVitalityTask:signId sceneCode:signScene];
                 if (taskKey.length) {
                     @synchronized(self) {
                         [gDailyCompletedTasks addObject:taskKey];
@@ -3229,16 +3227,33 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
         }
         
         // 1. 签到处理 (仅在开启领奖励与寻宝时处理)
-        NSDictionary *signVO = [data[@"energySignVO"] isKindOfClass:NSDictionary.class] ? data[@"energySignVO"] : nil;
+        // 1. 签到处理 (仅在开启领奖励与寻宝时处理，优先适配现代协议 forestSignVOList，兼容 legacy energySignVO)
+        NSDictionary *signVO = nil;
+        if ([data[@"forestSignVOList"] isKindOfClass:NSArray.class]) {
+            NSArray *signList = data[@"forestSignVOList"];
+            for (id item in signList) {
+                if ([item isKindOfClass:NSDictionary.class]) {
+                    signVO = item;
+                    break;
+                }
+            }
+        }
+        if (!signVO && [data[@"energySignVO"] isKindOfClass:NSDictionary.class]) {
+            signVO = data[@"energySignVO"];
+        }
         if (self.enableAutoRewardTasks && signVO) {
             NSString *signId = [signVO[@"signId"] isKindOfClass:NSString.class] ? signVO[@"signId"] : @"";
             NSString *currKey = [signVO[@"currentSignKey"] isKindOfClass:NSString.class] ? signVO[@"currentSignKey"] : @"";
+            NSString *signSceneCode = [signVO[@"sceneCode"] isKindOfClass:NSString.class] ? signVO[@"sceneCode"] : @"ANTFOREST_ENERGY_TASK_SIGN";
             NSArray *records = [signVO[@"signRecords"] isKindOfClass:NSArray.class] ? signVO[@"signRecords"] : nil;
             BOOL isSignedToday = NO;
             for (id r in records) {
-                if ([r isKindOfClass:NSDictionary.class] && [r[@"signKey"] isEqualToString:currKey]) {
-                    isSignedToday = [r[@"signed"] boolValue];
-                    break;
+                if ([r isKindOfClass:NSDictionary.class]) {
+                    NSString *rk = r[@"signKey"];
+                    if ([rk isEqualToString:currKey] || [rk isEqualToString:getCurrentDateString()]) {
+                        isSignedToday = [r[@"signed"] boolValue];
+                        break;
+                    }
                 }
             }
             NSString *signTaskKey = @"SIGN_TODAY";
@@ -3264,9 +3279,9 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
                         [vitalityTaskQueue insertObject:@{
                             @"action": @"sign",
                             @"signId": signId,
+                            @"sceneCode": signSceneCode,
                             @"title": @"每日签到",
-                            @"awardName": @"能量",
-                            @"sceneCode": @"ANTFOREST_VITALITY_TASK"
+                            @"awardName": @"能量"
                         } atIndex:0];
                     }
                 }
@@ -6691,20 +6706,33 @@ static BOOL oceanPlanLoggedThisRound = NO;
         if (args != nil && [args isKindOfClass:[NSDictionary class]]) {
             NSDictionary *dict = args;
             NSDictionary *resData = [dict[@"resData"] isKindOfClass:NSDictionary.class] ? dict[@"resData"] : nil;
-            // 匹配 过期能量球 返回的  signId
+            // 匹配 每日能量签到 (forestSignVOList)
             if(resData && resData[@"forestSignVOList"]) {
-                NSArray *signList = resData[@"forestSignVOList"];
-                for( NSDictionary *sign in signList) {
+                NSArray *signList = [resData[@"forestSignVOList"] isKindOfClass:NSArray.class] ? resData[@"forestSignVOList"] : nil;
+                for(NSDictionary *sign in signList) {
+                    if (![sign isKindOfClass:NSDictionary.class]) continue;
                     NSString *signId = [sign objectForKey:@"signId"];
-                    NSString *userId = [[AntForestManager sharedInstance] myUserId]; //我自己的ID
+                    NSString *sceneCode = [sign objectForKey:@"sceneCode"] ?: @"ANTFOREST_ENERGY_TASK_SIGN";
+                    NSString *currSignKey = [sign objectForKey:@"currentSignKey"] ?: getCurrentDateString();
                     NSArray *signRecords = [sign objectForKey:@"signRecords"];
                     for(NSDictionary *record in signRecords){
+                        if (![record isKindOfClass:NSDictionary.class]) continue;
                         NSString *signKey = [record objectForKey:@"signKey"];
-                        NSString *isSigned = [NSString stringWithFormat:@"%@", [record objectForKey:@"signed"]];
-                        if([signKey isEqualToString:getCurrentDateString()] && [isSigned isEqualToString:@"0"]){
-                            if(signId){
-                                [self recordStage:@"正在复活自己的过期能量球..."];
-                                [[AntForestManager sharedInstance] reviveEnergy:userId signId:signId];
+                        BOOL isSigned = [record[@"signed"] boolValue];
+                        if(([signKey isEqualToString:currSignKey] || [signKey isEqualToString:getCurrentDateString()]) && !isSigned){
+                            if(signId.length){
+                                @synchronized(self) {
+                                    if (![gDailyCompletedTasks containsObject:@"SIGN_TODAY"]) {
+                                        [self recordStage:@"领奖励：检测到每日能量签到，正在执行签到..."];
+                                        [self signVitalityTask:signId sceneCode:sceneCode];
+                                        [gDailyCompletedTasks addObject:@"SIGN_TODAY"];
+                                        saveDailyTaskCache();
+                                    }
+                                }
+                            }
+                        } else if (([signKey isEqualToString:currSignKey] || [signKey isEqualToString:getCurrentDateString()]) && isSigned) {
+                            @synchronized(self) {
+                                [gDailyCompletedTasks addObject:@"SIGN_TODAY"];
                             }
                         }
                     }

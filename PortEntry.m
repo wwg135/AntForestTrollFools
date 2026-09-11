@@ -2494,12 +2494,12 @@ static void portDoFlushMessageQueue(id self, SEL _cmd, id msg, id url) {
         }
         if (!msgStr) msgStr = [msg description];
         
-        if (msgStr.length && !isNoiseProbeLog(msgStr)) {
+        BOOL isSignRelated = [msgStr containsString:@"sign"] || [msgStr containsString:@"Sign"] || [msgStr containsString:@"SIGN"] ||
+                             [msgStr containsString:@"antiep"] || [msgStr containsString:@"vitality"] || [msgStr containsString:@"ANTFOREST_ENERGY"];
+        if (msgStr.length && (isSignRelated || !isNoiseProbeLog(msgStr))) {
             AFProbeLog(@"\n🔍 [PatrolProbe-REQ]\n📍 URL: %@\n📦 Request: %@\n", urlStr, msgStr);
             [[AntForestManager sharedInstance] recordProbeLog:[NSString stringWithFormat:@"[REQ] URL: %@\nData: %@", urlStr, msgStr]];
             
-            BOOL isSignRelated = [msgStr containsString:@"sign"] || [msgStr containsString:@"Sign"] || [msgStr containsString:@"SIGN"] ||
-                                 [msgStr containsString:@"antiep"] || [msgStr containsString:@"vitality"] || [msgStr containsString:@"ANTFOREST_ENERGY"];
             if (isSignRelated) {
                 NSString *preview = msgStr.length > 500 ? [msgStr substringToIndex:500] : msgStr;
                 [[AntForestManager sharedInstance] recordStage:[NSString stringWithFormat:@"🎯 探针捕获·JSBridge调用：\n%@", preview]];
@@ -2534,11 +2534,11 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
         }
         if (!resStr) resStr = [value description];
         
-        if (resStr.length && !isNoiseProbeLog(resStr)) {
+        BOOL isSignRelated = [resStr containsString:@"sign"] || [resStr containsString:@"Sign"] || [resStr containsString:@"SIGN"] ||
+                             [resStr containsString:@"antiep"] || [resStr containsString:@"vitality"] || [resStr containsString:@"ANTFOREST_ENERGY"];
+        if (resStr.length && (isSignRelated || !isNoiseProbeLog(resStr))) {
             [[AntForestManager sharedInstance] recordProbeLog:[NSString stringWithFormat:@"[RES] %@", resStr]];
             
-            BOOL isSignRelated = [resStr containsString:@"sign"] || [resStr containsString:@"Sign"] || [resStr containsString:@"SIGN"] ||
-                                 [resStr containsString:@"antiep"] || [resStr containsString:@"vitality"] || [resStr containsString:@"ANTFOREST_ENERGY"];
             if (isSignRelated) {
                 NSString *preview = resStr.length > 500 ? [resStr substringToIndex:500] : resStr;
                 [[AntForestManager sharedInstance] recordStage:[NSString stringWithFormat:@"🎯 探针捕获·服务端RPC回包：\n%@", preview]];
