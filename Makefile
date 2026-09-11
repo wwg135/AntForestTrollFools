@@ -28,6 +28,7 @@ test:
 	sh tests/check_chicken_sleep_paths.sh
 	sh tests/check_rpc_assoc_paths.sh
 	sh tests/check_panel_log_paths.sh
+	bash tests/check_draw_machine_paths.sh
 
 $(TARGET): $(SOURCES)
 	@mkdir -p build
