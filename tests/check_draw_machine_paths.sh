@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 抽抽乐（DrawMachine）自动攒次数 + 一键连抽 —— 结构自检
 # 口径来源：manor_probe 抓包 2026-09-11（两个活动字段完全对称）
-# 用户口径：平时不抽，积满 10 次才连抽；活动当天结束则剩余全抽；当天只跑一轮，跑完即收工（防风控）
+# 用户口径：平时不抽，积满 10 次才连抽；活动当天结束则剩余全抽；任务做满才封盘（每 5 分钟补一轮，最多 6 轮防风控）
 set -u
 cd "$(dirname "$0")/.."
 M=antforest/AntForestManager.m
@@ -43,10 +43,21 @@ chk "配额读服务端 rightsTimesLimit"   "$M" 'rightsTimesLimit'
 chk "活动最后一天判定 isDateInToday"  "$M" 'isDateInToday'
 chk "连抽被拒降级为逐次单抽"          "$M" '降级为逐次单抽'
 
-echo "=== 4. 当天只跑一轮，跑完即收工（防风控） ==="
-chk "每活动当天一轮标记 ROUND"        "$M" 'manorDrawDailyMark(@"ROUND"'
-chk "任务列表当天只处理一次 HANDLED"  "$M" 'manorDrawDailyMark(@"HANDLED"'
-chk "已抽标记 PULL"                   "$M" 'manorDrawDailyMark(@"PULL"'
+echo "=== 4. 做满才封盘 + 每 5 分钟补一轮（9/11 修正：旧版发起即收工，实测漏做） ==="
+chk "做满标记 DONE"                    "$M" 'manorDrawDailyMark(@"DONE"'
+chk "轮数计数标记 RND"                 "$M" 'manorDrawDailyMark(@"RND"'
+chk "每活动每天最多 6 轮"              "$M" 'kManorDrawMaxRounds      = 6'
+chk "轮数用完即停"                     "$M" 'manorDrawRoundUsed(scene) >= kManorDrawMaxRounds'
+chk "两活动错开 8s（旧版 55s）"        "$M" 'kManorDrawSceneStagger = 8.0'
+chk "同活动 20s 内不重复下发"          "$M" 'kManorDrawExecThrottle = 20.0'
+chk "下发窗口覆盖整轮执行时间"         "$M" 'manorDrawExecHold(scene, queryDelay)'
+chk "已抽标记 PULL"                    "$M" 'manorDrawDailyMark(@"PULL"'
+chkno "旧版发起即封盘 ROUND 已移除"    "$M" 'manorDrawDailyMark(@"ROUND"'
+chkno "旧版当天一次 HANDLED 已移除"    "$M" 'manorDrawDailyMark(@"HANDLED"'
+chk "回包先查做满标记"                 "$M" 'if ([gDailyCompletedTasks containsObject:manorDrawDailyMark(@"DONE", scene)]) return;'
+chk "桥断不消费本轮"                   "$M" 'if (![self activeManorBridge]) return;'
+chk "中途离开庄园有日志并留待补做"     "$M" '本轮中断，下次心跳补做'
+chk "做满即写 DONE 封盘"               "$M" '今日任务已做满'
 
 echo "=== 5. 并入总闸 enableAutoManor（不单列开关） ==="
 chk "入口受总闸约束"                  "$M" '- (void)runManorDrawMachineDaily {'
