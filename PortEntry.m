@@ -1340,7 +1340,7 @@ static void installEarnEnergyCollector(id controller) {
     UIButton *farmTasks = [self settingsButtonWithTitle:@"芭芭农场（做任务集肥料）" detail:@"手动进入芭芭农场后自动做部分浏览任务、游戏、连续签到和肥料领取。" icon:@"leaf.circle.fill" action:nil];
     UISwitch *farmTasksSwitch = [[UISwitch alloc] init]; farmTasksSwitch.on = AntForestManager.sharedInstance.enableAutoFarmTasks; farmTasksSwitch.translatesAutoresizingMaskIntoConstraints = NO; [farmTasksSwitch addTarget:self action:@selector(toggleAutoFarmTasks:) forControlEvents:UIControlEventValueChanged]; [farmTasks addSubview:farmTasksSwitch];
     
-    UIButton *manorTasks = [self settingsButtonWithTitle:@"蚂蚁庄园" detail:@"手动进入蚂蚁庄园后点击领饲料自动做部分任务、喂养与收饲料" icon:@"oval.portrait.fill" action:nil];
+    UIButton *manorTasks = [self settingsButtonWithTitle:@"蚂蚁庄园" detail:@"手动进入庄园后自动签到、小课堂答题、喂养、收肥料、收鸡蛋、抽抽乐攒次数（满 10 次连抽）" icon:@"oval.portrait.fill" action:nil];
     UISwitch *manorTasksSwitch = [[UISwitch alloc] init]; manorTasksSwitch.on = AntForestManager.sharedInstance.enableAutoManor; manorTasksSwitch.translatesAutoresizingMaskIntoConstraints = NO; [manorTasksSwitch addTarget:self action:@selector(toggleAutoManor:) forControlEvents:UIControlEventValueChanged]; [manorTasks addSubview:manorTasksSwitch];
     
     UIButton *patrolNew = [self settingsButtonWithTitle:@"新版保护地（大富翁）" detail:@"手动进入保护地后自动完成更多巡护步数任务" icon:@"dice.fill" action:nil];
