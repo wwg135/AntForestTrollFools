@@ -82,6 +82,8 @@ done
 grep -Fq '赶走访客' "$header_file"
 grep -Fq '小鸡睡觉' "$header_file"
 grep -Fq '家庭签到' "$header_file"
+grep -Fq '收鸡蛋' "$header_file"
+grep -Fq '抽抽乐' "$header_file"
 
 echo "[6/6] Checking nightly retry is wired into manor response pipeline..."
 grep -Fq 'retryManorPendingAutomations' "$header_file"

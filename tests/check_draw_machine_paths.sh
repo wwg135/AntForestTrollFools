@@ -56,7 +56,10 @@ chk "任务列表分流已接入"              "$M" '[self handleManorDrawTaskLi
 chk "头文件声明入口"                  "$H" '-(void)runManorDrawMachineDaily;'
 chkno "无独立开关变量"                "$M" 'enableAutoDrawMachine'
 
-echo "=== 6. 白名单外一律不下手（小游戏 / 捐款 / 外部跳转） ==="
+# 本节是「当前版本暂不实现」的负向断言，不是「永远不做」。
+# 外部跳转口径已复核：链路本身可走（browse + jumpUrl 后台预取 + finishTask，抓包已实证），用户 9/11 定「先不做，后续再动手」。
+# 后续启用时先删对应 chkno 行，再改源码；依据见 skill antmanor-tweak-dev/references/external-jump-task-feasibility.md
+echo "=== 6. 白名单外当前版本暂不做（小游戏 / 捐款 / 外部跳转） ==="
 chkno "不做江苏文旅"                  "$M" 'jiangsuwenlv'
 chkno "不做苏心游"                    "$M" 'suxinyou'
 chkno "不做捐款任务"                  "$M" 'JUANZENG'
