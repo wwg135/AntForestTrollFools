@@ -145,8 +145,11 @@ NS_ASSUME_NONNULL_BEGIN
 -(void)feedManorChicken;
 -(void)feedManorChickenWithAdvancedFood;
 -(void)learnManorCuisinesFromObject:(id)obj;
+-(void)learnManorCuisineStockFromObject:(id)obj;
+-(BOOL)requestManorCuisineStockIfNeeded;
+-(NSInteger)consumeManorCuisineStock:(NSString *)cuisineId;
 -(void)noteManorPageRPCRequest:(id)payload;
--(void)stopManorAdvancedFoodFeed:(NSString *)reason;
+-(void)stopManorAdvancedFoodFeed:(NSString *)reason silent:(BOOL)silent;
 -(void)collectManorChickenManure;
 -(void)collectManorChickenManurePot:(NSString *)potNo;
 -(void)harvestManorEgg;

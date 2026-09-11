@@ -5261,8 +5261,127 @@ static void manorScanCuisinePairs(id obj, NSMutableDictionary *out, NSUInteger *
     }
 }
 
-// 识别优先、写死兜底：高级饲料种类多、活动常换，写死的 7 组可能早过期；识别到账号真实菜谱就只用真实菜谱
+// 高级饲料库存（9/11 用户口径）：菜谱持有数就在回包的菜谱条目里（页面批量投喂口径 {cookbookId,cuisineId,count:1}），
+// 只喂「识别到持有数 >0」的菜谱（有就投喂、没有就跳过）；查库存照 H5 自己的口径 syncAnimalStatus + QUERY_CUISINE_LIST
+static NSString * const kManorCuisineStockKey = @"antforest_manor_cuisine_stock_v1";
+static NSString * const kManorCuisineEmptyKey = @"antforest_manor_cuisine_empty_v1";
+static NSMutableDictionary *gManorCuisineStock = nil;   // cuisineId -> NSNumber 持有数（回包实时识别）
+static NSMutableSet *gManorCuisineEmptyIds = nil;       // 服务端确认没库存的菜谱（当天不再试）
+static NSString *gManorCuisineEmptyDate = nil;          // 上面那份名单属于哪一天，跨天自动作废
+static NSTimeInterval gManorCuisineStockScanAt = 0;     // 库存扫描节流：0.5 秒内只扫一次
+static NSTimeInterval gManorCuisineStockAt = 0;         // 上次识别到库存的时间（判断新鲜度）
+static NSTimeInterval gManorCuisineStockQueryAt = 0;    // 主动查库存节流：10 分钟最多一次
+
+static void manorLoadCuisineStock(void) {
+    if (gManorCuisineStock) return;
+    gManorCuisineStock = [NSMutableDictionary dictionary];
+    NSDictionary *saved = [NSUserDefaults.standardUserDefaults dictionaryForKey:kManorCuisineStockKey];
+    for (id key in saved) {
+        if (![key isKindOfClass:NSString.class]) continue;
+        NSInteger count = [saved[key] respondsToSelector:@selector(integerValue)] ? [saved[key] integerValue] : 0;
+        if (count > 0) gManorCuisineStock[key] = @(count);
+    }
+}
+
+static void manorSaveCuisineStock(void) {
+    [NSUserDefaults.standardUserDefaults setObject:(gManorCuisineStock ?: @{}) forKey:kManorCuisineStockKey];
+}
+
+static void manorLoadCuisineEmptyIds(void) {
+    if (gManorCuisineEmptyIds) return;
+    gManorCuisineEmptyIds = [NSMutableSet set];
+    gManorCuisineEmptyDate = getCurrentDateString();
+    NSDictionary *saved = [NSUserDefaults.standardUserDefaults dictionaryForKey:kManorCuisineEmptyKey];
+    if ([saved[@"date"] isKindOfClass:NSString.class] && [saved[@"date"] isEqualToString:gManorCuisineEmptyDate]) {
+        id ids = saved[@"ids"];
+        if ([ids isKindOfClass:NSArray.class]) {
+            for (id item in ids) {
+                if ([item isKindOfClass:NSString.class]) [gManorCuisineEmptyIds addObject:item];
+            }
+        }
+    }
+}
+
+static void manorSaveCuisineEmptyIds(void) {
+    if (!gManorCuisineEmptyIds) return;
+    [NSUserDefaults.standardUserDefaults setObject:@{@"date": (gManorCuisineEmptyDate ?: getCurrentDateString()),
+                                                     @"ids": (gManorCuisineEmptyIds.allObjects ?: @[])}
+                                            forKey:kManorCuisineEmptyKey];
+}
+
+// 持有数字段：count 是页面批量投喂口径里的持有数，其余为同类字段兜底
+static NSInteger manorCuisineCountIn(NSDictionary *dict) {
+    static NSArray<NSString *> *keys = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        keys = @[@"count", @"num", @"numCount", @"cuisineCount", @"foodCount", @"quantity", @"amount",
+                 @"leftCount", @"remainNum", @"numLeft", @"stock", @"usableNum"];
+    });
+    for (NSString *key in keys) {
+        id value = dict[key];
+        if ([value isKindOfClass:NSNumber.class]) return [value integerValue];
+        if ([value isKindOfClass:NSString.class] && [(NSString *)value length]) return [(NSString *)value integerValue];
+    }
+    return 0;
+}
+
+// 库存识别：只认「同一个字典里同时有 cuisineId + 数字型持有数字段」的条目，且只记正数；
+// 没有数字字段的条目（图鉴/配置）不猜，读到 0 也不当成持有
+static void manorScanCuisineStock(id obj, NSMutableDictionary *out, NSUInteger *budget) {
+    if (!obj || *budget == 0) return;
+    (*budget)--;
+    if ([obj isKindOfClass:NSDictionary.class]) {
+        id cuisine = obj[@"cuisineId"];
+        if ([cuisine isKindOfClass:NSString.class] && [cuisine length] > 3) {
+            NSInteger count = manorCuisineCountIn(obj);
+            NSInteger old = [out[cuisine] respondsToSelector:@selector(integerValue)] ? [out[cuisine] integerValue] : 0;
+            if (count > 0 && count > old) out[cuisine] = @(count);
+        }
+        for (id value in [obj allValues]) manorScanCuisineStock(value, out, budget);
+    } else if ([obj isKindOfClass:NSArray.class]) {
+        for (id value in obj) manorScanCuisineStock(value, out, budget);
+    }
+}
+
+// 库存新鲜度：10 分钟内的识别结果算新鲜，过期就先查一次再喂
+static BOOL manorCuisineStockStale(NSTimeInterval now) {
+    if (gManorCuisineStockAt <= 0) return YES;
+    return ((now - gManorCuisineStockAt) > 600.0);
+}
+
+// 有库存就喂：识别到持有数 >0 的菜谱按持有数降序排前面（识别到的种类是全量口径，喂的只看库存）
+static NSArray *manorOwnedCuisineList(void) {
+    manorLoadLearnedCuisines();
+    manorLoadCuisineStock();
+    NSMutableArray *owned = [NSMutableArray array];
+    for (NSString *cuisineId in gManorCuisineStock) {
+        NSInteger count = [gManorCuisineStock[cuisineId] integerValue];
+        NSString *cookbookId = gManorLearnedCuisines[cuisineId];
+        if (count > 0 && cookbookId.length > 3) {
+            [owned addObject:@{@"cuisineId": cuisineId, @"cookbookId": cookbookId, @"count": @(count)}];
+        }
+    }
+    [owned sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        NSInteger ca = [a[@"count"] integerValue];
+        NSInteger cb = [b[@"count"] integerValue];
+        if (ca != cb) return (ca > cb) ? NSOrderedAscending : NSOrderedDescending;
+        return [a[@"cuisineId"] compare:b[@"cuisineId"]];
+    }];
+    return owned;
+}
+
+// 识别优先、写死兜底：识别到持有库存就只喂持有库存（有就投喂、没有就跳过）；
+// 没识别到库存数据才退回已识别菜谱全量，识别不到菜谱才用写死的 7 组
 static NSArray *manorAdvancedCuisineList(void) {
+    NSArray *owned = manorOwnedCuisineList();
+    if (owned.count > 0) {
+        NSMutableArray *out = [NSMutableArray array];
+        for (NSDictionary *cuisine in owned) {
+            [out addObject:cuisine];
+            if (out.count >= 40) break;
+        }
+        return out;
+    }
     manorLoadLearnedCuisines();
     if (gManorLearnedCuisines.count > 0) {
         NSMutableArray *out = [NSMutableArray array];
@@ -5288,6 +5407,14 @@ static BOOL isManorSleepMemo(NSString *memo) {
     if (!memo.length) return NO;
     return ([memo containsString:@"睡觉"] || [memo containsString:@"休息"] || [memo containsString:@"无法操作"] ||
             [memo containsString:@"sleep"] || [memo containsString:@"Sleep"]);
+}
+
+// 「高级饲料持有不足」：服务端说这个菜谱没库存（不是小鸡状态问题），换下一个菜谱继续试
+static BOOL isManorCuisineEmptyMemo(NSString *memo) {
+    if (!memo.length) return NO;
+    return ([memo containsString:@"不足"] || [memo containsString:@"not enough"] ||
+            [memo containsString:@"insufficient"] || [memo containsString:@"notEnough"] ||
+            [memo containsString:@"no enough"]);
 }
 
 // 回包英文 memo 中文化（日志全中文口径，照 AntManor cnReason）
@@ -5358,13 +5485,17 @@ static NSString *manorOperationDisplayName(NSString *op) {
     return @"庄园操作";
 }
 
-// 轮转取下一个还没被拒的菜谱；全被拒返回 nil（那才真的转普通饲料）
+// 轮转取下一个还没被拒的菜谱；被拒过/今天已判无库存的都跳过，返回 nil 就不喂高级饲料了
 static NSDictionary *manorNextCuisineToFeed(NSArray *list) {
     if (!gManorCuisineBadIds) gManorCuisineBadIds = [NSMutableSet set];
+    manorLoadCuisineEmptyIds();
     if (!list.count) return nil;
     for (NSUInteger i = 0; i < list.count; i++) {
         NSDictionary *item = list[(gManorCuisineCursor + i) % list.count];
-        if (![gManorCuisineBadIds containsObject:item[@"cuisineId"]]) return item;
+        NSString *cuisineId = item[@"cuisineId"];
+        if ([gManorCuisineBadIds containsObject:cuisineId]) continue;
+        if ([gManorCuisineEmptyIds containsObject:cuisineId]) continue;
+        return item;
     }
     return nil;
 }
@@ -5372,17 +5503,11 @@ static NSDictionary *manorNextCuisineToFeed(NSArray *list) {
 - (void)feedManorChickenWithAdvancedFood {
     if (!self.enableAutoManor) return;
     if (manorChickenSleeping()) return;   // 小鸡在睡觉：饲料投不进去，等静默期过再试
-    if (self.isManorChickenEating) {
-        [self feedManorChicken];
-        return;
-    }
     if (gManorCuisineInFlight) return;
+    // 小鸡正在进食中照喂：高级饲料除睡觉外任何时候都能投（9/11 用户口径）
     
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-    if (gManorCuisineStopUntil > 0 && now < gManorCuisineStopUntil) {
-        [self feedManorChicken];
-        return;
-    }
+    if (gManorCuisineStopUntil > 0 && now < gManorCuisineStopUntil) return;
     
     PSDJsBridge *bridge = [self activeManorBridge];
     if (!bridge) {
@@ -5391,21 +5516,34 @@ static NSDictionary *manorNextCuisineToFeed(NSArray *list) {
     }
     
     if (!gManorCuisineRunning) {
+        // 起手先确认「有没有高级饲料」：库存过期就先查一次，回包或 5 秒到期后继续
+        if (manorCuisineStockStale(now) && [self requestManorCuisineStockIfNeeded]) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [self feedManorChickenWithAdvancedFood];
+            });
+            return;
+        }
+        NSArray *prepared = manorAdvancedCuisineList();
+        if (!manorNextCuisineToFeed(prepared)) {
+            [self stopManorAdvancedFoodFeed:@"没有可投喂的高级饲料" silent:YES];
+            return;
+        }
         gManorCuisineRunning = YES;
         gManorCuisineFedCount = 0;
         gManorCuisineCursor = 0;
         [gManorCuisineBadIds removeAllObjects];
-        [self recordStage:@"蚂蚁庄园：优先投喂高级饲料（逐个投喂）..."];
+        [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：高级饲料投喂开始（识别到持有 %lu 种，本轮可喂 %lu 种，逐个投喂）...",
+                           (unsigned long)manorOwnedCuisineList().count, (unsigned long)prepared.count]];
     }
     if (gManorCuisineFedCount >= 15) {
-        [self stopManorAdvancedFoodFeed:@"已连喂 15 个，达单轮上限"];
+        [self stopManorAdvancedFoodFeed:@"已连喂 15 个，达单轮上限" silent:NO];
         return;
     }
     
     NSArray *cuisineList = manorAdvancedCuisineList();
     NSDictionary *cuisine = manorNextCuisineToFeed(cuisineList);
     if (!cuisine) {
-        [self stopManorAdvancedFoodFeed:@"识别到的菜谱都被服务端拒了"];
+        [self stopManorAdvancedFoodFeed:@"可喂的高级饲料已全部喂完" silent:YES];
         return;
     }
     NSString *timeStamp = [NSString stringWithFormat:@"%ld", (long)(now * 1000)];
@@ -5416,15 +5554,15 @@ static NSDictionary *manorNextCuisineToFeed(NSArray *list) {
     gManorCuisineInFlight = YES;
     gManorCuisineInFlightId = cuisine[@"cuisineId"];
     gManorCuisineCursor++;
-    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：正在投喂第 %lu 个高级饲料（%@，共 %lu 种可喂）...", (unsigned long)(gManorCuisineFedCount + 1), cuisine[@"cuisineId"], (unsigned long)cuisineList.count]];
+    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：正在投喂第 %lu 个高级饲料（%@，持有 %@ 个，本轮可喂 %lu 种）...", (unsigned long)(gManorCuisineFedCount + 1), cuisine[@"cuisineId"], (cuisine[@"count"] ?: @"未知"), (unsigned long)cuisineList.count]];
     
-    // 4 秒无回包：按"没喂进去"处理，1.2 秒后继续下一个（仍受单轮上限约束）
+    // 4 秒无回包：按「没喂进去」处理（不记成功、拉黑这一个），1.2 秒后继续下一个
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4000 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
         if (!gManorCuisineInFlight) return;
         gManorCuisineInFlight = NO;
-        gManorCuisineFedCount++;
+        if (gManorCuisineInFlightId.length) [gManorCuisineBadIds addObject:gManorCuisineInFlightId];
         if (gManorCuisineFedCount >= 15) {
-            [self stopManorAdvancedFoodFeed:@"连喂 15 个未收到成功回执"];
+            [self stopManorAdvancedFoodFeed:@"连喂 15 个未收到成功回执" silent:NO];
             return;
         }
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1200 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
@@ -5433,7 +5571,7 @@ static NSDictionary *manorNextCuisineToFeed(NSArray *list) {
     });
 }
 
-- (void)stopManorAdvancedFoodFeed:(NSString *)reason {
+- (void)stopManorAdvancedFoodFeed:(NSString *)reason silent:(BOOL)silent {
     gManorCuisineRunning = NO;
     gManorCuisineInFlight = NO;
     if (isManorSleepMemo(reason)) {
@@ -5443,7 +5581,13 @@ static NSDictionary *manorNextCuisineToFeed(NSArray *list) {
                           [NSString stringWithFormat:@"蚂蚁庄园：小鸡在睡觉，暂不投喂饲料（%@）", manorCnReason(reason)]);
         return;   // 睡觉期间普通饲料同样喂不进，不再转普通饲料（省一次无效请求）
     }
-    gManorCuisineStopUntil = [[NSDate date] timeIntervalSince1970] + 1800;
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    if (silent) {
+        gManorCuisineStopUntil = now + 600;   // 没有可喂的高级饲料：静默收工，10 分钟后再看一次库存
+        recordEggDiagOnce(self, @"cuisine_none", @"蚂蚁庄园：当前没有可投喂的高级饲料（已按库存跳过），下一轮自动重查");
+        return;
+    }
+    gManorCuisineStopUntil = now + 1800;
     [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：高级饲料投喂暂停（%@），转普通饲料投喂", manorCnReason(reason)]];
     [self feedManorChicken];
 }
@@ -5706,6 +5850,81 @@ static NSString *getCurrentHourString(void) {
     if (now - gManorCuisineLearnScanAt < 2.0) return;
     gManorCuisineLearnScanAt = now;
     [self mergeLearnedCuisines:[self manorCuisinePairsIn:obj]];
+    [self learnManorCuisineStockFromObject:obj];
+}
+
+// 「有没有高级饲料」主动查一次（照 H5 自己领饲料后的口径）：syncAnimalStatus + QUERY_CUISINE_LIST
+// 返回 YES = 请求已发出（起手等这一包回包），NO = 节流中/条件不满足，直接按已有信息继续
+- (BOOL)requestManorCuisineStockIfNeeded {
+    if (!self.enableAutoManor) return NO;
+    if (manorChickenSleeping()) return NO;
+    PSDJsBridge *bridge = [self activeManorBridge];
+    NSString *farmId = self.lastManorFarmId ?: @"";
+    if (!bridge || !farmId.length) return NO;
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    if (gManorCuisineStockQueryAt > 0 && (now - gManorCuisineStockQueryAt) < 600.0) return NO;
+    gManorCuisineStockQueryAt = now;
+    NSString *timeStamp = [NSString stringWithFormat:@"%ld", (long)(now * 1000)];
+    NSString *randNum = [AntForestManager getNumberRandom:15];
+    NSString *url = [self manorRPCUrlString];
+    NSString *stockArg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antfarm.syncAnimalStatus\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"%@\",\"ags-source\":\"%@\"},\"requestData\":[{\"farmId\":\"%@\",\"operTag\":\"SYNC_RESUME\",\"operType\":\"QUERY_USER_INFO|QUERY_CUISINE_LIST|QUERY_SNACKS_FOOD\",\"recall\":false,\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"H5\",\"version\":\"%@\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", kManorCuisineSource, kManorCuisineSource, farmId, kManorCuisineVersion, timeStamp, randNum];
+    manorSendRPC(bridge, stockArg, url);
+    return YES;
+}
+
+// 库存合并：识别到持有数 >0 才落库，并把该菜谱从「今天没库存」名单里放出来（用户可能又做了新的）
+- (NSUInteger)mergeManorCuisineStock:(NSDictionary *)found {
+    if (!found.count) return 0;
+    manorLoadCuisineStock();
+    manorLoadCuisineEmptyIds();
+    NSUInteger updated = 0;
+    for (NSString *cuisineId in found) {
+        NSInteger count = [found[cuisineId] integerValue];
+        if (count <= 0) continue;
+        NSInteger old = [gManorCuisineStock[cuisineId] respondsToSelector:@selector(integerValue)] ? [gManorCuisineStock[cuisineId] integerValue] : 0;
+        if (count != old) {
+            gManorCuisineStock[cuisineId] = @(count);
+            updated++;
+        }
+        [gManorCuisineEmptyIds removeObject:cuisineId];
+    }
+    if (!updated) return 0;
+    gManorCuisineStockAt = [[NSDate date] timeIntervalSince1970];
+    manorSaveCuisineStock();
+    manorSaveCuisineEmptyIds();
+    recordEggDiagOnce(self, @"cuisine_stock",
+                      [NSString stringWithFormat:@"蚂蚁庄园 · 高级饲料库存识别：持有 %lu 种（共识别 %lu 种菜谱）",
+                       (unsigned long)manorOwnedCuisineList().count, (unsigned long)gManorLearnedCuisines.count]);
+    return updated;
+}
+
+// 识别到库存就投喂（除小鸡睡觉外任何时候都能喂，含正在吃普通饲料时）
+- (void)learnManorCuisineStockFromObject:(id)obj {
+    if (!self.enableAutoManor || !obj) return;
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    if (now - gManorCuisineStockScanAt < 0.5) return;
+    gManorCuisineStockScanAt = now;
+    NSMutableDictionary *found = [NSMutableDictionary dictionary];
+    NSUInteger budget = 600;
+    manorScanCuisineStock(obj, found, &budget);
+    if (![self mergeManorCuisineStock:found]) return;
+    if (manorChickenSleeping() || gManorCuisineInFlight) return;
+    if (gManorCuisineStopUntil > 0 && now < gManorCuisineStopUntil) return;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1200 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+        [self feedManorChickenWithAdvancedFood];
+    });
+}
+
+// 投喂成功后本地扣一个（下一次统一以服务端回包为准）：扣到 0 就从可喂清单里消失，不再盲试
+- (NSInteger)consumeManorCuisineStock:(NSString *)cuisineId {
+    if (!cuisineId.length) return 0;
+    manorLoadCuisineStock();
+    NSInteger left = [gManorCuisineStock[cuisineId] respondsToSelector:@selector(integerValue)] ? [gManorCuisineStock[cuisineId] integerValue] : 0;
+    left = (left > 0) ? (left - 1) : 0;
+    if (left > 0) gManorCuisineStock[cuisineId] = @(left);
+    else [gManorCuisineStock removeObjectForKey:cuisineId];
+    manorSaveCuisineStock();
+    return left;
 }
 
 // 页面自己发的高级饲料请求是最好的老师：ID、参数口径都以它为准，抓到就学
@@ -5720,6 +5939,7 @@ static NSString *getCurrentHourString(void) {
     NSDictionary *pairs = [self manorCuisinePairsIn:obj];
     if (!pairs.count) return;
     [self mergeLearnedCuisines:pairs];
+    [self learnManorCuisineStockFromObject:obj];
     NSString *cuisineId = pairs.allKeys.firstObject;
     NSString *cookbookId = pairs[cuisineId];
     if (gManorCuisineInFlightId.length && [cuisineId isEqualToString:gManorCuisineInFlightId]) return;
@@ -5759,6 +5979,7 @@ static NSString *getCurrentHourString(void) {
     [self flushManorWatchSummaryIfNeeded];
     [self retryManorPendingAutomations];
     [self probeFeedManorChicken];
+    [self requestManorCuisineStockIfNeeded];
 }
 
 // 喂鸡静默探针（照 AntManor quietWatchTick）：探测即动作，能不能喂由服务端裁决；
@@ -6468,18 +6689,38 @@ static NSTimeInterval gLastManorCheckTime = 0;
                 if (cuisineOk && isManorCuisineSkipMemo(cuisineMemo)) cuisineOk = NO;
                 if (cuisineOk) {
                     gManorCuisineFedCount++;
-                    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：高级饲料投喂成功（第 %lu 个）", (unsigned long)gManorCuisineFedCount]];
+                    NSInteger cuisineLeft = [self consumeManorCuisineStock:gManorCuisineInFlightId];
+                    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：高级饲料投喂成功（第 %lu 个，%@ 还剩 %ld 个）", (unsigned long)gManorCuisineFedCount, gManorCuisineInFlightId, (long)cuisineLeft]];
                     if (gManorCuisineFedCount >= 15) {
-                        [self stopManorAdvancedFoodFeed:@"已连喂 15 个，达单轮上限"];
+                        [self stopManorAdvancedFoodFeed:@"已连喂 15 个，达单轮上限" silent:NO];
                     } else {
                         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1200 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
                             [self feedManorChickenWithAdvancedFood];
                         });
                     }
                 } else if (isManorSleepMemo(cuisineMemo)) {
-                    [self stopManorAdvancedFoodFeed:(cuisineMemo.length ? cuisineMemo : @"我的小鸡在睡觉中，无法操作")];
+                    [self stopManorAdvancedFoodFeed:(cuisineMemo.length ? cuisineMemo : @"我的小鸡在睡觉中，无法操作") silent:NO];
+                } else if (isManorCuisineEmptyMemo(cuisineMemo)) {
+                    // 服务端说这个菜谱没库存：记进「今天不再试」名单，静默换下一个（有就投喂、没有就跳过）
+                    NSString *emptyId = gManorCuisineInFlightId;
+                    if (emptyId.length) {
+                        manorLoadCuisineStock();
+                        manorLoadCuisineEmptyIds();
+                        [gManorCuisineEmptyIds addObject:emptyId];
+                        [gManorCuisineStock removeObjectForKey:emptyId];
+                        manorSaveCuisineEmptyIds();
+                        manorSaveCuisineStock();
+                    }
+                    if (manorNextCuisineToFeed(manorAdvancedCuisineList())) {
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1200 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+                            [self feedManorChickenWithAdvancedFood];
+                        });
+                    } else {
+                        recordEggDiagOnce(self, @"cuisine_empty", @"蚂蚁庄园：识别到的菜谱都判过无库存，高级饲料本轮跳过（做出新菜谱会自动重试）");
+                        [self stopManorAdvancedFoodFeed:@"识别到的菜谱今天都没库存" silent:YES];
+                    }
                 } else if (isManorCuisineSkipMemo(cuisineMemo) || [cuisineMemo containsString:@"正在吃"]) {
-                    [self stopManorAdvancedFoodFeed:(cuisineMemo.length ? cuisineMemo : @"小鸡正在吃，暂不需要")];
+                    [self stopManorAdvancedFoodFeed:(cuisineMemo.length ? cuisineMemo : @"小鸡正在吃，暂不需要") silent:NO];
                 } else {
                     NSString *why = manorCnReason(cuisineMemo.length ? cuisineMemo : @"高级饲料不可用");
                     if (gManorCuisineInFlightId.length) [gManorCuisineBadIds addObject:gManorCuisineInFlightId];
@@ -6489,7 +6730,7 @@ static NSTimeInterval gLastManorCheckTime = 0;
                             [self feedManorChickenWithAdvancedFood];
                         });
                     } else {
-                        [self stopManorAdvancedFoodFeed:[NSString stringWithFormat:@"%@（可喂菜谱都被拒了）", why]];
+                        [self stopManorAdvancedFoodFeed:[NSString stringWithFormat:@"%@（可喂菜谱都被拒了）", why] silent:NO];
                     }
                 }
             }
