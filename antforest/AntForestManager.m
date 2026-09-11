@@ -5448,6 +5448,13 @@ static NSUInteger gManorCuisineCursor = 0;         // 轮转游标：跳过被�
 static NSTimeInterval gManorChickenSleepUntil = 0;  // 小鸡在睡觉：这段时间内不投喂（高级/普通饲料服务端都拒）
 static const NSTimeInterval kManorChickenSleepQuiet = 300.0;  // 睡觉静默 5 分钟，醒了由 60 秒监控自动接上
 
+// 本轮结算口径（9/11 用户反馈「日志说全部投喂完、剩余 0，实际还有 1 个没喂进去」）
+static NSUInteger gManorCuisineRoundOwned = 0;      // 本轮开始时「识别到持有」种类数
+static NSUInteger gManorCuisineRoundCandidate = 0;  // 本轮候选种类数
+static NSUInteger gManorCuisineRoundFail = 0;       // 本轮失败个数（4 秒无回执 / 被服务端拒）
+static NSUInteger gManorCuisineRoundSkip = 0;       // 本轮被服务端判「无库存」个数
+static NSString *gManorCuisineRoundFailNote = nil;  // 本轮未投喂明细（菜谱 ID + 原因）
+
 // 睡觉静默期内？投喂入口先查这里，避免明知服务端会拒还发请求
 static BOOL manorChickenSleeping(void) {
     return (gManorChickenSleepUntil > 0 && [[NSDate date] timeIntervalSince1970] < gManorChickenSleepUntil);
@@ -5500,6 +5507,15 @@ static NSDictionary *manorNextCuisineToFeed(NSArray *list) {
     return nil;
 }
 
+// 记一条本轮失败明细：供结算日志说清「哪几个没喂进去、为什么」
+static void manorNoteCuisineFail(NSString *cuisineId, NSString *reason) {
+    gManorCuisineRoundFail++;
+    NSString *item = [NSString stringWithFormat:@"%@（%@）", cuisineId.length ? cuisineId : @"未知菜谱",
+                      reason.length ? manorCnReason(reason) : @"未知原因"];
+    gManorCuisineRoundFailNote = gManorCuisineRoundFailNote.length
+        ? [NSString stringWithFormat:@"%@、%@", gManorCuisineRoundFailNote, item] : item;
+}
+
 - (void)feedManorChickenWithAdvancedFood {
     if (!self.enableAutoManor) return;
     if (manorChickenSleeping()) return;   // 小鸡在睡觉：饲料投不进去，等静默期过再试
@@ -5531,6 +5547,11 @@ static NSDictionary *manorNextCuisineToFeed(NSArray *list) {
         gManorCuisineRunning = YES;
         gManorCuisineFedCount = 0;
         gManorCuisineCursor = 0;
+        gManorCuisineRoundOwned = manorOwnedCuisineList().count;
+        gManorCuisineRoundCandidate = prepared.count;
+        gManorCuisineRoundFail = 0;
+        gManorCuisineRoundSkip = 0;
+        gManorCuisineRoundFailNote = nil;
         [gManorCuisineBadIds removeAllObjects];
         [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：高级饲料投喂开始（识别到持有 %lu 种，本轮可喂 %lu 种，逐个投喂）...",
                            (unsigned long)manorOwnedCuisineList().count, (unsigned long)prepared.count]];
@@ -5560,7 +5581,11 @@ static NSDictionary *manorNextCuisineToFeed(NSArray *list) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4000 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
         if (!gManorCuisineInFlight) return;
         gManorCuisineInFlight = NO;
-        if (gManorCuisineInFlightId.length) [gManorCuisineBadIds addObject:gManorCuisineInFlightId];
+        NSString *stuckId = gManorCuisineInFlightId;
+        if (stuckId.length) [gManorCuisineBadIds addObject:stuckId];
+        manorNoteCuisineFail(stuckId, @"4 秒无回执");
+        [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：高级饲料 %@ 4 秒无回执，本轮跳过（已成功 %lu 个）",
+                           stuckId.length ? stuckId : @"未知菜谱", (unsigned long)gManorCuisineFedCount]];
         if (gManorCuisineFedCount >= 15) {
             [self stopManorAdvancedFoodFeed:@"连喂 15 个未收到成功回执" silent:NO];
             return;
@@ -5571,9 +5596,21 @@ static NSDictionary *manorNextCuisineToFeed(NSArray *list) {
     });
 }
 
+// 本轮结算：成功/失败/判无库存各几个 + 未投喂明细，避免「全部喂完」把失败吞掉（9/11 用户反馈）
+- (void)logManorCuisineRoundSummary {
+    NSString *tail = gManorCuisineRoundFailNote.length
+        ? [NSString stringWithFormat:@"，未投喂 %@", gManorCuisineRoundFailNote] : @"";
+    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：高级饲料本轮结算——成功 %lu 个，失败 %lu 个，判无库存 %lu 个（识别持有 %lu 种，候选 %lu 种）%@",
+                       (unsigned long)gManorCuisineFedCount, (unsigned long)gManorCuisineRoundFail,
+                       (unsigned long)gManorCuisineRoundSkip, (unsigned long)gManorCuisineRoundOwned,
+                       (unsigned long)gManorCuisineRoundCandidate, tail]];
+}
+
 - (void)stopManorAdvancedFoodFeed:(NSString *)reason silent:(BOOL)silent {
+    BOOL roundRan = gManorCuisineRunning;
     gManorCuisineRunning = NO;
     gManorCuisineInFlight = NO;
+    if (roundRan) [self logManorCuisineRoundSummary];
     if (isManorSleepMemo(reason)) {
         gManorChickenSleepUntil = [[NSDate date] timeIntervalSince1970] + kManorChickenSleepQuiet;
         gManorCuisineStopUntil = 0;
@@ -5584,7 +5621,9 @@ static NSDictionary *manorNextCuisineToFeed(NSArray *list) {
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     if (silent) {
         gManorCuisineStopUntil = now + 600;   // 没有可喂的高级饲料：静默收工，10 分钟后再看一次库存
-        recordEggDiagOnce(self, @"cuisine_none", @"蚂蚁庄园：当前没有可投喂的高级饲料（已按库存跳过），下一轮自动重查");
+        if (!roundRan) {
+            recordEggDiagOnce(self, @"cuisine_none", @"蚂蚁庄园：当前没有可投喂的高级饲料（已按库存跳过），下一轮自动重查");
+        }
         return;
     }
     gManorCuisineStopUntil = now + 1800;
@@ -6151,26 +6190,23 @@ static void markManorSleepDone(void) {
 - (void)sleepManorChicken {
     if (!self.enableAutoManor) return;
     if (!isManorSleepTime()) {
-        [self recordStage:@"蚂蚁庄园：还没到 20:00，小鸡先在外面玩"];
+        recordEggDiagOnce(self, @"sleep_wait", @"蚂蚁庄园：还没到 20:00，小鸡先在外面玩");
         return;
     }
-    if (isManorSleepDoneToday()) {
-        [self recordStage:@"蚂蚁庄园：小鸡今天已经在家庭别墅睡过了"];
-        return;
-    }
+    if (isManorSleepDoneToday()) return;
 
     // 失败重试节流：同一晚每 30 分钟最多一次（小鸡外出或正在进食时服务端会拒）
     static NSTimeInterval lastSleepAttempt = 0;
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     if (lastSleepAttempt > 0 && now - lastSleepAttempt < 1800) {
-        [self recordStage:@"蚂蚁庄园：睡觉重试冷却中（每 30 分钟一次）"];
+        recordEggDiagOnce(self, @"sleep_cool", @"蚂蚁庄园：睡觉重试冷却中（每 30 分钟一次）");
         return;
     }
     lastSleepAttempt = now;
 
     PSDJsBridge *bridge = [self activeManorBridge];
     if (!bridge) {
-        [self recordStage:@"蚂蚁庄园：睡觉跳过（庄园桥接未就绪）"];
+        recordEggDiagOnce(self, @"sleep_bridge", @"蚂蚁庄园：睡觉跳过（庄园桥接未就绪）");
         return;
     }
 
@@ -6219,14 +6255,11 @@ static void markManorFamilySignDone(void) {
 
 - (void)signManorFamily {
     if (!self.enableAutoManor) return;
-    if (isManorFamilySignDoneToday()) {
-        [self recordStage:@"☑️ 家庭签到今天已完成，无需重复"];
-        return;
-    }
+    if (isManorFamilySignDoneToday()) return;
 
     PSDJsBridge *bridge = [self activeManorBridge];
     if (!bridge) {
-        [self recordStage:@"蚂蚁庄园：家庭签到跳过（庄园桥接未就绪）"];
+        recordEggDiagOnce(self, @"familysign_bridge", @"蚂蚁庄园：家庭签到跳过（庄园桥接未就绪）");
         return;
     }
     // 防重入 + 失败重试节流：链外补跑时 30 分钟内最多发一次
@@ -6708,6 +6741,7 @@ static NSTimeInterval gLastManorCheckTime = 0;
                         manorLoadCuisineEmptyIds();
                         [gManorCuisineEmptyIds addObject:emptyId];
                         [gManorCuisineStock removeObjectForKey:emptyId];
+                        gManorCuisineRoundSkip++;
                         manorSaveCuisineEmptyIds();
                         manorSaveCuisineStock();
                     }
@@ -6724,6 +6758,7 @@ static NSTimeInterval gLastManorCheckTime = 0;
                 } else {
                     NSString *why = manorCnReason(cuisineMemo.length ? cuisineMemo : @"高级饲料不可用");
                     if (gManorCuisineInFlightId.length) [gManorCuisineBadIds addObject:gManorCuisineInFlightId];
+                    manorNoteCuisineFail(gManorCuisineInFlightId, why);
                     if (manorNextCuisineToFeed(manorAdvancedCuisineList())) {
                         [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：高级饲料 %@ 被服务端拒（%@），换下一个菜谱", gManorCuisineInFlightId, why]];
                         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1200 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
