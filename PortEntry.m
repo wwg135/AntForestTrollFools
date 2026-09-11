@@ -120,6 +120,7 @@ static BOOL isFarmURL(NSURL *url) {
     if (!url) return NO;
     if ([AntForestManager isManorURL:url]) return NO;
     NSString *text = [url.absoluteString lowercaseString];
+    if ([text containsString:@"66666674"] || [text containsString:@"2017090512380701"] || [text containsString:@"antfarm"] || [text containsString:@"ant_farm"]) return NO;
     return [text containsString:@"alipayfarm"] ||
            [text containsString:@"tmfarm"] ||
            [text containsString:@"babafarm"] ||
@@ -2333,18 +2334,20 @@ static void portViewDidAppear(id self, SEL _cmd, BOOL animated) {
                 [manager openFarmTaskPanelOnWebView];
                 [manager claimAllVisibleFarmRewardsOnWebView];
             });
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1500 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
-                [manager openFarmTaskPanelOnWebView];
-                [manager claimAllVisibleFarmRewardsOnWebView];
-            });
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3500 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
-                [manager openFarmTaskPanelOnWebView];
-                [manager claimAllVisibleFarmRewardsOnWebView];
-            });
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6500 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
-                [manager claimAllVisibleFarmRewardsOnWebView];
-            });
         }
+    }
+    if ([AntForestManager isManorURL:url] && manager.enableAutoManor) {
+        id bridge = rewardBridgeFromController(self) ?: forestBridgeFromController(self);
+        if (bridge && [bridge respondsToSelector:@selector(_doFlushMessageQueue:url:)]) {
+            if (manager.manorBridge != bridge) {
+                manager.manorBridge = bridge;
+                manager.manorH5Url = url.absoluteString;
+                [manager recordStage:@"蚂蚁庄园：进入庄园，已就绪 Bridge，开始自动体检与任务调度..."];
+            }
+        }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(500 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+            [manager checkAndRunManorAutomations];
+        });
     }
     addLogButton(self, revealLeaf);
 }

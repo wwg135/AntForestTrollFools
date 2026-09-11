@@ -3948,11 +3948,17 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
 }
 
 - (void)openFarmTaskPanelOnWebView {
+    static NSTimeInterval lastOpenPanelTime = 0;
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    if (now - lastOpenPanelTime < 10.0) return;
+    lastOpenPanelTime = now;
+
     [self executeFarmScriptOnWebView:@"(()=>{try{"
      "const curUrl=(window.location.href||'').toLowerCase();"
      "if(curUrl.includes('66666674')||curUrl.includes('antfarm')||curUrl.includes('manor')||curUrl.includes('2017090512380701'))return;"
      "if(!curUrl.includes('babafarm')&&!curUrl.includes('alipayfarm')&&!curUrl.includes('tmfarm')&&!curUrl.includes('orchard')&&!curUrl.includes('180020010001263018')&&!curUrl.includes('68687599'))return;"
      "if(curUrl.includes('60000002')||curUrl.includes('180020010001247580')||curUrl.includes('home.html'))return;"
+     "if(document.querySelector('.ant-modal,[class*=\"modal\"],[role=\"dialog\"],[class*=\"pop-window\"]'))return;"
      "function triggerClick(el){"
      "  if(!el)return;"
      "  try{"
@@ -3978,13 +3984,15 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
      "  }catch(e){try{el.click();}catch(e2){}}"
      "}"
      "function findAndOpenPanel(){"
+     "  if(document.querySelector('.ant-modal,[class*=\"modal\"],[role=\"dialog\"],[class*=\"pop-window\"]'))return false;"
      "  const all=Array.from(document.querySelectorAll('*'));"
      "  for(const el of all){"
      "    const txt=(el.innerText||el.textContent||'').trim().replace(/\\s+/g,'');"
      "    if(txt.length>0&&txt.length<=10){"
-     "      if(txt.includes('森林')||txt.includes('能量')||txt.includes('去森林')||txt.includes('蚂蚁森林'))continue;"
-     "      if(txt==='集肥料'||txt==='领肥料'||txt==='赚肥料'||txt==='去集肥'||txt==='去领肥'||txt==='施肥得肥料'||txt==='领肥'||txt==='集肥'||"
-     "         txt==='做任务集肥'||txt==='做任务集肥料'||txt==='做任务得肥料'||(txt.includes('肥料')&&(txt.includes('集')||txt.includes('领')||txt.includes('赚')))){"
+     "      if(txt.includes('森林')||txt.includes('能量')||txt.includes('去森林')||txt.includes('蚂蚁森林')||"
+     "         txt.includes('施肥')||txt.includes('礼包')||txt.includes('丰收')||txt.includes('还差')||txt.includes('兑换')||txt.includes('助力')||txt.includes('邀请'))continue;"
+     "      if(txt==='做任务集肥'||txt==='做任务集肥料'||txt==='做任务得肥料'||txt==='做任务领肥料'||"
+     "         txt==='集肥料'||txt==='领肥料'||txt==='赚肥料'||txt==='做任务'||txt==='任务'){"
      "        const target=el.closest('button,[role=button],div[class*=btn],div[class*=button],div[class*=jifei],div[class*=feiliao]')||el;"
      "        triggerClick(target);"
      "        triggerClick(el);"
@@ -3997,7 +4005,7 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
      "  for(const img of imgs){"
      "    const src=img.src||'';"
      "    const alt=img.alt||img.title||'';"
-     "    if(src.includes('TB1Zbsk')||src.includes('O1CN01JYnXvW')||src.includes('TB1Sqcy')||src.includes('O1CN01vQgu2d')||src.includes('jifei')||src.includes('feiliao')||src.includes('manure')||src.includes('fertilizer')||alt.includes('集肥')||alt.includes('领肥')||alt.includes('肥料')){"
+     "    if(src.includes('TB1Zbsk')||src.includes('O1CN01JYnXvW')||src.includes('TB1Sqcy')||src.includes('O1CN01vQgu2d')){"
      "      const target=img.closest('button,[role=button],div[class*=btn],div[class*=button],div')||img;"
      "      triggerClick(target);"
      "      triggerClick(img);"
@@ -4005,12 +4013,12 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
      "      return true;"
      "    }"
      "  }"
-     "  const sels=['[data-spm*=\"jifei\"]','[data-spm*=\"feiliao\"]','[class*=\"jifei\"]','[class*=\"feiliao\"]','[aria-label*=\"集肥\"]','[aria-label*=\"领肥\"]','[aria-label*=\"肥料\"]'];"
+     "  const sels=['[data-spm*=\"jifei\"]','[aria-label=\"做任务集肥料\"]','[aria-label=\"做任务得肥料\"]','[aria-label=\"集肥料\"]','[aria-label=\"领肥料\"]'];"
      "  for(const s of sels){"
      "    const el=document.querySelector(s);"
      "    if(el){"
      "      const txt=(el.innerText||'').trim();"
-     "      if(txt.includes('森林')||txt.includes('能量'))continue;"
+     "      if(txt.includes('森林')||txt.includes('能量')||txt.includes('施肥')||txt.includes('礼包')||txt.includes('丰收'))continue;"
      "      triggerClick(el);"
      "      console.log('[AntForestPort] Auto-opened farm task panel by selector: '+s);"
      "      return true;"
@@ -4019,9 +4027,7 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
      "  return false;"
      "}"
      "findAndOpenPanel();"
-     "setTimeout(findAndOpenPanel, 400);"
-     "setTimeout(findAndOpenPanel, 1200);"
-     "setTimeout(findAndOpenPanel, 2500);"
+     "setTimeout(findAndOpenPanel, 600);"
      "}catch(e){console.error('[AntForestPort] openFarmTaskPanel error: ',e);}})();"];
 }
 
@@ -4062,8 +4068,8 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
      "  for(const el of all){"
      "    if(el.children.length===0&&el.innerText){"
      "      const txt=el.innerText.trim().replace(/\\s+/g,'');"
-     "      if(txt.includes('森林')||txt.includes('能量'))continue;"
-     "      if(txt==='领取'||txt==='点击领取'||txt==='立即领取'||txt==='领奖'||txt==='点击领奖'||txt==='立即领奖'||txt==='收下继续施肥'||txt==='收下肥料'||txt==='开心收下'||txt==='我知道了'||txt==='收下'){"
+     "      if(txt.includes('森林')||txt.includes('能量')||txt.includes('施肥')||txt.includes('礼包')||txt.includes('丰收')||txt.includes('还差'))continue;"
+     "      if(txt==='领取'||txt==='点击领取'||txt==='立即领取'||txt==='领奖'||txt==='点击领奖'||txt==='立即领奖'||txt==='收下肥料'||txt==='开心收下'||txt==='我知道了'||txt==='收下'){"
      "        const target=el.closest('button,[role=button],div[class*=btn],div[class*=button]')||el;"
      "        if(!clickedSet.has(target)){"
      "          clickedSet.add(target);"
@@ -4999,6 +5005,8 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
     initDailyTaskCache();
     
     NSInteger taskDelayIndex = 0;
+    NSInteger currentStock = self.lastManorFoodStock;
+    NSInteger limit = self.lastManorFoodStockLimit > 0 ? self.lastManorFoodStockLimit : 1800;
     
     for (NSDictionary *task in taskList) {
         if (![task isKindOfClass:NSDictionary.class]) continue;
@@ -5019,14 +5027,13 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
         
         if ([status isEqualToString:@"FINISHED"]) {
             if (taskId.length) {
-                NSInteger stock = self.lastManorFoodStock;
-                NSInteger limit = self.lastManorFoodStockLimit > 0 ? self.lastManorFoodStockLimit : 1800;
-                if (stock >= limit && limit > 0) {
+                // 如果当前存量已达上限，或领取本项会导致超出上限溢出被吞，坚决不盲目领取！
+                if ((currentStock >= limit && limit > 0) || (limit > 0 && currentStock + award > limit)) {
                     static NSTimeInterval lastFullLogTime = 0;
                     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
                     if (now - lastFullLogTime > 60) {
                         lastFullLogTime = now;
-                        [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：饲料背包已满（%ldg/%ldg），暂不领取“%@”，待小鸡进食后再领", (long)stock, (long)limit, title]];
+                        [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：饲料背包已满或将溢出（当前 %ldg/%ldg，待领 %ldg），暂不领取“%@”，待小鸡进食后再领", (long)currentStock, (long)limit, (long)award, title]];
                     }
                     continue;
                 }
@@ -5034,7 +5041,10 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
                 if (![gDailyCompletedTasks containsObject:claimKey]) {
                     [gDailyCompletedTasks addObject:claimKey];
                     saveDailyTaskCache();
-                    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：发现已完成任务“%@”，正在领取 %ldg 饲料...", title, (long)award]];
+                    // 立即预累加虚拟存量，防止同批次后续任务并发领取造成溢出浪费
+                    currentStock += award;
+                    self.lastManorFoodStock = currentStock;
+                    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：发现已完成任务“%@”，正在领取 %ldg 饲料（预估容量 %ldg/%ldg）...", title, (long)award, (long)currentStock, (long)limit]];
                     [self receiveManorFarmTaskAwardWithTaskId:taskId title:title];
                 }
             }
@@ -5136,6 +5146,46 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
     _lastManorFarmId = [lastManorFarmId copy];
     if (_lastManorFarmId.length) {
         [[NSUserDefaults standardUserDefaults] setObject:_lastManorFarmId forKey:@"antforest_lastManorFarmId"];
+        [[NSUserDefaults standardUserDefaults] synchronize];
+    }
+}
+
+@synthesize lastManorFoodStock = _lastManorFoodStock;
+
+- (NSInteger)lastManorFoodStock {
+    if (_lastManorFoodStock > 0) return _lastManorFoodStock;
+    NSInteger saved = [[NSUserDefaults standardUserDefaults] integerForKey:@"antforest_lastManorFoodStock"];
+    if (saved > 0) {
+        _lastManorFoodStock = saved;
+        return _lastManorFoodStock;
+    }
+    return _lastManorFoodStock;
+}
+
+- (void)setLastManorFoodStock:(NSInteger)lastManorFoodStock {
+    _lastManorFoodStock = lastManorFoodStock;
+    if (lastManorFoodStock >= 0) {
+        [[NSUserDefaults standardUserDefaults] setInteger:lastManorFoodStock forKey:@"antforest_lastManorFoodStock"];
+        [[NSUserDefaults standardUserDefaults] synchronize];
+    }
+}
+
+@synthesize lastManorFoodStockLimit = _lastManorFoodStockLimit;
+
+- (NSInteger)lastManorFoodStockLimit {
+    if (_lastManorFoodStockLimit > 0) return _lastManorFoodStockLimit;
+    NSInteger saved = [[NSUserDefaults standardUserDefaults] integerForKey:@"antforest_lastManorFoodStockLimit"];
+    if (saved > 0) {
+        _lastManorFoodStockLimit = saved;
+        return _lastManorFoodStockLimit;
+    }
+    return 1800;
+}
+
+- (void)setLastManorFoodStockLimit:(NSInteger)lastManorFoodStockLimit {
+    _lastManorFoodStockLimit = lastManorFoodStockLimit;
+    if (lastManorFoodStockLimit > 0) {
+        [[NSUserDefaults standardUserDefaults] setInteger:lastManorFoodStockLimit forKey:@"antforest_lastManorFoodStockLimit"];
         [[NSUserDefaults standardUserDefaults] synchronize];
     }
 }
