@@ -24,6 +24,7 @@ test:
 	sh tests/check_harvest_egg_paths.sh
 	sh tests/check_cuisine_feed_paths.sh
 	sh tests/check_cuisine_learn_paths.sh
+	sh tests/check_cuisine_stock_paths.sh
 	sh tests/check_chicken_sleep_paths.sh
 	sh tests/check_rpc_assoc_paths.sh
 	sh tests/check_panel_log_paths.sh
