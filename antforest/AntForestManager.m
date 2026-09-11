@@ -6702,8 +6702,25 @@ static NSString *gLastExpelledTail = nil;
 static NSString * const kManorSleepSource      = @"aixinxiaowutojiating";
 static NSString * const kManorSleepRPCSource   = @"chInfo_ch_appcenter__chsub_9patch";
 static NSString * const kManorSleepDoneDateKey = @"antforest_manor_sleep_date";
+// 上次被服务端接受的口径序号（落盘：下一晚优先复用，不再从第一组重跑）
+static NSString * const kManorSleepVariantKey  = @"antforest_manor_sleep_variant";
 // 家庭组 ID（rpc31 抓包实证，与 AntManor 同一账号）
 static NSString * const kManorFamilyGroupId    = @"0372620009220250119202832812";
+
+// 睡觉口径变体：一组口径 = enterFamily(+refinedOperation) + sleep 的请求参数组合
+//  idx 0：与真机已验证的家庭签到链同构（enterFamily source=H5 → refinedOperation(ENTERFAMILY) → sleep NORMAL + 真实版本号）
+//  idx 1：rpc31 口径（3.1.4 真机实证：9/11 21:00 送睡成功就是这一组）
+//  idx 2：rpc31 口径 + 补 refinedOperation(ENTERFAMILY)
+//  idx 3：全 H5 口径（enterFamily 与 sleep 都用 source=H5）
+static const NSInteger kManorSleepVariantCount = 4;
+// 两次尝试间隔（秒）：服务端会因小鸡进食/外出拒一次，10 分钟后再试，不必等半小时
+static const NSTimeInterval kManorSleepAttemptGap = 600;
+// 每晚上限（次）：防止整晚反复打请求
+static const NSInteger kManorSleepAttemptMax = 12;
+static BOOL gManorSleepPending = NO;
+static NSInteger gManorSleepInFlightVariant = -1;
+static NSString *gManorSleepAttemptDate = nil;
+static NSInteger gManorSleepAttemptCount = 0;
 
 // 每天 20:00 之后才送小鸡回别墅睡觉
 static BOOL isManorSleepTime(void) {
@@ -6719,6 +6736,79 @@ static BOOL isManorSleepDoneToday(void) {
 
 static void markManorSleepDone(void) {
     [[NSUserDefaults standardUserDefaults] setObject:getCurrentDateString() forKey:kManorSleepDoneDateKey];
+    if (gManorSleepInFlightVariant >= 0) {
+        [[NSUserDefaults standardUserDefaults] setInteger:gManorSleepInFlightVariant forKey:kManorSleepVariantKey];
+    }
+}
+
+// 优先口径：上次真机睡成的那一组；没记录就用 rpc31 口径（idx 1）
+static NSInteger manorSleepPreferredVariant(void) {
+    NSString *stored = [[NSUserDefaults standardUserDefaults] objectForKey:kManorSleepVariantKey];
+    if (!stored) return 1;
+    NSInteger v = [[NSUserDefaults standardUserDefaults] integerForKey:kManorSleepVariantKey];
+    if (v < 0 || v >= kManorSleepVariantCount) return 1;
+    return v;
+}
+
+// 尝试步序 -> 口径序号：第一步永远是「已验证口径」，之后才逐个换备选
+static NSInteger manorSleepVariantForStep(NSInteger step) {
+    NSInteger first = manorSleepPreferredVariant();
+    if (step <= 0) return first;
+    NSInteger seen = 0;
+    for (NSInteger v = 0; v < kManorSleepVariantCount; v++) {
+        if (v == first) continue;
+        seen++;
+        if (seen == step) return v;
+    }
+    return first;
+}
+
+static void manorSleepVariantAt(NSInteger idx, NSString **enterSource, BOOL *refined, NSString **sleepSource, NSString **sleepRequestType, NSString **sleepVersion) {
+    switch ((idx % kManorSleepVariantCount + kManorSleepVariantCount) % kManorSleepVariantCount) {
+        case 0:
+            *enterSource = @"H5";
+            *refined = YES;
+            *sleepSource = kManorSleepSource;
+            *sleepRequestType = @"NORMAL";
+            *sleepVersion = @"1.8.2302070202.46";
+            break;
+        case 1:
+            *enterSource = kManorSleepSource;
+            *refined = NO;
+            *sleepSource = kManorSleepSource;
+            *sleepRequestType = @"RPC";
+            *sleepVersion = @"unknown";
+            break;
+        case 2:
+            *enterSource = kManorSleepSource;
+            *refined = YES;
+            *sleepSource = kManorSleepSource;
+            *sleepRequestType = @"NORMAL";
+            *sleepVersion = @"1.8.2302070202.46";
+            break;
+        default:
+            *enterSource = @"H5";
+            *refined = NO;
+            *sleepSource = @"H5";
+            *sleepRequestType = @"NORMAL";
+            *sleepVersion = @"1.8.2302070202.46";
+            break;
+    }
+}
+
+// 当晚允许再试一次？每 600 秒最多一次，整晚封顶 kManorSleepAttemptMax 次
+static BOOL canStartManorSleepAttempt(void) {
+    static NSTimeInterval lastSleepAttempt = 0;
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    if (lastSleepAttempt > 0 && now - lastSleepAttempt < kManorSleepAttemptGap) return NO;
+    if (![gManorSleepAttemptDate isEqualToString:getCurrentDateString()]) {
+        gManorSleepAttemptDate = getCurrentDateString();
+        gManorSleepAttemptCount = 0;
+    }
+    if (gManorSleepAttemptCount >= kManorSleepAttemptMax) return NO;
+    lastSleepAttempt = now;
+    gManorSleepAttemptCount++;
+    return YES;
 }
 
 - (void)sleepManorChicken {
@@ -6728,46 +6818,96 @@ static void markManorSleepDone(void) {
         return;
     }
     if (isManorSleepDoneToday()) return;
+    if (gManorSleepPending) return;
 
-    // 失败重试节流：同一晚每 30 分钟最多一次（小鸡外出或正在进食时服务端会拒）
-    static NSTimeInterval lastSleepAttempt = 0;
-    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-    if (lastSleepAttempt > 0 && now - lastSleepAttempt < 1800) {
-        recordEggDiagOnce(self, @"sleep_cool", @"蚂蚁庄园：睡觉重试冷却中（每 30 分钟一次）");
+    if (!canStartManorSleepAttempt()) {
+        recordEggDiagOnce(self, @"sleep_cool", @"蚂蚁庄园：睡觉重试冷却中（每 10 分钟一次，今晚封顶 12 次）");
         return;
     }
-    lastSleepAttempt = now;
+    if (![self activeManorBridge]) {
+        recordEggDiagOnce(self, @"sleep_bridge", @"蚂蚁庄园：睡觉跳过（庄园桥接未就绪，等庄园页面出现）");
+        return;
+    }
+
+    gManorSleepPending = YES;
+    recordEggDiagOnce(self, @"sleep_open", @"蚂蚁庄园：已到 20:00，开始尝试送小鸡回家庭别墅睡觉");
+    [self sendManorSleepStep:0 round:0];
+}
+
+// 逐组口径尝试：口径不靠猜，只看服务端回包（成功即 markManorSleepDone），被拒就自动换下一组
+- (void)sendManorSleepStep:(NSInteger)step round:(NSInteger)round {
+    if (isManorSleepDoneToday() || !isManorSleepTime()) {
+        gManorSleepPending = NO;
+        return;
+    }
+    if (step >= kManorSleepVariantCount) {
+        gManorSleepPending = NO;
+        [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：本轮 %ld 组睡觉口径都没睡成，%ld 分钟后再试", (long)kManorSleepVariantCount, (long)(kManorSleepAttemptGap / 60)]];
+        return;
+    }
 
     PSDJsBridge *bridge = [self activeManorBridge];
     if (!bridge) {
-        recordEggDiagOnce(self, @"sleep_bridge", @"蚂蚁庄园：睡觉跳过（庄园桥接未就绪）");
+        gManorSleepPending = NO;
+        recordEggDiagOnce(self, @"sleep_bridge", @"蚂蚁庄园：睡觉跳过（庄园桥接未就绪，等庄园页面出现）");
         return;
     }
 
+    NSInteger idx = manorSleepVariantForStep(step);
+    NSString *enterSource = nil;
+    NSString *sleepSource = nil;
+    NSString *sleepRequestType = nil;
+    NSString *sleepVersion = nil;
+    BOOL refined = NO;
+    manorSleepVariantAt(idx, &enterSource, &refined, &sleepSource, &sleepRequestType, &sleepVersion);
+
     NSString *url = [self manorRPCUrlString];
     NSString *farmId = self.lastManorFarmId ?: @"";
-    NSString *timeStamp = [NSString stringWithFormat:@"%ld", (long)(now * 1000)];
-    NSString *randNum = [AntForestManager getNumberRandom:15];
+    gManorSleepInFlightVariant = idx;
 
-    [self recordStage:@"蚂蚁庄园：天黑了，正在送小鸡回家庭别墅睡觉..."];
+    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：天黑了，正在送小鸡回家庭别墅睡觉...（第 %ld 次尝试，口径 %ld/%ld）", (long)gManorSleepAttemptCount, (long)(step + 1), (long)kManorSleepVariantCount]];
 
     // 1. 家庭别墅需先进家庭（rpc31：enterFamily source=aixinxiaowutojiating）
-    NSString *enterArg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antfarm.enterFamily\",\"headers\":{\"source\":\"%@\",\"ags-source\":\"%@\"},\"showError\":false,\"showLoading\":false,\"requestData\":[{\"farmId\":\"%@\",\"fromAnn\":false,\"recall\":false,\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"%@\",\"timeZoneId\":\"Asia/Shanghai\",\"version\":\"1.8.2302070202.46\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", kManorSleepRPCSource, kManorSleepRPCSource, farmId, kManorSleepSource, timeStamp, randNum];
+    NSString *enterTs = [NSString stringWithFormat:@"%ld", (long)([[NSDate date] timeIntervalSince1970] * 1000)];
+    NSString *enterArg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antfarm.enterFamily\",\"headers\":{\"source\":\"%@\",\"ags-source\":\"%@\"},\"showError\":false,\"showLoading\":false,\"requestData\":[{\"farmId\":\"%@\",\"fromAnn\":false,\"recall\":false,\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"%@\",\"timeZoneId\":\"Asia/Shanghai\",\"version\":\"1.8.2302070202.46\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", kManorSleepRPCSource, kManorSleepRPCSource, farmId, enterSource, enterTs, [AntForestManager getNumberRandom:15]];
     manorSendRPC(bridge, enterArg, url);
 
-    // 2. 进家庭 2s 后发 sleep（version=unknown / requestType=RPC 沿用抓包口径）
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    NSInteger enterDelayMs = refined ? 1500 : 0;
+
+    // 2. 部分口径要补 refinedOperation(ENTERFAMILY)（与真机已验证的家庭签到链一致）
+    if (refined) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1500 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+            if (isManorSleepDoneToday()) return;
+            NSString *refineTs = [NSString stringWithFormat:@"%ld", (long)([[NSDate date] timeIntervalSince1970] * 1000)];
+            NSString *refineArg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antfarm.refinedOperation\",\"headers\":{\"source\":\"%@\",\"ags-source\":\"%@\"},\"showError\":false,\"showLoading\":false,\"requestData\":[{\"actionId\":\"ENTERFAMILY\",\"recall\":false,\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"H5\",\"version\":\"1.8.2302070202.46\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", kManorSleepRPCSource, kManorSleepRPCSource, refineTs, [AntForestManager getNumberRandom:15]];
+            manorSendRPC(bridge, refineArg, url);
+        });
+    }
+
+    // 3. 进家庭后发 sleep（source / requestType / version 按口径变体决定）
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((enterDelayMs + 2000) * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+        if (isManorSleepDoneToday()) return;
         NSString *sleepTs = [NSString stringWithFormat:@"%ld", (long)([[NSDate date] timeIntervalSince1970] * 1000)];
-        NSString *sleepArg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antfarm.sleep\",\"headers\":{\"source\":\"%@\",\"ags-source\":\"%@\"},\"showError\":false,\"showLoading\":false,\"requestData\":[{\"groupId\":\"%@\",\"recall\":false,\"requestType\":\"RPC\",\"sceneCode\":\"ANTFARM\",\"source\":\"%@\",\"spaceType\":\"ChickFamily\",\"version\":\"unknown\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", kManorSleepRPCSource, kManorSleepRPCSource, kManorFamilyGroupId, kManorSleepSource, sleepTs, [AntForestManager getNumberRandom:15]];
+        NSString *sleepArg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antfarm.sleep\",\"headers\":{\"source\":\"%@\",\"ags-source\":\"%@\"},\"showError\":false,\"showLoading\":false,\"requestData\":[{\"groupId\":\"%@\",\"recall\":false,\"requestType\":\"%@\",\"sceneCode\":\"ANTFARM\",\"source\":\"%@\",\"spaceType\":\"ChickFamily\",\"version\":\"%@\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", kManorSleepRPCSource, kManorSleepRPCSource, kManorFamilyGroupId, sleepRequestType, sleepSource, sleepVersion, sleepTs, [AntForestManager getNumberRandom:15]];
         manorSendRPC(bridge, sleepArg, url);
 
-        // 3. 睡后同步动物状态，刷新页面显示
+        // 4. 睡后同步动物状态，刷新页面显示
         if (!farmId.length) return;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             NSString *syncTs = [NSString stringWithFormat:@"%ld", (long)([[NSDate date] timeIntervalSince1970] * 1000)];
             NSString *syncArg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antfarm.syncAnimalStatus\",\"headers\":{\"source\":\"%@\",\"ags-source\":\"%@\"},\"showError\":false,\"showLoading\":false,\"requestData\":[{\"farmId\":\"%@\",\"operTag\":\"SYNC_RESUME\",\"operType\":\"QUERY_ALL\",\"recall\":false,\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"%@\",\"version\":\"1.8.2302070202.46\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", kManorSleepRPCSource, kManorSleepRPCSource, farmId, kManorSleepRPCSource, syncTs, [AntForestManager getNumberRandom:15]];
             manorSendRPC(bridge, syncArg, url);
         });
+    });
+
+    // 5. 本组口径的判决窗口：没等到「睡着」就换下一组（失败原因看面板日志）
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((enterDelayMs + 6000) * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+        if (isManorSleepDoneToday()) {
+            gManorSleepPending = NO;
+            return;
+        }
+        if (gManorSleepInFlightVariant != idx) return;
+        [self sendManorSleepStep:step + 1 round:round];
     });
 }
 
@@ -7178,12 +7318,16 @@ static NSTimeInterval gLastManorCheckTime = 0;
                            [resData[@"success"] boolValue] || [dict[@"success"] boolValue];
             if (sleepOk) {
                 markManorSleepDone();
-                [self recordStage:@"蚂蚁庄园：小鸡已在家庭别墅睡着（今日完成）"];
+                gManorSleepPending = NO;
+                gManorSleepInFlightVariant = -1;
+                [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：小鸡已在家庭别墅睡着（今日完成，口径 %ld）", (long)(manorSleepPreferredVariant() + 1)]];
             } else if ([sleepMemo containsString:@"已经睡"] || [sleepMemo containsString:@"睡觉中"]) {
                 markManorSleepDone();
+                gManorSleepPending = NO;
+                gManorSleepInFlightVariant = -1;
                 [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：小鸡已经在睡觉了（%@）", sleepMemo]];
             } else {
-                [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：小鸡暂时睡不着（%@），30 分钟后自动重试", sleepMemo.length ? sleepMemo : @"未知原因"]];
+                [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：小鸡暂时睡不着（%@），自动换下一组口径", sleepMemo.length ? sleepMemo : @"未知原因"]];
             }
         }
 
