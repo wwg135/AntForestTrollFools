@@ -3188,7 +3188,17 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
                     [gDailyCompletedTasks addObject:@"SIGN_TODAY"];
                     saveDailyTaskCache();
                 }
-                [self recordStage:@"领奖励：今日能量签到成功，已重置并激活今日累计阶梯奖励"];
+                NSInteger contCount = [data[@"continuousCount"] integerValue];
+                NSDictionary *signModel = [data[@"signModel"] isKindOfClass:NSDictionary.class] ? data[@"signModel"] : nil;
+                NSDictionary *signAward = [signModel[@"signAward"] isKindOfClass:NSDictionary.class] ? signModel[@"signAward"] : nil;
+                NSInteger awardCount = [signAward[@"count"] integerValue];
+                if (awardCount > 0 && contCount > 0) {
+                    [self recordStage:[NSString stringWithFormat:@"领奖励：今日能量签到成功（获得 %ldg g 能量，已连签 %ld 天），已重置并激活今日累计阶梯奖励", (long)awardCount, (long)contCount]];
+                } else if (awardCount > 0) {
+                    [self recordStage:[NSString stringWithFormat:@"领奖励：今日能量签到成功（获得 %ldg g 能量），已重置并激活今日累计阶梯奖励", (long)awardCount]];
+                } else {
+                    [self recordStage:@"领奖励：今日能量签到成功，已重置并激活今日累计阶梯奖励"];
+                }
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                     [self queryVitalityTaskListWithForce:YES];
                 });
@@ -3259,7 +3269,11 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
             NSString *signTaskKey = @"SIGN_TODAY";
             if (isSignedToday) {
                 @synchronized(self) {
-                    [gDailyCompletedTasks addObject:signTaskKey];
+                    if (![gDailyCompletedTasks containsObject:signTaskKey]) {
+                        [gDailyCompletedTasks addObject:signTaskKey];
+                        saveDailyTaskCache();
+                        [self recordStage:@"领奖励：检测到今日已完成能量签到，直接执行常规任务与阶梯大奖"];
+                    }
                 }
             } else if (signId.length) {
                 // 优先执行能量签到以激活今日累计阶梯奖励，但绝不阻断后续常规任务解析入队，杜绝死锁与零点任务瘫痪
