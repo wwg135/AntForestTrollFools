@@ -5,14 +5,14 @@ source_file="$(dirname "$0")/../antforest/AntForestManager.m"
 header_file="$(dirname "$0")/../antforest/AntForestManager.h"
 makefile="$(dirname "$0")/../Makefile"
 
-echo "[1/7] Checking advanced-feed implementation & .h declaration..."
+echo "[1/8] Checking advanced-feed implementation & .h declaration..."
 grep -Fq -- '- (void)feedManorChickenWithAdvancedFood {' "$source_file"
-grep -Fq -- '- (void)stopManorAdvancedFoodFeed:(NSString *)reason {' "$source_file"
+grep -Fq -- '- (void)stopManorAdvancedFoodFeed:(NSString *)reason silent:(BOOL)silent {' "$source_file"
 grep -Fq -- '-(void)feedManorChickenWithAdvancedFood;' "$header_file"
-grep -Fq -- '-(void)stopManorAdvancedFoodFeed:(NSString *)reason;' "$header_file"
+grep -Fq -- '-(void)stopManorAdvancedFoodFeed:(NSString *)reason silent:(BOOL)silent;' "$header_file"
 grep -Fq -- '-(void)feedManorChicken;' "$header_file"   # 同族方法作为对照
 
-echo "[2/7] Checking useFarmFood rpc shape (flat 1-per-request / 7 cuisines)..."
+echo "[2/8] Checking useFarmFood rpc shape (flat 1-per-request / 7 cuisines)..."
 grep -Fq 'com.alipay.antfarm.useFarmFood' "$source_file"
 grep -Fq 'cookbookId' "$source_file"
 grep -Fq 'cuisineId' "$source_file"
@@ -25,7 +25,7 @@ if [ "$cuisine_count" -ne 7 ]; then
     exit 1
 fi
 
-echo "[3/7] Checking gates (total switch / bridge / cooldown / single-round cap 15)..."
+echo "[3/8] Checking gates (total switch / bridge / cooldown / single-round cap 15)..."
 grep -Fq 'if (!self.enableAutoManor) return;' "$source_file"
 grep -Fq 'bridge == self.jsBridge' "$source_file"   # 桥接判定已收敛进 activeManorBridge
 grep -Fq 'gManorCuisineInFlight' "$source_file"
@@ -33,7 +33,7 @@ grep -Fq 'gManorCuisineStopUntil' "$source_file"
 grep -Fq '+ 1800;' "$source_file"
 grep -Fq 'gManorCuisineFedCount >= 15' "$source_file"
 
-echo "[4/7] Checking one-by-one wiring (1.2s chaining / 4s no-response guard / chain + response driven)..."
+echo "[4/8] Checking one-by-one wiring (1.2s chaining / 4s no-response guard / chain + response driven)..."
 grep -Fq '1200 * NSEC_PER_MSEC' "$source_file"
 grep -Fq '4000 * NSEC_PER_MSEC' "$source_file"
 grep -Fq '[self feedManorChickenWithAdvancedFood];' "$source_file"
@@ -41,7 +41,7 @@ grep -Fq '// 4. 自动投喂小鸡（优先逐个投喂高级饲料' "$source_fi
 grep -Fq '优先高级饲料' "$source_file"
 grep -Fq '[self feedManorChicken];' "$source_file"   # 普通饲料兜底入口仍在
 
-echo "[5/7] Checking response branch M (success continues / 喂不动 falls back to normal feed)..."
+echo "[5/8] Checking response branch M (success continues / 喂不动 falls back to normal feed)..."
 grep -Fq '// M. 高级饲料投喂回包处理 (useFarmFood)' "$source_file"
 grep -Eq 'containsString:.*useFarmFood' "$source_file"
 grep -Fq '转普通饲料投喂' "$source_file"
@@ -49,13 +49,13 @@ grep -Fq 'isManorCuisineSkipMemo' "$source_file"
 grep -Fq '还没吃完' "$source_file"
 grep -Fq '已满' "$source_file"
 
-echo "[6/7] Checking panel logs (send / success / pause)..."
-grep -Fq '蚂蚁庄园：优先投喂高级饲料（逐个投喂）' "$source_file"
+echo "[6/8] Checking panel logs (send / success / pause)..."
+grep -Fq '蚂蚁庄园：高级饲料投喂开始（识别到持有 %lu 种' "$source_file"
 grep -Fq '正在投喂第 %lu 个高级饲料' "$source_file"
-grep -Fq '高级饲料投喂成功（第 %lu 个）' "$source_file"
+grep -Fq '高级饲料投喂成功（第 %lu 个' "$source_file"
 grep -Fq '高级饲料投喂暂停（%@）' "$source_file"
 
-echo "[7/7] Checking no leftover AntManor switch for this feature..."
+echo "[7/8] Checking no leftover AntManor switch for this feature..."
 if grep -Fq 'antmanor_advanced' "$source_file" "$makefile"; then
     echo "❌ 不应残留 AntManor 的高级饲料开关 key（本功能受 enableAutoManor 总闸控制，不加独立开关）"
     exit 1
@@ -64,5 +64,10 @@ if grep -Fq 'kKeyAdvancedFood' "$source_file"; then
     echo "❌ 不应把 AntManor 的独立开关搬进来"
     exit 1
 fi
+
+echo "[8/8] Checking 库存识别接入（有库存才喂 / 服务端判空库存记名单）..."
+grep -Fq 'learnManorCuisineStockFromObject' "$source_file"
+grep -Fq 'manorOwnedCuisineList' "$source_file"
+grep -Fq 'isManorCuisineEmptyMemo' "$source_file"
 
 echo "✅ All advanced-feed (cuisine) checks passed successfully!"
