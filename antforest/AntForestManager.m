@@ -6028,7 +6028,9 @@ static NSInteger gManorDrawRetryRemain = 0;
 static NSString *gManorDrawLastDrawScene = nil;                  // 最近一次抽奖的活动（回包归属用）
 
 // 抽抽乐任务分组：只做签到 / 逛杂货铺 / 饲料换机会，
-// 小游戏、捐款、外部跳转（苏心游 / 江苏文旅）一律不下手
+// 小游戏、捐款、外部跳转（苏心游 / 江苏文旅）当前版本不下手（9/11 定「先不做，后续再动手」）
+// 注：外部跳转并非做不了——browse + jumpUrl 后台预取 + finishTask 链路抓包已实证可走，
+//     口径与试探方案见 skill antmanor-tweak-dev/references/external-jump-task-feasibility.md
 static NSString *manorDrawTaskGroup(NSString *taskId) {
     if (!taskId.length) return nil;
     if ([taskId isEqualToString:@"SIGN_FREE_TASK"] || [taskId isEqualToString:@"IP_SIGN_FREE"]) return @"SIGN";

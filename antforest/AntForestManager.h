@@ -71,7 +71,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (assign, nonatomic) BOOL enableAutoRewardTasks; // 任务中心自动签到、做任务与领奖励
 @property (assign, nonatomic) BOOL enableAutoAIFish; // AI摸鱼自动任务与摸鱼次数
 @property (assign, nonatomic) BOOL enableAutoFarmTasks; // 芭芭农场做任务集肥料与小鸡肥料自动领取
-@property (assign, nonatomic) BOOL enableAutoManor; // 蚂蚁庄园全自动日常（签到、小课堂答题、领饲料、喂小鸡（含高级饲料逐个投喂）、收肥料、赶走访客、小鸡睡觉、家庭签到、收鸡蛋）
+@property (assign, nonatomic) BOOL enableAutoManor; // 蚂蚁庄园全自动日常（签到、小课堂答题、领饲料、喂小鸡（含高级饲料逐个投喂）、收肥料、赶走访客、小鸡睡觉、家庭签到、收鸡蛋、抽抽乐自动攒次数（满 10 次连抽、到期当天全抽））
 @property (nonatomic, weak) id manorBridge; // 蚂蚁庄园 H5 Bridge
 @property (nonatomic, copy) NSString *manorH5Url; // 蚂蚁庄园当前 URL
 @property (nonatomic, copy) NSString *lastManorFarmId; // 庄园 ID
