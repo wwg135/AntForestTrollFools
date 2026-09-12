@@ -6077,6 +6077,10 @@ static NSString *gManorDrawActGroup = nil;
 static BOOL      gManorDrawActFailed = NO;
 static NSTimeInterval gManorDrawActAt = 0;
 
+// v3.1.9：抽抽乐任务列表「请求 → 回包」配平表（v3.1.6 的 60s 诊断按运行时刻比较，新一轮一到必误报）
+static NSMutableDictionary<NSString *, NSNumber *> *gManorDrawListAskedAt = nil;   // scene -> 请求时刻；收到该活动列表即摘除
+static NSString *gManorDrawLastListScene = nil;                                    // 最近一次列表请求的活动（诊断署名）
+
 static BOOL isManorDrawOperation(NSString *opType) {
     if (!opType.length) return NO;
     return [opType containsString:@"queryDrawMachineActivity"] || [opType containsString:@"drawMachine"] ||
@@ -6268,15 +6272,23 @@ static NSString *manorDrawSceneInObject(id obj, NSUInteger *budget) {
     NSString *randNum = [AntForestManager getNumberRandom:15];
     NSString *url = [self manorRPCUrlString];
     NSString *listArg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antfarm.listFarmTask\",\"showError\":false,\"showLoading\":false,\"requestData\":[{\"requestType\":\"NORMAL\",\"topTask\":\"\",\"source\":\"H5\",\"taskSceneCode\":\"%@\",\"signSceneCode\":\"\",\"sceneCode\":\"ANTFARM\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", taskScene, timeStamp, randNum];
+    // v3.1.9：请求登记进配平表，回包即摘除；60s 后仍挂在表上才报「未获响应」
+    static dispatch_once_t onceDrawAsk;
+    dispatch_once(&onceDrawAsk, ^{ gManorDrawListAskedAt = [NSMutableDictionary dictionary]; });
+    NSTimeInterval askAt = now;
+    @synchronized (gManorDrawListAskedAt) {
+        gManorDrawListAskedAt[scene] = @(askAt);
+        gManorDrawLastListScene = [scene copy];
+    }
     manorSendRPC(bridge, listArg, url);
     NSInteger round = manorDrawRoundUsed(scene);
     [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园 · 抽抽乐：第 %ld 轮（%@），正在读取任务列表…", (long)round, scene]];
-    // v3.1.6 诊断：60s 内无任务列表回包 = 请求石沉大海（通道/回包路由问题），否则静默失败无从排查
-    static NSTimeInterval gManorDrawLastDiag = 0;
     NSString *diagScene = [scene copy];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(60.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if (gManorDrawLastDiag != gManorDrawLastRunTime) {
-            gManorDrawLastDiag = gManorDrawLastRunTime;
+        NSNumber *stillAsked = nil;
+        @synchronized (gManorDrawListAskedAt) { stillAsked = gManorDrawListAskedAt[diagScene]; }
+        if (stillAsked && stillAsked.doubleValue == askAt) {
+            @synchronized (gManorDrawListAskedAt) { [gManorDrawListAskedAt removeObjectForKey:diagScene]; }
             [self recordStage:[NSString stringWithFormat:@"⚠️ 抽抽乐（%@）：发出任务列表请求 60 秒未收到回包（本轮请求未获响应）", diagScene]];
         }
     });
@@ -6369,6 +6381,7 @@ static NSString *manorDrawSceneInObject(id obj, NSUInteger *budget) {
 
     NSString *scene = manorDrawSceneInTaskList(taskList);
     if (!scene.length) return;                      // 非抽抽乐列表：交回庄园任务链
+    @synchronized (gManorDrawListAskedAt) { [gManorDrawListAskedAt removeObjectForKey:scene]; }   // 回包已到，销掉 60s 未响应告警
     NSString *taskScene = manorDrawTaskSceneForScene(scene);
     NSString *defaultAward = [scene isEqualToString:kManorDrawSceneIP] ? @"IP_DRAW_MACHINE_DRAW_TIMES" : @"DAILY_DRAW_TIMES";
 
@@ -7399,20 +7412,23 @@ static NSTimeInterval gLastManorCheckTime = 0;
             }
         }
 
-        // E2. 抽抽乐诊断（v3.1.6）：我方 DRAW_TASK 任务列表请求被服务端拒绝（回包无 farmTaskList）——每日留一条原文
-        if ([opType containsString:@"listFarmTask"]) {
+        // E2. 抽抽乐诊断（v3.1.9）：listFarmTask 回包**真**没带 farmTaskList 才留一条原文
+        //     （v3.1.6 版漏了这层判断 → 每日首个 listFarmTask 回包一律误报「被拒」，含庄园饲料链的健康回包）
+        if ([opType containsString:@"listFarmTask"] && taskList.count == 0 && gManorDrawListAskedAt.count > 0) {
             static NSMutableSet<NSString *> *gDrawDiagKeys = nil;
             static dispatch_once_t onceDiag;
             dispatch_once(&onceDiag, ^{ gDrawDiagKeys = [NSMutableSet set]; });
-            NSString *diagKey = [NSString stringWithFormat:@"%@|%@", getCurrentDateString(), opType];
+            NSString *diagWho = gManorDrawLastListScene.length ? gManorDrawLastListScene : @"抽抽乐";
+            NSString *diagKey = [NSString stringWithFormat:@"%@|%@", getCurrentDateString(), diagWho];
             @synchronized (gDrawDiagKeys) {
                 if (![gDrawDiagKeys containsObject:diagKey] && gDrawDiagKeys.count < 20) {
                     [gDrawDiagKeys addObject:diagKey];
                     NSString *diagMemo = [NSString stringWithFormat:@"%@", resData[@"memo"] ?: (dict[@"memo"] ?: @"")];
                     NSString *diagCode = [NSString stringWithFormat:@"%@", resData[@"resultCode"] ?: (dict[@"resultCode"] ?: @"")];
-                    [self recordStage:[NSString stringWithFormat:@"⚠️ 抽查任务列表被拒（无 farmTaskList）：memo=%@ code=%@", diagMemo, diagCode]];
+                    [self recordStage:[NSString stringWithFormat:@"⚠️ 抽抽乐（%@）：任务列表回包为空（无 farmTaskList）：memo=%@ code=%@", diagWho, diagMemo, diagCode]];
                 }
             }
+            @synchronized (gManorDrawListAskedAt) { [gManorDrawListAskedAt removeObjectForKey:(gManorDrawLastListScene ?: @"")]; }
         }
         
         // G. 投喂小鸡回包处理 (feedAnimal)
