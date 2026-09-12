@@ -22,7 +22,7 @@ jobs:
 
       - name: Install dpkg
         run: |
-          brew install dpkg
+          brew install dpkg ldid
 
       - name: Build packages
         run: |
@@ -44,7 +44,7 @@ jobs:
           mkdir -p build/rootless-tmp/var/jb/Library/MobileSubstrate/DynamicLibraries
           cp build/AntForestPort-Ocean.dylib build/rootless-tmp/var/jb/Library/MobileSubstrate/DynamicLibraries/antforest.dylib
           cp antforest/Package/Library/MobileSubstrate/DynamicLibraries/antforest.plist build/rootless-tmp/var/jb/Library/MobileSubstrate/DynamicLibraries/antforest.plist
-          dpkg-deb -b build/rootless-tmp "Packages/com.vknote.antforest_${VER}_iphoneos-arm64.deb"
+          dpkg-deb --root-owner-group -b build/rootless-tmp "Packages/com.vknote.antforest_${VER}_iphoneos-arm64.deb"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@main
