@@ -31,12 +31,6 @@ jobs:
           VER=$(grep '^Version:' antforest/Package/DEBIAN/control | awk '{print $2}')
           echo "Package version: ${VER}"
 
-          # Rootful
-          #cp -r antforest/Package/* build/rootful-tmp/
-          #cp build/AntForestPort-Ocean.dylib build/rootful-tmp/Library/MobileSubstrate/DynamicLibraries/antforest.dylib
-          #dpkg-deb -b build/rootful-tmp "Packages/com.vknote.antforest_${VER}_iphoneos-arm.deb"
-
-          # Rootless
           mkdir -p build/rootless-tmp/DEBIAN
           cp antforest/Package/DEBIAN/control build/rootless-tmp/DEBIAN/control
           sed -i '' 's/^Architecture: iphoneos-arm/Architecture: iphoneos-arm64/' build/rootless-tmp/DEBIAN/control
