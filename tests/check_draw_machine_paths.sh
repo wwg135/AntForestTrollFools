@@ -3,6 +3,7 @@
 # 口径来源：manor_probe 抓包 2026-09-11 首发 + 2026-09-12 手动做满两活动全流程
 # 用户口径：平时不抽，积满 10 次才连抽；活动当天结束则剩余全抽；当天没做满就一直执行
 # 9/12 定案：回包任务项不含 taskSceneCode（只在请求里），分流改按白名单 taskId/bizKey 认；FINISHED=只领奖，TODO=动作+领奖
+# 9/13 定案（v3.3.2）：补抽只在「活动最后一天」启用；队列按活动分开存（旧版单全局变量被后查的活动覆盖 → IP 场剩余 3 次被提前抽干）
 set -u
 cd "$(dirname "$0")/.."
 M=antforest/AntForestManager.m
@@ -116,6 +117,69 @@ chk "补抽方法存在"                    "$M" '- (void)drainManorDrawPending 
 chk "心跳最前面先补抽"                "$M" '[self drainManorDrawPending];'
 chk "补抽轮间隔 25s"                  "$M" 'kManorDrawPendInterval = 25.0'
 chk "补抽轮数封顶（防风控）"          "$M" 'kManorDrawPendMaxRounds'
+
+echo "=== 8. v3.3.2：补抽只在活动最后一天 / 两活动互不覆盖 / 到期清空剩余 ==="
+chk   "剩余次数排队加最后一天门"      "$M" 'if (left > 0 && isLastDay) {'
+chk   "非最后一天剩余只记不抽"        "$M" '留着不抽（只在活动最后一天才清空）'
+chk   "补抽队列按活动分开存"          "$M" 'gManorDrawPend[scene] = [@{@"remain": @(queued)'
+chk   "补抽按场景逐个遍历"            "$M" 'for (NSString *scene in [gManorDrawPend.allKeys copy]) {'
+chk   "每日一批门到期当天放开"        "$M" 'if (!isLastDay && [gDailyCompletedTasks containsObject:manorDrawDailyMark(@"PULL", scene)]) return;'
+chk   "到期且已封盘仍查一轮清空"      "$M" 'if (!(lastDayScene && leftTimes > 0)) continue;'
+chk   "endTime 兼容秒级时间戳"        "$M" 'else if (raw > 1000000000LL)'
+chk   "到期日志带 endTime 原值"       "$M" '活动今日结束（endTime=%@）'
+chk   "日期状态按活动缓存"            "$M" 'gManorDrawEndToday[scene] = @(isLastDay);'
+chk   "可抽次数按活动缓存"            "$M" 'gManorDrawLastDrawTimes[scene] = @(drawTimes);'
+chkno "旧全局队列活动变量已清"        "$M" 'gManorDrawPendScene'
+chkno "旧全局剩余次数变量已清"        "$M" 'gManorDrawPendRemain'
+chkno "旧全局补抽轮数变量已清"        "$M" 'gManorDrawPendRound'
+
+echo "=== 9. v3.3.3：核对汇总日志（两活动各一条） ==="
+chk "汇总日志文案"                    "$M" '核对完成——回包 %lu 项，可执行 %lu 项，跳过 %ld 项'
+chk "汇总日志带活动标识"              "$M" '抽抽乐（%@）：核对完成'
+chk "跳过数=回包-可执行"              "$M" 'NSInteger skipTotal = (NSInteger)taskList.count - (NSInteger)plan.count;'
+chk "非白名单明细附注"                "$M" '（其中非白名单小游戏/捐款/外部跳转 %ld 项）'
+chk "汇总后接封盘分支"                "$M" 'skipDetail]];'
+n=$(grep -c '核对完成——回包' "$M")
+if [ "$n" -eq 1 ]; then echo "  ok   汇总日志只此一处（两活动共用同一函数）"; else echo "  FAIL 汇总日志出现 $n 次"; fail=1; fi
+container=$(awk '/^- *\(/ {fn = ($0 ~ /handleManorDrawTaskList/) ? "in" : "out"} /核对完成——回包/ {print fn; exit}' "$M")
+chk "两活动由同一循环遍历（各自一条汇总）"  "$M" 'for (NSString *scene in @[kManorDrawSceneDaily, kManorDrawSceneIP]) {'
+if [ "$container" = "in" ]; then echo "  ok   汇总日志位于 handleManorDrawTaskList 内"; else echo "  FAIL 汇总日志不在两活动共用函数内（$container）"; fail=1; fi
+
+echo "=== 10. v3.3.4：白名单外任务留痕（纯日志、零行为改动） ==="
+chk "未收录任务日志文案"                "$M" '未收录任务「%@」'
+chk "日志含标识/状态/进度"              "$M" '｜标识:%@｜状态:%@｜进度:%ld/%ld｜'
+chk "日志含模式/动作/组"                "$M" '｜模式:%@｜动作:%@｜组:%@｜'
+chk "日志含描述/内嵌页"                 "$M" '｜描述:%@｜内嵌页:%@'
+chk "组标识取自 iepTaskTracer"          "$M" 'rangeOfString:@"groupId:"'
+chk "内嵌页沿用既有解析"                "$M" 'manorDrawInnerPageURL(targetUrl)'
+chk "同 标识+状态+进度 去重"            "$M" 'gManorDrawUnknownSeen containsObject:seenKey'
+chk "未收录项仍计入跳过数"              "$M" 'skipped++;'
+chk "未收录项仍零请求（只留痕）"        "$M" 'logManorDrawUnknownTask:task scene:scene taskId:taskId status:status];   // v3.3.4 探针：只留痕，不改行为'
+n=$(grep -c 'logManorDrawUnknownTask' "$M")
+if [ "$n" -eq 2 ]; then echo "  ok   探针只此一处调用（另一次为方法定义）"; else echo "  FAIL logManorDrawUnknownTask 出现 $n 次"; fail=1; fi
+p=$(awk '/^- *\(/ {fn = ($0 ~ /handleManorDrawTaskList/) ? "in" : "out"} /logManorDrawUnknownTask:task scene:scene/ {print fn; exit}' "$M")
+if [ "$p" = "in" ]; then echo "  ok   探针落在 handleManorDrawTaskList 内（两活动共用）"; else echo "  FAIL 探针不在两活动共用函数内（$p）"; fail=1; fi
+
+echo "=== 11. v3.3.5：VIEW/JUMP 访问型任务（去芭芭农场逛一逛）纳入派单 ==="
+chk "任务级分组判定函数"                "$M" 'static NSString *manorDrawTaskGroupForTask(NSDictionary *task) {'
+chk "派单口径改用任务级判定"            "$M" 'NSString *group = manorDrawTaskGroupForTask(task);'
+chk "先走白名单，再走字段规则"          "$M" 'NSString *group = manorDrawTaskGroup(taskId);'
+chk "VIEW 模式门槛"                     "$M" '[mode isEqualToString:@"VIEW"]'
+chk "JUMP 动作门槛"                     "$M" '[action isEqualToString:@"JUMP"]'
+chk "访问型组标识 VISIT"                "$M" 'return @"VISIT";'
+chk "needAct 纳入 VISIT"                "$M" '|| [group isEqualToString:@"VISIT"]));'
+chk "needClaim 纳入 VISIT"              "$M" '[group isEqualToString:@"VISIT"] || claimOnly);'
+chk "访问型动作报文（doFarmTask）"      "$M" '- (void)doManorDrawVisitTask:(NSString *)taskId taskSceneCode:(NSString *)taskScene {'
+chk "访问型派发挂点"                    "$M" '[self doManorDrawVisitTask:taskId taskSceneCode:ts];'
+chk "访问型 source=antfarm_villa（抓包）" "$M" '\"source\":\"antfarm_villa\"'
+chk "领奖 source 参数化（默认 icon）"    "$M" '(source.length ? source : @"icon")'
+chk "领奖按组选 source"                 "$M" 'NSString *claimSource = [group isEqualToString:@"VISIT"] ? @"antfarm_villa" : @"icon";'
+chk "访问型不套 15s 停留"               "$M" 'needAct && [group isEqualToString:@"SHOP"]) ? kManorDrawShopBrowseWait'
+chk "面板名 芭芭农场逛逛"               "$M" 'return @"芭芭农场逛逛";'
+chk "回包归属认 BBNC_GYG"               "$M" 'rangeOfString:@"BBNC_GYG"'
+chkno "派单不写死单个 taskId"           "$M" '[taskId isEqualToString:@"IP_BBNC_GYG26"]'
+r=$(awk '/^- *\(/ {fn = ($0 ~ /handleManorDrawTaskList/) ? "in" : "out"} /manorDrawTaskGroupForTask\(task\)/ {print fn; exit}' "$M")
+if [ "$r" = "in" ]; then echo "  ok   任务级判定落在两活动共用函数内"; else echo "  FAIL 任务级判定不在 handleManorDrawTaskList 内（$r）"; fail=1; fi
 
 echo
 if [ "$fail" -eq 0 ]; then echo "全部通过"; else echo "存在失败项"; fi
