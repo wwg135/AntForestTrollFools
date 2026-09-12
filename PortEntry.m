@@ -658,8 +658,11 @@ static void installEarnEnergyCollector(id controller) {
     });
 }
 
-@interface AntForestLogPanel : UIViewController <UITableViewDataSource>
+@interface AntForestLogPanel : UIViewController <UITableViewDataSource, UITableViewDelegate>
 @property (nonatomic, strong) UITableView *tableView;
+@property (nonatomic, strong) UIButton *selectButton;
+@property (nonatomic, strong) UILabel *modeHintLabel;
+@property (nonatomic) BOOL logSelectionMode;
 @property (nonatomic, strong) UILabel *todayLabel;
 @property (nonatomic, strong) UILabel *totalLabel;
 @property (nonatomic, strong) UILabel *statusLabel;
@@ -1443,6 +1446,8 @@ static void installEarnEnergyCollector(id controller) {
     title.translatesAutoresizingMaskIntoConstraints = NO;
 
     UIButton *settingsButton = [self topBarButtonWithIcon:@"gearshape.fill" action:@selector(showSettings) accessibilityLabel:@"功能设置"];
+    UIButton *selectButton = [self topBarButtonWithIcon:@"checkmark.circle" action:@selector(toggleLogSelectionMode:) accessibilityLabel:@"多选复制"];
+    self.selectButton = selectButton;
     UIButton *copyButton = [self topBarButtonWithIcon:@"doc.on.doc.fill" action:@selector(copyDiagnosticLogs:) accessibilityLabel:@"复制日志"];
     UIButton *clearButton = [self topBarButtonWithIcon:@"trash.fill" action:@selector(clearLogs) accessibilityLabel:@"清空日志"];
 
@@ -1580,12 +1585,20 @@ static void installEarnEnergyCollector(id controller) {
 
     self.tableView = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
     self.tableView.dataSource = self;
+    self.tableView.delegate = self;
+    self.tableView.allowsMultipleSelectionDuringEditing = YES;
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 60;
     self.tableView.backgroundColor = [UIColor clearColor];
     self.tableView.separatorColor = [UIColor systemGray5Color];
     self.tableView.separatorInset = UIEdgeInsetsMake(0, 20, 0, 20);
     self.tableView.translatesAutoresizingMaskIntoConstraints = NO;
+
+    UILongPressGestureRecognizer *logLongPress = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(handleLogLongPress:)];
+    logLongPress.minimumPressDuration = 0.45;
+    logLongPress.allowableMovement = 20;
+    logLongPress.cancelsTouchesInView = NO;
+    [self.tableView addGestureRecognizer:logLongPress];
 
     UIView *card = [[UIView alloc] init];
     card.backgroundColor = [UIColor whiteColor];
@@ -1605,11 +1618,20 @@ static void installEarnEnergyCollector(id controller) {
     versionLabel.textAlignment = NSTextAlignmentCenter;
     versionLabel.translatesAutoresizingMaskIntoConstraints = NO;
 
+    UILabel *modeHintLabel = [[UILabel alloc] init];
+    modeHintLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightRegular];
+    modeHintLabel.textAlignment = NSTextAlignmentCenter;
+    modeHintLabel.numberOfLines = 0;
+    modeHintLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    self.modeHintLabel = modeHintLabel;
+
     [self.view addSubview:titleIcon];
     [self.view addSubview:title];
     [self.view addSubview:settingsButton];
+    [self.view addSubview:selectButton];
     [self.view addSubview:copyButton];
     [self.view addSubview:clearButton];
+    [self.view addSubview:self.modeHintLabel];
     [self.view addSubview:stats];
     [self.view addSubview:card];
     [self.view addSubview:self.tableView];
@@ -1629,8 +1651,10 @@ static void installEarnEnergyCollector(id controller) {
         [title.topAnchor constraintEqualToAnchor:grabber.bottomAnchor constant:18],
         [title.leadingAnchor constraintEqualToAnchor:titleIcon.trailingAnchor constant:10],
         [title.trailingAnchor constraintLessThanOrEqualToAnchor:settingsButton.leadingAnchor constant:-10],
-        [settingsButton.trailingAnchor constraintEqualToAnchor:copyButton.leadingAnchor constant:-8],
+        [settingsButton.trailingAnchor constraintEqualToAnchor:selectButton.leadingAnchor constant:-8],
         [settingsButton.centerYAnchor constraintEqualToAnchor:title.centerYAnchor],
+        [selectButton.trailingAnchor constraintEqualToAnchor:copyButton.leadingAnchor constant:-8],
+        [selectButton.centerYAnchor constraintEqualToAnchor:title.centerYAnchor],
         [copyButton.trailingAnchor constraintEqualToAnchor:clearButton.leadingAnchor constant:-8],
         [copyButton.centerYAnchor constraintEqualToAnchor:title.centerYAnchor],
         [clearButton.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-20],
@@ -1672,13 +1696,17 @@ static void installEarnEnergyCollector(id controller) {
         [divider2.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:16], [divider2.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-16], [divider2.heightAnchor constraintEqualToConstant:1],
         
         [card.bottomAnchor constraintEqualToAnchor:loopRow.bottomAnchor constant:12],
-        [self.tableView.topAnchor constraintEqualToAnchor:card.bottomAnchor constant:8],
+        [modeHintLabel.topAnchor constraintEqualToAnchor:card.bottomAnchor constant:8],
+        [modeHintLabel.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:24],
+        [modeHintLabel.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-24],
+        [self.tableView.topAnchor constraintEqualToAnchor:modeHintLabel.bottomAnchor constant:6],
         [self.tableView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:16],
         [self.tableView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-16],
         [self.tableView.bottomAnchor constraintEqualToAnchor:versionLabel.topAnchor constant:-6],
         [versionLabel.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
         [versionLabel.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-4],
     ]];
+    [self updateLogSelectionHint];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(onLogUpdated) name:@"LogUpdated" object:nil];
     [self refresh];
 }
@@ -1748,7 +1776,7 @@ static void installEarnEnergyCollector(id controller) {
     } else {
         self.totalLabel.text = [NSString stringWithFormat:@"累计\n%ld g", (long)manager.totalCollectedEnergy];
     }
-    [self.tableView reloadData];
+    if (!self.logSelectionMode) [self.tableView reloadData];
 }
 
 - (void)toggleAutoCollect:(UISwitch *)sender {
@@ -1853,6 +1881,10 @@ static void installEarnEnergyCollector(id controller) {
 }
 
 - (void)copyDiagnosticLogs:(UIButton *)sender {
+    if (self.logSelectionMode) {
+        [self copySelectedLogs:sender];
+        return;
+    }
     AntForestManager *manager = AntForestManager.sharedInstance;
     NSArray *logs = manager.logRecord.reverseObjectEnumerator.allObjects;
     NSPredicate *predicate = [NSPredicate predicateWithBlock:^BOOL(NSString *log, __unused NSDictionary *bindings) {
@@ -1878,6 +1910,130 @@ static void installEarnEnergyCollector(id controller) {
     [sender setImage:[UIImage systemImageNamed:@"checkmark"] forState:UIControlStateNormal];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [sender setImage:[UIImage systemImageNamed:@"doc.on.doc"] forState:UIControlStateNormal];
+    });
+}
+
+- (void)toggleLogSelectionMode:(UIButton *)sender {
+    self.logSelectionMode = !self.logSelectionMode;
+    if (self.logSelectionMode) {
+        [self.tableView setEditing:YES animated:YES];
+        [self.selectButton setImage:[UIImage systemImageNamed:@"xmark.circle.fill"] forState:UIControlStateNormal];
+    } else {
+        NSArray<NSIndexPath *> *selected = [self.tableView.indexPathsForSelectedRows copy];
+        for (NSIndexPath *indexPath in selected) {
+            [self.tableView deselectRowAtIndexPath:indexPath animated:NO];
+        }
+        [self.tableView setEditing:NO animated:YES];
+        [self.selectButton setImage:[UIImage systemImageNamed:@"checkmark.circle"] forState:UIControlStateNormal];
+        [self refresh];
+    }
+    [self updateLogSelectionHint];
+}
+
+- (void)updateLogSelectionHint {
+    if (self.logSelectionMode) {
+        self.modeHintLabel.textColor = [UIColor colorWithRed:0.07 green:0.31 blue:0.18 alpha:1.0];
+        self.modeHintLabel.text = [NSString stringWithFormat:@"多选模式 · 已选 %lu 条 · 点按日志勾选，点右上角 ✓ 复制所选", (unsigned long)self.tableView.indexPathsForSelectedRows.count];
+    } else {
+        self.modeHintLabel.textColor = [UIColor systemGrayColor];
+        self.modeHintLabel.text = @"长按任意日志 = 复制该条 · 点右上角 ○ 进入多选复制";
+    }
+}
+
+- (void)copySelectedLogs:(UIButton *)sender {
+    NSArray<NSIndexPath *> *selected = self.tableView.indexPathsForSelectedRows;
+    if (!selected.count) {
+        [self showToastMessage:@"请先点按日志行勾选要复制的内容"];
+        return;
+    }
+    NSArray *logs = ((AntForestManager *)[AntForestManager sharedInstance]).logRecord;
+    NSArray<NSIndexPath *> *ordered = [selected sortedArrayUsingComparator:^NSComparisonResult(NSIndexPath *a, NSIndexPath *b) {
+        if (a.row == b.row) return NSOrderedSame;
+        return a.row < b.row ? NSOrderedAscending : NSOrderedDescending;
+    }];
+    NSMutableArray<NSString *> *picked = [NSMutableArray array];
+    for (NSIndexPath *indexPath in ordered) {
+        NSInteger index = (NSInteger)logs.count - indexPath.row - 1;
+        if (index < 0 || index >= (NSInteger)logs.count) continue;
+        NSString *text = logs[index];
+        if (text.length) [picked addObject:text];
+    }
+    if (!picked.count) {
+        [self showToastMessage:@"所选日志为空"];
+        return;
+    }
+    NSString *output = [picked componentsJoinedByString:@"\n\n"];
+    UIPasteboard.generalPasteboard.string = output;
+    UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+    [feedback impactOccurred];
+    [self showToastMessage:[NSString stringWithFormat:@"已复制 %lu 条日志 · %lu 字", (unsigned long)picked.count, (unsigned long)output.length]];
+    [sender setImage:[UIImage systemImageNamed:@"checkmark"] forState:UIControlStateNormal];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [sender setImage:[UIImage systemImageNamed:@"doc.on.doc"] forState:UIControlStateNormal];
+    });
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (self.logSelectionMode) {
+        [self updateLogSelectionHint];
+        return;
+    }
+    [tableView deselectRowAtIndexPath:indexPath animated:NO];
+}
+
+- (void)tableView:(UITableView *)tableView didDeselectRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (self.logSelectionMode) [self updateLogSelectionHint];
+}
+
+- (void)handleLogLongPress:(UILongPressGestureRecognizer *)gesture {
+    if (gesture.state != UIGestureRecognizerStateBegan) return;
+    if (self.logSelectionMode) return;
+    CGPoint point = [gesture locationInView:self.tableView];
+    NSIndexPath *indexPath = [self.tableView indexPathForRowAtPoint:point];
+    if (!indexPath) return;
+    NSArray *logs = ((AntForestManager *)[AntForestManager sharedInstance]).logRecord;
+    NSInteger index = (NSInteger)logs.count - indexPath.row - 1;
+    if (index < 0 || index >= (NSInteger)logs.count) return;
+    NSString *text = logs[index];
+    if (!text.length) return;
+    UIPasteboard.generalPasteboard.string = text;
+    UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+    [feedback impactOccurred];
+    [self showLogCopyToast:text];
+}
+
+- (void)showLogCopyToast:(NSString *)text {
+    [self showToastMessage:[NSString stringWithFormat:@"已复制该条日志 · %lu 字", (unsigned long)text.length]];
+}
+
+- (void)showToastMessage:(NSString *)message {
+    [[self.view viewWithTag:9901] removeFromSuperview];
+    UIView *toast = [[UIView alloc] init];
+    toast.tag = 9901;
+    toast.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85];
+    toast.layer.cornerRadius = 15;
+    toast.alpha = 0;
+    toast.translatesAutoresizingMaskIntoConstraints = NO;
+    UILabel *label = [[UILabel alloc] init];
+    label.text = message;
+    label.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
+    label.textColor = [UIColor whiteColor];
+    label.translatesAutoresizingMaskIntoConstraints = NO;
+    [toast addSubview:label];
+    [self.view addSubview:toast];
+    [NSLayoutConstraint activateConstraints:@[
+        [label.leadingAnchor constraintEqualToAnchor:toast.leadingAnchor constant:14],
+        [label.trailingAnchor constraintEqualToAnchor:toast.trailingAnchor constant:-14],
+        [label.topAnchor constraintEqualToAnchor:toast.topAnchor constant:7],
+        [label.bottomAnchor constraintEqualToAnchor:toast.bottomAnchor constant:-7],
+        [toast.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+        [toast.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-24],
+    ]];
+    [UIView animateWithDuration:0.18 animations:^{ toast.alpha = 1; }];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [UIView animateWithDuration:0.25 animations:^{ toast.alpha = 0; } completion:^(BOOL finished) {
+            [toast removeFromSuperview];
+        }];
     });
 }
 
