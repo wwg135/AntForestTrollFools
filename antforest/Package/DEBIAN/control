@@ -1,17 +1,10 @@
 Package: com.vknote.antforest
 Name: antforest
-Version: 3.1
-Description: 
+Version: 3.3.5
+Description: antforest - 蚂蚁森林 / 庄园助手（自动收能量；庄园日常：签到、小课堂答题、喂养、收肥料、收鸡蛋、抽抽乐攒次数）
 Section: Tweaks
 Depends: firmware (>= 5.0), mobilesubstrate
-Conflicts: 
-Replaces: 
 Priority: optional
 Architecture: iphoneos-arm
 Author: walt-chenp
 Maintainer: walt-chenp
-dev: 
-Homepage: 
-Depiction: 
-Icon: 
-
