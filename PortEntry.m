@@ -658,10 +658,11 @@ static void installEarnEnergyCollector(id controller) {
     });
 }
 
-@interface AntForestLogPanel : UIViewController <UITableViewDataSource, UITableViewDelegate>
+@interface AntForestLogPanel : UIViewController <UITableViewDataSource>
 @property (nonatomic, strong) UITableView *tableView;
 @property (nonatomic, strong) UIButton *selectButton;
 @property (nonatomic, strong) UILabel *modeHintLabel;
+@property (nonatomic, strong) NSMutableSet<NSNumber *> *selectedLogRows;
 @property (nonatomic) BOOL logSelectionMode;
 @property (nonatomic, strong) UILabel *todayLabel;
 @property (nonatomic, strong) UILabel *totalLabel;
@@ -1585,8 +1586,6 @@ static void installEarnEnergyCollector(id controller) {
 
     self.tableView = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
     self.tableView.dataSource = self;
-    self.tableView.delegate = self;
-    self.tableView.allowsMultipleSelectionDuringEditing = YES;
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 60;
     self.tableView.backgroundColor = [UIColor clearColor];
@@ -1599,6 +1598,12 @@ static void installEarnEnergyCollector(id controller) {
     logLongPress.allowableMovement = 20;
     logLongPress.cancelsTouchesInView = NO;
     [self.tableView addGestureRecognizer:logLongPress];
+
+    UITapGestureRecognizer *logTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleLogTap:)];
+    logTap.cancelsTouchesInView = NO;
+    [self.tableView addGestureRecognizer:logTap];
+
+    self.selectedLogRows = [NSMutableSet set];
 
     UIView *card = [[UIView alloc] init];
     card.backgroundColor = [UIColor whiteColor];
@@ -1915,16 +1920,11 @@ static void installEarnEnergyCollector(id controller) {
 
 - (void)toggleLogSelectionMode:(UIButton *)sender {
     self.logSelectionMode = !self.logSelectionMode;
+    [self.selectedLogRows removeAllObjects];
+    [self.selectButton setImage:[UIImage systemImageNamed:self.logSelectionMode ? @"xmark.circle.fill" : @"checkmark.circle"] forState:UIControlStateNormal];
     if (self.logSelectionMode) {
-        [self.tableView setEditing:YES animated:YES];
-        [self.selectButton setImage:[UIImage systemImageNamed:@"xmark.circle.fill"] forState:UIControlStateNormal];
+        [self.tableView reloadData];
     } else {
-        NSArray<NSIndexPath *> *selected = [self.tableView.indexPathsForSelectedRows copy];
-        for (NSIndexPath *indexPath in selected) {
-            [self.tableView deselectRowAtIndexPath:indexPath animated:NO];
-        }
-        [self.tableView setEditing:NO animated:YES];
-        [self.selectButton setImage:[UIImage systemImageNamed:@"checkmark.circle"] forState:UIControlStateNormal];
         [self refresh];
     }
     [self updateLogSelectionHint];
@@ -1933,7 +1933,7 @@ static void installEarnEnergyCollector(id controller) {
 - (void)updateLogSelectionHint {
     if (self.logSelectionMode) {
         self.modeHintLabel.textColor = [UIColor colorWithRed:0.07 green:0.31 blue:0.18 alpha:1.0];
-        self.modeHintLabel.text = [NSString stringWithFormat:@"多选模式 · 已选 %lu 条 · 点按日志勾选，点右上角 ✓ 复制所选", (unsigned long)self.tableView.indexPathsForSelectedRows.count];
+        self.modeHintLabel.text = [NSString stringWithFormat:@"多选模式 · 已选 %lu 条 · 点按日志行：绿勾=已选，点右上角 ✓ 复制所选", (unsigned long)self.selectedLogRows.count];
     } else {
         self.modeHintLabel.textColor = [UIColor systemGrayColor];
         self.modeHintLabel.text = @"长按任意日志 = 复制该条 · 点右上角 ○ 进入多选复制";
@@ -1941,19 +1941,17 @@ static void installEarnEnergyCollector(id controller) {
 }
 
 - (void)copySelectedLogs:(UIButton *)sender {
-    NSArray<NSIndexPath *> *selected = self.tableView.indexPathsForSelectedRows;
-    if (!selected.count) {
+    if (!self.selectedLogRows.count) {
         [self showToastMessage:@"请先点按日志行勾选要复制的内容"];
         return;
     }
     NSArray *logs = ((AntForestManager *)[AntForestManager sharedInstance]).logRecord;
-    NSArray<NSIndexPath *> *ordered = [selected sortedArrayUsingComparator:^NSComparisonResult(NSIndexPath *a, NSIndexPath *b) {
-        if (a.row == b.row) return NSOrderedSame;
-        return a.row < b.row ? NSOrderedAscending : NSOrderedDescending;
+    NSArray<NSNumber *> *ordered = [self.selectedLogRows.allObjects sortedArrayUsingComparator:^NSComparisonResult(NSNumber *a, NSNumber *b) {
+        return [a compare:b];
     }];
     NSMutableArray<NSString *> *picked = [NSMutableArray array];
-    for (NSIndexPath *indexPath in ordered) {
-        NSInteger index = (NSInteger)logs.count - indexPath.row - 1;
+    for (NSNumber *row in ordered) {
+        NSInteger index = (NSInteger)logs.count - row.integerValue - 1;
         if (index < 0 || index >= (NSInteger)logs.count) continue;
         NSString *text = logs[index];
         if (text.length) [picked addObject:text];
@@ -1973,16 +1971,21 @@ static void installEarnEnergyCollector(id controller) {
     });
 }
 
-- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    if (self.logSelectionMode) {
-        [self updateLogSelectionHint];
-        return;
+- (void)handleLogTap:(UITapGestureRecognizer *)gesture {
+    if (!self.logSelectionMode) return;
+    CGPoint point = [gesture locationInView:self.tableView];
+    NSIndexPath *indexPath = [self.tableView indexPathForRowAtPoint:point];
+    if (!indexPath) return;
+    NSNumber *key = @(indexPath.row);
+    if ([self.selectedLogRows containsObject:key]) {
+        [self.selectedLogRows removeObject:key];
+    } else {
+        [self.selectedLogRows addObject:key];
     }
-    [tableView deselectRowAtIndexPath:indexPath animated:NO];
-}
-
-- (void)tableView:(UITableView *)tableView didDeselectRowAtIndexPath:(NSIndexPath *)indexPath {
-    if (self.logSelectionMode) [self updateLogSelectionHint];
+    [self.tableView reloadRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationNone];
+    UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+    [feedback impactOccurred];
+    [self updateLogSelectionHint];
 }
 
 - (void)handleLogLongPress:(UILongPressGestureRecognizer *)gesture {
@@ -2076,7 +2079,12 @@ static void installEarnEnergyCollector(id controller) {
     }
     NSArray *logs = ((AntForestManager *)[AntForestManager sharedInstance]).logRecord;
     label.text = logs[logs.count - indexPath.row - 1];
-    cell.backgroundColor = [UIColor clearColor];
+    BOOL picking = self.logSelectionMode;
+    BOOL picked = picking && [self.selectedLogRows containsObject:@(indexPath.row)];
+    icon.image = [UIImage systemImageNamed:(picking && !picked) ? @"circle" : @"checkmark.circle.fill"];
+    icon.tintColor = picked ? [UIColor colorWithRed:0.07 green:0.31 blue:0.18 alpha:1.0] : (picking ? [UIColor systemGray3Color] : [UIColor colorWithRed:0.07 green:0.31 blue:0.18 alpha:1.0]);
+    label.textColor = (picking && !picked) ? [UIColor secondaryLabelColor] : [UIColor labelColor];
+    cell.backgroundColor = picked ? [[UIColor colorWithRed:0.07 green:0.31 blue:0.18 alpha:1.0] colorWithAlphaComponent:0.08] : [UIColor clearColor];
     return cell;
 }
 
