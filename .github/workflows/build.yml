@@ -37,10 +37,12 @@ jobs:
           #dpkg-deb -b build/rootful-tmp "Packages/com.vknote.antforest_${VER}_iphoneos-arm.deb"
 
           # Rootless
-          cp -r antforest/Package/* build/rootless-tmp/
+          cp antforest/Package/DEBIAN/control build/rootless-tmp/DEBIAN/control
           sed -i '' 's/^Architecture: iphoneos-arm/Architecture: iphoneos-arm64/' build/rootless-tmp/DEBIAN/control
+          printf '\n' >> build/rootless-tmp/DEBIAN/control
           mkdir -p build/rootless-tmp/var/jb/Library/MobileSubstrate/DynamicLibraries
           cp build/AntForestPort-Ocean.dylib build/rootless-tmp/var/jb/Library/MobileSubstrate/DynamicLibraries/antforest.dylib
+          cp antforest/Package/Library/MobileSubstrate/DynamicLibraries/antforest.plist build/rootless-tmp/var/jb/Library/MobileSubstrate/DynamicLibraries/antforest.plist
           dpkg-deb -b build/rootless-tmp "Packages/com.vknote.antforest_${VER}_iphoneos-arm64.deb"
 
       - name: Upload artifacts
