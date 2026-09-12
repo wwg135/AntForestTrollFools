@@ -37,6 +37,7 @@ jobs:
           #dpkg-deb -b build/rootful-tmp "Packages/com.vknote.antforest_${VER}_iphoneos-arm.deb"
 
           # Rootless
+          mkdir -p build/rootless-tmp/DEBIAN
           cp antforest/Package/DEBIAN/control build/rootless-tmp/DEBIAN/control
           sed -i '' 's/^Architecture: iphoneos-arm/Architecture: iphoneos-arm64/' build/rootless-tmp/DEBIAN/control
           printf '\n' >> build/rootless-tmp/DEBIAN/control
