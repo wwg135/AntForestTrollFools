@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # 抽抽乐（DrawMachine）自动攒次数 + 一键连抽 —— 结构自检
-# 口径来源：manor_probe 抓包 2026-09-11（两个活动字段完全对称）
-# 用户口径：平时不抽，积满 10 次才连抽；活动当天结束则剩余全抽；任务做满才封盘（每 5 分钟补一轮，最多 6 轮防风控）
+# 口径来源：manor_probe 抓包 2026-09-11 首发 + 2026-09-12 手动做满两活动全流程
+# 用户口径：平时不抽，积满 10 次才连抽；活动当天结束则剩余全抽；当天没做满就一直执行
+# 9/12 定案：回包任务项不含 taskSceneCode（只在请求里），分流改按白名单 taskId/bizKey 认；FINISHED=只领奖，TODO=动作+领奖
 set -u
 cd "$(dirname "$0")/.."
 M=antforest/AntForestManager.m
@@ -46,18 +47,41 @@ chk "连抽被拒降级为逐次单抽"          "$M" '降级为逐次单抽'
 echo "=== 4. 做满才封盘 + 每 5 分钟补一轮（9/11 修正：旧版发起即收工，实测漏做） ==="
 chk "做满标记 DONE"                    "$M" 'manorDrawDailyMark(@"DONE"'
 chk "轮数计数标记 RND"                 "$M" 'manorDrawDailyMark(@"RND"'
-chk "每活动每天最多 6 轮"              "$M" 'kManorDrawMaxRounds      = 6'
-chk "轮数用完即停"                     "$M" 'manorDrawRoundUsed(scene) >= kManorDrawMaxRounds'
+chkno "6 轮封顶已移除（9/12：当天没做满就一直执行）" "$M" 'kManorDrawMaxRounds'
+chk "无封顶口径注释"                   "$M" '当天没做满就一直补做'
+chk "60s 无回包诊断日志"               "$M" '发出任务列表请求 60 秒未收到回包'
+chk "任务列表被拒诊断"                 "$M" '抽查任务列表被拒'
+chk "分流按回包白名单识别"             "$M" 'manorDrawSceneInTaskList(taskList)'
+chk "白名单含四类真实 taskId"          "$M" 'SHANGYEHUA_DAILY_DRAW_TIMES'
+chk "回包无 taskSceneCode 已注明"      "$M" '回包项里没有 taskSceneCode'
+chk "收到任务列表可见留痕"             "$M" '已收到任务列表回包'
+chk "FINISHED 只领奖语义"              "$M" 'claimOnly'
+chk "饲料换机会不重复领奖"             "$M" '由 doFarmTask 一步到位'
+chk "签到未完成不代做"                 "$M" '签到靠进入活动页打卡'
+chkno "H1.5 死诊断已移除"              "$M" '未进抽抽乐链路'
 chk "两活动错开 8s（旧版 55s）"        "$M" 'kManorDrawSceneStagger = 8.0'
 chk "同活动 20s 内不重复下发"          "$M" 'kManorDrawExecThrottle = 20.0'
 chk "下发窗口覆盖整轮执行时间"         "$M" 'manorDrawExecHold(scene, queryDelay)'
 chk "已抽标记 PULL"                    "$M" 'manorDrawDailyMark(@"PULL"'
 chkno "旧版发起即封盘 ROUND 已移除"    "$M" 'manorDrawDailyMark(@"ROUND"'
+chk "动作/领奖回执入面板"              "$M" '领奖" : @"动作"'
+chk "动作失败短路跳过领奖"             "$M" '动作未成功，跳过本次领奖'
+chk "动作失败标记来自回包"             "$M" 'gManorDrawActFailed = !ok'
+chk "动作回执 op 已并入抽抽乐分支"      "$M" 'isManorDrawActOperation'
+chk "逛杂货铺浏览停留 15s（任务项 desc）" "$M" 'kManorDrawShopBrowseWait = 15.0'
+chk "targetUrl 内嵌真实页解析"          "$M" 'manorDrawInnerPageURL'
+chk "照森林浏览任务手法后台预取"        "$M" 'prefetchManorDrawShopPage'
+chk "杂货铺轮间隔 2.5s（真机 2.35~2.49）" "$M" 'kManorDrawShopInterval = 2.5'
+chk "桥接 ack status:success 也算成功"   "$M" '[actStatus isEqualToString:@"success"]'
+chk "失败判据 verdict 独立"             "$M" 'BOOL verdict = (resData[@"success"]'
+chk "无显式判据不下失败结论"            "$M" 'isManorDrawActOperation(opType) && verdict'
+chk "计划项携带 targetUrl"              "$M" '@"targetUrl": (task[@"targetUrl"] ?: @"")'
 chkno "旧版当天一次 HANDLED 已移除"    "$M" 'manorDrawDailyMark(@"HANDLED"'
 chk "回包先查做满标记"                 "$M" 'if ([gDailyCompletedTasks containsObject:manorDrawDailyMark(@"DONE", scene)]) return;'
 chk "桥断不消费本轮"                   "$M" 'if (![self activeManorBridge]) return;'
 chk "中途离开庄园有日志并留待补做"     "$M" '本轮中断，下次心跳补做'
 chk "做满即写 DONE 封盘"               "$M" '今日任务已做满'
+chkno "轮数用完文案已删"               "$M" '轮数用完'
 
 echo "=== 5. 并入总闸 enableAutoManor（不单列开关） ==="
 chk "入口受总闸约束"                  "$M" '- (void)runManorDrawMachineDaily {'
