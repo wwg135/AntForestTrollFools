@@ -1566,6 +1566,9 @@ static NSString *gCurrentExecutingTaskKey = nil;
 static BOOL gCurrentExecutingTaskIsMultiStage = NO;
 static NSMutableDictionary<NSString *, NSNumber *> *gFarmTaskRetryCounts = nil;
 static NSMutableDictionary<NSString *, NSNumber *> *gVitalityTaskRetryCounts = nil;
+// v3.3.6 抽抽乐熔断表（定义前置：initDailyTaskCache 跨天清零要用；机制见 DrawMachine 段）
+static NSMutableDictionary<NSString *, NSNumber *> *gManorDrawFailCounts = nil;
+static NSMutableSet<NSString *> *gManorDrawFailedTasks = nil;
 
 static void initDailyTaskCache(void) {
     NSString *today = getCurrentDateString();
@@ -1581,6 +1584,9 @@ static void initDailyTaskCache(void) {
         } else {
             [gVitalityTaskRetryCounts removeAllObjects];
         }
+        // v3.3.6：跨天重置抽抽乐熔断表（与森林 gDailyFailedTasks 当日失效同口径，次日自动重试）
+        gManorDrawFailCounts = nil;
+        gManorDrawFailedTasks = nil;
         NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
         NSString *savedDate = [defaults stringForKey:@"vitality_task_cache_date"];
         if ([savedDate isEqualToString:today]) {
@@ -6096,6 +6102,44 @@ static NSString *gManorDrawActGroup = nil;
 static BOOL      gManorDrawActFailed = NO;
 static NSTimeInterval gManorDrawActAt = 0;
 
+// v3.3.6 熔断（照森林寻宝 gVitalityTaskRetryCounts ≥2 拉黑当日）：scene+taskId → 连续失败次数。
+// 键值只存内存：每日 cache 清零时（initDailyTaskCache）一并重置，与森林 gDailyFailedTasks 当日失效同口径。
+static NSInteger kManorDrawFailThreshold = 2;   // 连续失败 ≥2 次熔断（森林寻宝同款阈值）
+
+// 熔断键：scene|taskId（两活动任务槽独立，daily 坏不代表 IP 坏）
+static NSString *manorDrawFailKey(NSString *scene, NSString *taskId) {
+    return [NSString stringWithFormat:@"%@|%@", scene, taskId];
+}
+
+// 派单时该任务是否已被当日熔断
+static BOOL manorDrawIsTripped(NSString *scene, NSString *taskId) {
+    if (!gManorDrawFailedTasks) return NO;
+    return [gManorDrawFailedTasks containsObject:manorDrawFailKey(scene, taskId)];
+}
+
+// 成功回执：清零该任务连续失败计数并解除拉黑
+static void manorDrawClearFail(NSString *scene, NSString *taskId) {
+    if (!gManorDrawFailCounts) return;
+    NSString *k = manorDrawFailKey(scene, taskId);
+    [gManorDrawFailCounts removeObjectForKey:k];
+    [gManorDrawFailedTasks removeObject:k];
+}
+
+// 失败回执：连续失败 +1；达阈值即当日拉黑（照森林「连续尝试未成功，触发熔断跳过」）
+// 返回 YES 表示本次触发了熔断（调用方据此打一条日志）
+static BOOL manorDrawBumpFail(NSString *scene, NSString *taskId) {
+    if (!gManorDrawFailCounts) gManorDrawFailCounts = [NSMutableDictionary dictionary];
+    if (!gManorDrawFailedTasks) gManorDrawFailedTasks = [NSMutableSet set];
+    NSString *k = manorDrawFailKey(scene, taskId);
+    NSInteger n = [gManorDrawFailCounts[k] integerValue] + 1;
+    gManorDrawFailCounts[k] = @(n);
+    if (n >= kManorDrawFailThreshold && ![gManorDrawFailedTasks containsObject:k]) {
+        [gManorDrawFailedTasks addObject:k];
+        return YES;
+    }
+    return NO;
+}
+
 // v3.1.9：抽抽乐任务列表「请求 → 回包」配平表（v3.1.6 的 60s 诊断按运行时刻比较，新一轮一到必误报）
 static NSMutableDictionary<NSString *, NSNumber *> *gManorDrawListAskedAt = nil;   // scene -> 请求时刻；收到该活动列表即摘除
 static NSString *gManorDrawLastListScene = nil;                                    // 最近一次列表请求的活动（诊断署名）
@@ -6493,6 +6537,12 @@ static NSString *manorDrawTracerGroupId(NSDictionary *task) {
             continue;
         }
         if ([status isEqualToString:@"RECEIVED"]) continue;
+        // v3.3.6 熔断：当日连续失败 ≥2 次的任务直接跳过（照森林寻宝「触发熔断跳过」），心跳轮询不再空耗请求
+        if (manorDrawIsTripped(scene, taskId)) {
+            skipped++;
+            [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园 · 抽抽乐/任务中心：任务 [%@] 已触发熔断，今日跳过（次日自动重试）", taskId]];
+            continue;
+        }
         // 抓包实证状态机：FINISHED = 本次已完成待领奖（只领奖，不重复下发动作）；TODO = 还需我方下手（动作 + 领奖）
         BOOL claimOnly = [status isEqualToString:@"FINISHED"];
         if ([group isEqualToString:@"SIGN"] && !claimOnly) { pendingSign++; continue; }   // 签到靠进入活动页打卡，本链路不代做
@@ -6539,8 +6589,8 @@ static NSString *manorDrawTracerGroupId(NSDictionary *task) {
             NSInteger idx = i + 1;
             NSInteger total = rounds;
             NSString *stepLabel = claimOnly
-                ? [NSString stringWithFormat:@"蚂蚁庄园 · 抽抽乐（%@）：领取「%@」奖励 第 %ld/%ld 次", scene, groupName, (long)idx, (long)total]
-                : [NSString stringWithFormat:@"蚂蚁庄园 · 抽抽乐（%@）：执行「%@」第 %ld/%ld 次", scene, groupName, (long)idx, (long)total];
+                ? [NSString stringWithFormat:@"蚂蚁庄园 · 抽抽乐（%@）：正在提交领取「%@」（奖励）第 %ld/%ld 次…", scene, groupName, (long)idx, (long)total]
+                : [NSString stringWithFormat:@"蚂蚁庄园 · 抽抽乐（%@）：正在后台自动执行「%@」（第 %ld/%ld 次）…", scene, groupName, (long)idx, (long)total];
             NSTimeInterval actDelay = t;
             NSTimeInterval claimDelay = t + browseWait + kManorDrawStepInterval;
             if (needAct) {
@@ -6593,6 +6643,7 @@ static NSString *manorDrawTracerGroupId(NSDictionary *task) {
 
     NSTimeInterval queryDelay = t + 6.0;
     manorDrawExecHold(scene, queryDelay);   // 整轮执行期间不接受第二份回包重复下发
+    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园 · 抽抽乐（%@）：本批次任务已执行完毕，6 秒后自动刷新次数与抽奖状态…", scene]];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(queryDelay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [self queryManorDrawMachineWithScene:scene];
     });
@@ -6623,11 +6674,24 @@ static NSString *manorDrawTracerGroupId(NSDictionary *task) {
             gManorDrawActAt = [[NSDate date] timeIntervalSince1970];
             gManorDrawActFailed = !ok;
         }
-        NSString *tail = ok ? @"" : [NSString stringWithFormat:@"，服务端：%@", memo.length ? memo : @"无 memo"];
+        // v3.3.6 熔断记账：领奖/动作有显式判定（verdict）才计；连续失败达阈值当日拉黑，成功即清零
+        // （森林寻宝同款：连续尝试未成功 → 触发熔断跳过，次日自动重试）
+        NSString *actTaskId = gManorDrawActTaskId ?: @"";
+        if (verdict && actTaskId.length) {
+            if (ok) {
+                manorDrawClearFail(gManorDrawActScene, actTaskId);
+            } else if (isManorDrawClaimOperation(opType)) {   // 只按领奖回执累计，避免「动作+领奖」两路重复计数
+                BOOL tripped = manorDrawBumpFail(gManorDrawActScene, actTaskId);
+                if (tripped) {
+                    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园 · 抽抽乐/任务中心：任务 [%@] 连续尝试未成功，触发熔断跳过", actTaskId]];
+                }
+            }
+        }
+        NSString *tail = ok ? @"，服务端已确认领取成功" : [NSString stringWithFormat:@"，服务端：%@", memo.length ? memo : @"无 memo"];
         [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园 · 抽抽乐（%@）：「%@」%@%@%@",
                            gManorDrawActScene, manorDrawGroupName(gManorDrawActGroup),
                            isManorDrawClaimOperation(opType) ? @"领奖" : @"动作",
-                           ok ? @"成功" : @"失败", tail]];
+                           ok ? @"提交完成" : @"失败", tail]];
         return;
     }
 
