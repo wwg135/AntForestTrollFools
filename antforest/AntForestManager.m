@@ -6851,6 +6851,7 @@ static NSString *manorDrawTracerGroupId(NSDictionary *task) {
     if (!self.enableAutoManor) return;
     if (![self activeManorBridge]) return;
     [self flushManorWatchSummaryIfNeeded];
+    [self enterManorFarm];
     [self retryManorPendingAutomations];
     // 抽抽乐：两个活动各自「当天一轮」，跑完即收工（当天不再发任何请求，防风控）
     [self runManorDrawMachineDaily];
