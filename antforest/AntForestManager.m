@@ -5651,7 +5651,13 @@ static void manorNoteCuisineFail(NSString *cuisineId, NSString *reason) {
     lastFeedTime = now;
     
     // 1. 投喂前，先关闭抽屉面板，确保院子小鸡与饲料袋完全暴露
-    [self closeManorTaskPanelOnWebView];
+    // v3.3.7 修复：静默探针模式跳过这一步——探针只发底层 RPC、不做界面触控（:5686 门），
+    // 而 closeManorTaskPanel 的 JS 会盲点 elementFromPoint(W*0.5,H*0.12)（庄园页小鸡头顶/装扮悬浮区）
+    // 并点所有 mask/overlay/close 元素，长时间停在庄园时每 5 分钟炸一轮，会打乱装扮的前端渲染
+    //（症状：小鸡套装消失，退出重进才恢复——服务端数据没坏，纯前端被打乱）
+    if (!self.isManorFeedProbe) {
+        [self closeManorTaskPanelOnWebView];
+    }
     
     if (!self.isManorFeedProbe) [self recordStage:@"蚂蚁庄园：正在投喂小鸡（180g 饲料）..."];
     
