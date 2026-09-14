@@ -1419,7 +1419,7 @@ static NSTimeInterval lastMyBubblesQueryTime = 0;
 
 -(void)reviveEnergy:(NSString*)uid signId:(NSString*)signId {
     if (!signId.length) return;
-    [self signVitalityTask:signId sceneCode:@"ANTFOREST_ENERGY_TASK_SIGN"];
+    [self signVitalityTask:signId sceneCode:@"ANTFOREST_ENERGY_SIGN"];
 }
 
 static NSInteger myOceanCleanCount = 0;
@@ -1615,7 +1615,12 @@ static BOOL isSafeRewardTask(NSString *taskType, NSString *title) {
         return YES;
     }
     
-    // 严格过滤金融、保险、借贷、支付、好友随机浇水、游戏试玩通关等风险任务及无法通过RPC完成的任务
+    // 用户明确指定：逛农场得落叶肥料由用户手动执行，插件不自动做
+    if ([lowerTitle containsString:@"落叶"] || [lowerType containsString:@"leaf"]) {
+        return NO;
+    }
+    
+    // 严格过滤金融、保险、借贷、支付、好友随机浇水等高风险任务
     if ([lowerType containsString:@"haoyibao"] ||
         [lowerType containsString:@"insure"] ||
         [lowerType containsString:@"baoxian"] ||
@@ -1626,8 +1631,6 @@ static BOOL isSafeRewardTask(NSString *taskType, NSString *title) {
         [lowerType containsString:@"energy_xuanjiao"] ||
         [lowerType containsString:@"widget_"] ||
         [lowerType containsString:@"mhjlr"] ||
-        [lowerType containsString:@"xjskp"] ||
-        [lowerType containsString:@"wdhysj"] ||
         [lowerType containsString:@"zhxf"] ||
         [lowerType containsString:@"yxzy"] ||
         [lowerType containsString:@"_zhwufu"]) {
@@ -1641,6 +1644,8 @@ static BOOL isSafeRewardTask(NSString *taskType, NSString *title) {
     
     // 过滤真实付款与金融高危任务，注意避免误杀包含“支付宝”字样的安全浏览任务
     NSString *cleanTitle = [lowerTitle stringByReplacingOccurrencesOfString:@"支付宝" withString:@""];
+    
+    // 金融与高危扣费/支付/保险类任务严格拦截
     if ([cleanTitle containsString:@"保障"] ||
         [cleanTitle containsString:@"保险"] ||
         [cleanTitle containsString:@"好医保"] ||
@@ -1658,22 +1663,30 @@ static BOOL isSafeRewardTask(NSString *taskType, NSString *title) {
         [cleanTitle containsString:@"一键浇水"] ||
         [cleanTitle containsString:@"添加组件"] ||
         [cleanTitle containsString:@"淘宝签到"] ||
-        ([cleanTitle containsString:@"玩游戏得"] && ![cleanTitle containsString:@"机会"] && ![lowerType containsString:@"daoliu"] && ![lowerType containsString:@"draw"]) ||
+        [cleanTitle containsString:@"给随机好友"]) {
+        return NO;
+    }
+    
+    // 纯浏览/停留计时类任务（如“玩一玩向僵尸开炮 浏览15s”、“玩一玩我的花园世界 浏览30s”、“去神奇鱼塘得能量 逛一逛可得”），安全放行
+    BOOL isDurationBrowseTask = ([cleanTitle containsString:@"浏览"] || [cleanTitle containsString:@"30s"] || [cleanTitle containsString:@"15s"] || [cleanTitle containsString:@"秒"] || [cleanTitle containsString:@"逛"] || [cleanTitle containsString:@"看看"] || [cleanTitle containsString:@"鱼塘"] || [cleanTitle containsString:@"向僵尸开炮"]);
+    if (isDurationBrowseTask) {
+        return YES;
+    }
+    
+    // 拦截需在游戏内深度操作的非浏览类任务
+    if (([cleanTitle containsString:@"玩游戏得"] && ![cleanTitle containsString:@"机会"] && ![lowerType containsString:@"daoliu"] && ![lowerType containsString:@"draw"]) ||
         [cleanTitle containsString:@"居民订单"] ||
         [cleanTitle containsString:@"升级建筑"] ||
         [cleanTitle containsString:@"闯关"] ||
         [cleanTitle containsString:@"通过1关"] ||
-        [cleanTitle containsString:@"向僵尸开炮"] ||
         [cleanTitle containsString:@"梦幻经理人"] ||
         [cleanTitle containsString:@"造化仙府"] ||
         [cleanTitle containsString:@"源星战域"] ||
-        [cleanTitle containsString:@"我的花园"] ||
         [cleanTitle containsString:@"花园小镇"] ||
         [cleanTitle containsString:@"进入新版保护地"] ||
         [cleanTitle containsString:@"连续"] ||
         [cleanTitle containsString:@"垃圾"] ||
-        [cleanTitle containsString:@"帮好友清理"] ||
-        [cleanTitle containsString:@"给随机好友"]) {
+        [cleanTitle containsString:@"帮好友清理"]) {
         return NO;
     }
     return YES;
@@ -2252,19 +2265,19 @@ static NSString *sLastQueriedSceneCode = nil;
 }
 
 -(void)signVitalityTask:(NSString *)signId {
-    [self signVitalityTask:signId sceneCode:@"ANTFOREST_ENERGY_TASK_SIGN"];
+    [self signVitalityTask:signId sceneCode:@"ANTFOREST_ENERGY_SIGN"];
 }
 
 -(void)signVitalityTask:(NSString *)signId sceneCode:(NSString *)sceneCode {
     if (!self.rewardTaskBridge && self.jsBridge) {
         self.rewardTaskBridge = self.jsBridge;
     }
-    PSDJsBridge *bridge = self.rewardTaskBridge ?: self.jsBridge;
+    PSDJsBridge *bridge = self.rewardTaskBridge ?: self.jsBridge ?: self.oceanBridge ?: self.aiFishBridge ?: self.farmBridge ?: self.monopolyBridge ?: self.lotteryBridge;
     if (!signId.length || !bridge) return;
     NSString *timeStamp = [NSString stringWithFormat:@"%ld",(long)[[NSDate date] timeIntervalSince1970]*1000];
     NSString *randNum = [AntForestManager getNumberRandom:15];
     NSString *url = [self effectiveUrlForBridge:bridge] ?: [self effectiveUrlForSceneCode:@"ANTFOREST_VITALITY_TASK"];
-    NSString *scene = sceneCode.length ? sceneCode : @"ANTFOREST_ENERGY_TASK_SIGN";
+    NSString *scene = (sceneCode.length && ![sceneCode isEqualToString:@"ANTFOREST_ENERGY_TASK_SIGN"]) ? sceneCode : @"ANTFOREST_ENERGY_SIGN";
     NSString *arg1 = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antiep.sign\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"ags-source\":\"chInfo_ch_appcenter__chsub_9patch\"},\"requestData\":[{\"source\":\"ANTFOREST\",\"sceneCode\":\"%@\",\"requestType\":\"rpc\",\"userId\":\"%@\",\"entityId\":\"%@\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", scene, self.myUserId ?: @"", signId, timeStamp, randNum];
     [bridge _doFlushMessageQueue:arg1 url:url];
 }
@@ -2520,7 +2533,7 @@ static NSInteger sVitalityAutoRefreshRounds = 0;
                     NSSet<NSString *> *executedScenes = [sExecutedScenesInCurrentRound copy];
                     [sExecutedScenesInCurrentRound removeAllObjects];
                     
-                    if (sHasPerformedWorkInCurrentVitalityRound && sVitalityAutoRefreshRounds < 2) {
+                    if (sHasPerformedWorkInCurrentVitalityRound && sVitalityAutoRefreshRounds < 5) {
                         sHasPerformedWorkInCurrentVitalityRound = NO;
                         sVitalityAutoRefreshRounds++;
                         
@@ -2565,6 +2578,7 @@ static NSInteger sVitalityAutoRefreshRounds = 0;
                                 [self recordStage:@"领奖励：本批次任务已执行完毕，2.5秒后自动刷新拉取新解锁任务与阶梯大奖..."];
                                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                                     [self queryVitalityTaskListWithForce:YES];
+                                    [self claimAllVisibleRewardTaskRewardsOnWebView];
                                     [self notifyActiveH5PageToRefresh];
                                 });
                             }
@@ -2706,15 +2720,9 @@ static NSInteger sVitalityAutoRefreshRounds = 0;
             
             if ([action isEqualToString:@"sign"]) {
                 NSString *signId = [item[@"signId"] isKindOfClass:NSString.class] ? [item[@"signId"] copy] : @"";
-                NSString *signScene = [item[@"sceneCode"] isKindOfClass:NSString.class] ? [item[@"sceneCode"] copy] : @"ANTFOREST_ENERGY_TASK_SIGN";
+                NSString *signScene = [item[@"sceneCode"] isKindOfClass:NSString.class] ? [item[@"sceneCode"] copy] : @"ANTFOREST_ENERGY_SIGN";
                 [self recordStage:[NSString stringWithFormat:@"%@：正在完成每日签到...", scenePrefix]];
                 [self signVitalityTask:signId sceneCode:signScene];
-                if (taskKey.length) {
-                    @synchronized(self) {
-                        [gDailyCompletedTasks addObject:taskKey];
-                        saveDailyTaskCache();
-                    }
-                }
             } else if ([action isEqualToString:@"exchange"]) {
                 NSString *caQuotaId = [item[@"caQuotaId"] isKindOfClass:NSString.class] ? [item[@"caQuotaId"] copy] : @"";
                 [self recordStage:[NSString stringWithFormat:@"%@：正在兑换“%@”...", scenePrefix, title]];
@@ -2857,13 +2865,6 @@ static NSInteger sVitalityAutoRefreshRounds = 0;
                 });
             } else if ([action isEqualToString:@"receive"]) {
                 [self recordStage:[NSString stringWithFormat:@"%@：正在提交领取“%@”（%@）...", scenePrefix, title, awardName]];
-                if (taskKey.length) {
-                    @synchronized(self) {
-                        if (!gVitalityTaskRetryCounts) gVitalityTaskRetryCounts = [NSMutableDictionary dictionary];
-                        NSInteger curr = [gVitalityTaskRetryCounts[taskKey] integerValue];
-                        gVitalityTaskRetryCounts[taskKey] = @(curr + 1);
-                    }
-                }
                 [self receiveVitalityTaskAward:taskType sceneCode:sceneCode taskTitle:title awardName:awardName];
             }
             
@@ -3182,14 +3183,18 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
                     [self recordStage:[NSString stringWithFormat:@"%@：服务端已确认领取成功", moduleTag]];
                 }
             }
-        } else if ([opType containsString:@"antiep.sign"] || [opType isEqualToString:@"com.alipay.antiep.sign"]) {
-            if ([resCode isEqualToString:@"100000000"] || [resCode isEqualToString:@"SUCCESS"] || [data[@"success"] boolValue] || [resDesc containsString:@"成功"] || [resDesc containsString:@"已签到"]) {
+        } else if ([opType containsString:@"antiep.sign"] || [opType isEqualToString:@"com.alipay.antiep.sign"] || data[@"signModel"] || args[@"signModel"]) {
+            NSDictionary *signModel = [data[@"signModel"] isKindOfClass:NSDictionary.class] ? data[@"signModel"] : ([args[@"signModel"] isKindOfClass:NSDictionary.class] ? args[@"signModel"] : nil);
+            BOOL isSigned = [signModel[@"signed"] boolValue];
+            if ([resCode isEqualToString:@"100000000"] || [resCode isEqualToString:@"SUCCESS"] || [data[@"success"] boolValue] || [args[@"success"] boolValue] || [resDesc containsString:@"成功"] || [resDesc containsString:@"已签到"] || isSigned) {
                 @synchronized(self) {
                     [gDailyCompletedTasks addObject:@"SIGN_TODAY"];
                     saveDailyTaskCache();
                 }
                 NSInteger contCount = [data[@"continuousCount"] integerValue];
-                NSDictionary *signModel = [data[@"signModel"] isKindOfClass:NSDictionary.class] ? data[@"signModel"] : nil;
+                if (!contCount && [args[@"continuousCount"] respondsToSelector:@selector(integerValue)]) {
+                    contCount = [args[@"continuousCount"] integerValue];
+                }
                 NSDictionary *signAward = [signModel[@"signAward"] isKindOfClass:NSDictionary.class] ? signModel[@"signAward"] : nil;
                 NSInteger awardCount = [signAward[@"count"] integerValue];
                 if (awardCount > 0 && contCount > 0) {
@@ -3254,7 +3259,7 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
         if (self.enableAutoRewardTasks && signVO) {
             NSString *signId = [signVO[@"signId"] isKindOfClass:NSString.class] ? signVO[@"signId"] : @"";
             NSString *currKey = [signVO[@"currentSignKey"] isKindOfClass:NSString.class] ? signVO[@"currentSignKey"] : @"";
-            NSString *signSceneCode = [signVO[@"sceneCode"] isKindOfClass:NSString.class] ? signVO[@"sceneCode"] : @"ANTFOREST_ENERGY_TASK_SIGN";
+            NSString *signSceneCode = [signVO[@"sceneCode"] isKindOfClass:NSString.class] ? signVO[@"sceneCode"] : @"ANTFOREST_ENERGY_SIGN";
             NSArray *records = [signVO[@"signRecords"] isKindOfClass:NSArray.class] ? signVO[@"signRecords"] : nil;
             BOOL isSignedToday = NO;
             for (id r in records) {
@@ -3414,7 +3419,9 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
             if (!btnText.length && [t[@"taskDisplayConfig"] isKindOfClass:NSDictionary.class]) {
                 btnText = t[@"taskDisplayConfig"][@"buttonText"] ?: t[@"taskDisplayConfig"][@"btnText"] ?: @"";
             }
-            BOOL isClaimBtn = ([btnText containsString:@"领"] && ![btnText containsString:@"去"]) ||
+            BOOL isClaimBtn = ([btnText containsString:@"去领取"]) ||
+                              ([finishedBtnText containsString:@"去领取"]) ||
+                              ([btnText containsString:@"领"] && ![btnText containsString:@"去"]) ||
                               ([finishedBtnText containsString:@"领"] && ![finishedBtnText containsString:@"去"]) ||
                               [btnText isEqualToString:@"领取"] || [btnText isEqualToString:@"领奖"] ||
                               [btnText isEqualToString:@"领步数"] || [btnText isEqualToString:@"立即领取"] ||
@@ -3434,8 +3441,13 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
             BOOL hasPendingAward = NO;
             if (isStatusCanReceive || isProgressMet || isDoneTimesMet) {
                 hasPendingAward = YES;
-            } else if (![taskStatus isEqualToString:@"TODO"] && isClaimBtn && ![btnText containsString:@"去"]) {
+            } else if (isClaimBtn) {
                 hasPendingAward = YES;
+            }
+            
+            // 用户明确指定：逛农场得落叶肥料由用户手动执行，插件不自动做
+            if ([taskTitle containsString:@"落叶"] || [taskType containsString:@"LEAF"] || [taskType containsString:@"leaf"]) {
+                continue;
             }
             
             // 严禁将累积肥料数量（如1400肥）与次数限制（如8次）错误比较！
@@ -3462,6 +3474,14 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
                     }
                     saveDailyTaskCache();
                 }
+            } else if ([taskStatus isEqualToString:@"TODO"]) {
+                // 服务端明确为 TODO 状态，必须清除旧版残留的已完成误缓存，绝不允许死锁
+                @synchronized(self) {
+                    if ([gDailyCompletedTasks containsObject:taskKey]) {
+                        [gDailyCompletedTasks removeObject:taskKey];
+                        saveDailyTaskCache();
+                    }
+                }
             } else if (isMultiIncomplete) {
                 // 服务端仍为 TODO 时必须撤销旧版留下的误缓存：只要任务未彻底完结，必须立即从已完成缓存中主动撤销移除
                 @synchronized(self) {
@@ -3472,8 +3492,8 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
                 }
             }
             
-            // 如果今日已完成且非多阶段未完成任务，坚决跳过，绝不重复排队
-            if ([gDailyCompletedTasks containsObject:taskKey] && !isMultiIncomplete) {
+            // 如果今日已完成且服务端状态非 TODO，坚决跳过，绝不重复排队
+            if ([gDailyCompletedTasks containsObject:taskKey] && !isMultiIncomplete && ![taskStatus isEqualToString:@"TODO"]) {
                 continue;
             }
             
@@ -3521,13 +3541,9 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
                 continue;
             }
 
-            // 防死循环熔断：如果该任务已连续尝试 5 次以上未成功，判定为需端内手动交互，加入失败缓存（杜绝网络偶发延迟误熔断）
+            // 防死循环熔断：如果该任务已连续尝试 5 次以上未成功，跳过本轮（内存防死循环），不永久持久化避免误杀
             NSInteger vRetries = [gVitalityTaskRetryCounts[taskKey] integerValue];
             if (vRetries >= 5) {
-                @synchronized(self) {
-                    [gDailyFailedTasks addObject:taskKey];
-                    saveDailyTaskCache();
-                }
                 NSString *moduleTag = @"森林寻宝/任务中心";
                 if ([sceneCode containsString:@"OCEAN"] || [sceneCode containsString:@"RESCUE"]) {
                     moduleTag = @"神奇海洋";
@@ -3538,7 +3554,7 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
                 } else if ([sceneCode containsString:@"MONOPOLY"] || [sceneCode containsString:@"HSDWY"]) {
                     moduleTag = @"新版保护地";
                 }
-                [self recordStage:[NSString stringWithFormat:@"%@：任务 [%@] 连续尝试多次未成功，触发熔断跳过", moduleTag, taskTitle]];
+                [self recordStage:[NSString stringWithFormat:@"%@：任务 [%@] 连续尝试多次未成功，跳过本轮", moduleTag, taskTitle]];
                 continue;
             }
             
@@ -3676,6 +3692,7 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
         }
         
         if (shouldStartLoop) {
+            sVitalityAutoRefreshRounds = 0;
             NSString *targetScene = newlyParsedTasks.firstObject[@"sceneCode"] ?: (accTasks.firstObject[@"sceneCode"] ?: respSceneCode);
             NSString *planningPrefix = @"领奖励与森林寻宝";
             if ([targetScene containsString:@"RESCUE"] || [targetScene containsString:@"OCEAN"]) {
@@ -4472,8 +4489,6 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
 
 - (void)claimAllVisibleRewardTaskRewardsOnWebView {
     [self executeRewardTaskScriptOnWebView:@"(()=>{try{"
-     "const curUrl=(window.location.href||'').toLowerCase();"
-     "if(curUrl.includes('home.html')||curUrl.includes('60000002'))return;"
      "function triggerClick(el){"
      "  if(!el)return;"
      "  try{"
@@ -4500,14 +4515,28 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
      "  const all=Array.from(document.querySelectorAll('*'));"
      "  let claimCnt=0;"
      "  const clickedSet=new Set();"
-     "  const validWords=['领取','点击领取','立即领取','领奖','点击领奖','立即领奖','收下','开心收下','领能量','领取能量','领摸鱼能量','领步数'];"
      "  for(const el of all){"
      "    if(el.children.length===0&&el.innerText){"
      "      const txt=el.innerText.trim().replace(/\\s+/g,'');"
+     "      if(txt.includes('返回签到')){"
+     "        triggerClick(el);"
+     "        setTimeout(()=>{scanAndClick();},400);"
+     "        return;"
+     "      }"
+     "      if(txt==='立即签到'||txt==='签到'||txt==='签到领能量'){"
+     "        const target=el.closest('button,[role=button],div[class*=btn],div[class*=button]')||el;"
+     "        if(!clickedSet.has(target)){"
+     "          clickedSet.add(target);"
+     "          triggerClick(target);"
+     "          triggerClick(el);"
+     "          claimCnt++;"
+     "        }"
+     "      }"
+     "      const validWords=['去领取','领取','点击领取','立即领取','领奖','点击领奖','立即领奖','收下','开心收下','领能量','领取能量','领摸鱼能量','领步数'];"
      "      if(validWords.indexOf(txt)!==-1){"
      "        const target=el.closest('button,[role=button],div[class*=btn],div[class*=button]')||el;"
      "        const targetTxt=(target.innerText||'').trim().replace(/\\s+/g,'');"
-     "        if(targetTxt.startsWith('去')||targetTxt.includes('前往')||targetTxt.includes('逛')||targetTxt.includes('看')||targetTxt.includes('玩')||targetTxt.includes('农场')||targetTxt.includes('市集')||targetTxt.includes('保护地')||targetTxt.includes('庄园')||targetTxt.includes('肥料'))continue;"
+     "        if((targetTxt.startsWith('去')&&!targetTxt.includes('去领取'))||targetTxt.includes('前往')||targetTxt.includes('逛')||targetTxt.includes('看')||targetTxt.includes('玩')||targetTxt.includes('农场')||targetTxt.includes('市集')||targetTxt.includes('保护地')||targetTxt.includes('庄园')||targetTxt.includes('肥料'))continue;"
      "        if(!clickedSet.has(target)){"
      "          clickedSet.add(target);"
      "          triggerClick(target);"
@@ -6680,7 +6709,7 @@ static BOOL oceanPlanLoggedThisRound = NO;
                 [self handleOceanTaskListResponse:resData ?: dict];
             }
             if (![AntForestManager isManorResponse:args]) {
-                if (resData[@"forestTasksNew"] || resData[@"energySignVO"] || taskInfoList || resData[@"taskList"] || dict[@"taskList"] || resData[@"drawAsset"] || resData[@"drawEntranceVO"] || resData[@"drawActivity"] || resData[@"drawPrize"] || resData[@"drawPrizes"] || resData[@"finishAwardResultVO"] || resData[@"receiveAwardResultVO"] || resData[@"awardResultVO"] || resData[@"finishVO"] || [opType containsString:@"antiep"] || [opType containsString:@"queryTaskList"] || [opType containsString:@"finishTask"] || [opType containsString:@"receiveTaskAward"] || [opType containsString:@"draw"] || [opType containsString:@"exchangeVitality"] || [resData[@"code"] isEqualToString:@"400000040"] || [resData[@"code"] isEqualToString:@"400000004"] || [resData[@"code"] isEqualToString:@"400000030"] || [resData[@"code"] isEqualToString:@"B000000008"] || [resData[@"desc"] containsString:@"不支持rpc调用"] || [resData[@"desc"] containsString:@"无法领取"] || [dict[@"error"] integerValue] == 3000) {
+                if (resData[@"forestTasksNew"] || resData[@"energySignVO"] || resData[@"forestSignVOList"] || dict[@"forestSignVOList"] || resData[@"signModel"] || dict[@"signModel"] || taskInfoList || resData[@"taskList"] || dict[@"taskList"] || resData[@"drawAsset"] || resData[@"drawEntranceVO"] || resData[@"drawActivity"] || resData[@"drawPrize"] || resData[@"drawPrizes"] || resData[@"finishAwardResultVO"] || resData[@"receiveAwardResultVO"] || resData[@"awardResultVO"] || resData[@"finishVO"] || [opType containsString:@"antiep"] || [opType containsString:@"queryTaskList"] || [opType containsString:@"finishTask"] || [opType containsString:@"receiveTaskAward"] || [opType containsString:@"draw"] || [opType containsString:@"exchangeVitality"] || [resData[@"code"] isEqualToString:@"400000040"] || [resData[@"code"] isEqualToString:@"400000004"] || [resData[@"code"] isEqualToString:@"400000030"] || [resData[@"code"] isEqualToString:@"B000000008"] || [resData[@"desc"] containsString:@"不支持rpc调用"] || [resData[@"desc"] containsString:@"无法领取"] || [dict[@"error"] integerValue] == 3000) {
                     [self handleVitalityTaskListResponse:dict];
                 }
                 if (self.enableAutoFarmTasks && (resData[@"taskList"] || dict[@"taskList"] || resData[@"limitedTimeChallenge"] || dict[@"limitedTimeChallenge"])) {
@@ -6770,13 +6799,13 @@ static BOOL oceanPlanLoggedThisRound = NO;
         if (args != nil && [args isKindOfClass:[NSDictionary class]]) {
             NSDictionary *dict = args;
             NSDictionary *resData = [dict[@"resData"] isKindOfClass:NSDictionary.class] ? dict[@"resData"] : nil;
-            // 匹配 每日能量签到 (forestSignVOList)
-            if(resData && resData[@"forestSignVOList"]) {
-                NSArray *signList = [resData[@"forestSignVOList"] isKindOfClass:NSArray.class] ? resData[@"forestSignVOList"] : nil;
+            // 匹配 每日能量签到 (forestSignVOList 或 signModel)
+            NSArray *signList = [resData[@"forestSignVOList"] isKindOfClass:NSArray.class] ? resData[@"forestSignVOList"] : ([dict[@"forestSignVOList"] isKindOfClass:NSArray.class] ? dict[@"forestSignVOList"] : nil);
+            if(signList.count) {
                 for(NSDictionary *sign in signList) {
                     if (![sign isKindOfClass:NSDictionary.class]) continue;
                     NSString *signId = [sign objectForKey:@"signId"];
-                    NSString *sceneCode = [sign objectForKey:@"sceneCode"] ?: @"ANTFOREST_ENERGY_TASK_SIGN";
+                    NSString *sceneCode = [sign objectForKey:@"sceneCode"] ?: @"ANTFOREST_ENERGY_SIGN";
                     NSString *currSignKey = [sign objectForKey:@"currentSignKey"] ?: getCurrentDateString();
                     NSArray *signRecords = [sign objectForKey:@"signRecords"];
                     for(NSDictionary *record in signRecords){
@@ -6785,18 +6814,22 @@ static BOOL oceanPlanLoggedThisRound = NO;
                         BOOL isSigned = [record[@"signed"] boolValue];
                         if(([signKey isEqualToString:currSignKey] || [signKey isEqualToString:getCurrentDateString()]) && !isSigned){
                             if(signId.length){
+                                static NSTimeInterval sLastSignAttemptTime = 0;
+                                NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
                                 @synchronized(self) {
-                                    if (![gDailyCompletedTasks containsObject:@"SIGN_TODAY"]) {
+                                    if (![gDailyCompletedTasks containsObject:@"SIGN_TODAY"] && (now - sLastSignAttemptTime > 10.0)) {
+                                        sLastSignAttemptTime = now;
                                         [self recordStage:@"领奖励：检测到每日能量签到，正在执行签到..."];
                                         [self signVitalityTask:signId sceneCode:sceneCode];
-                                        [gDailyCompletedTasks addObject:@"SIGN_TODAY"];
-                                        saveDailyTaskCache();
                                     }
                                 }
                             }
                         } else if (([signKey isEqualToString:currSignKey] || [signKey isEqualToString:getCurrentDateString()]) && isSigned) {
                             @synchronized(self) {
-                                [gDailyCompletedTasks addObject:@"SIGN_TODAY"];
+                                if (![gDailyCompletedTasks containsObject:@"SIGN_TODAY"]) {
+                                    [gDailyCompletedTasks addObject:@"SIGN_TODAY"];
+                                    saveDailyTaskCache();
+                                }
                             }
                         }
                     }
