@@ -7790,7 +7790,7 @@ static NSTimeInterval gLastManorCheckTime = 0;
             } else {
                 NSString *eggMemo = resData[@"memo"] ?: dict[@"memo"];
                 if (![eggMemo isKindOfClass:NSString.class]) eggMemo = nil;
-                NSString *eggReason = eggMemo.length ? eggMemo : @"未知原因";
+                NSString *eggReason = eggMemo.length ? eggMemo : @"蛋巢正在孵化中，尚未满格";
                 recordEggDiagOnce(self, @"noegg", [NSString stringWithFormat:@"蚂蚁庄园：蛋巢暂无可收鸡蛋（%@），下次自动重试", eggReason]);
             }
         }
