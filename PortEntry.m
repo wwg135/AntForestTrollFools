@@ -230,6 +230,11 @@ static void startForestHomeWhenBridgeReady(id controller) {
         NSURL *url = [currentController respondsToSelector:@selector(url)] ? [currentController url] : nil;
         if (!currentController || !isForestHomeURL(url) || isEarnEnergyURL(url)) { waitForBridge = nil; return; }
         id bridge = forestBridgeFromController(currentController) ?: objc_getAssociatedObject(currentController, ForestHomeBridgeKey);
+        // 兜底：新版支付宝 controller 直取桥接失败时，用回包侧已绑的 jsBridge
+        if (!bridge && attempts >= 4) {
+            id managerBridge = AntForestManager.sharedInstance.jsBridge;
+            if ([managerBridge isKindOfClass:NSClassFromString(@"PSDJsBridge")]) bridge = managerBridge;
+        }
         if (bridge) {
             finishForestHomeStart(currentController, bridge);
             waitForBridge = nil;
@@ -2729,11 +2734,12 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
     }
 
     if (isForest) {
-        if (ctrlUrl && isForestHomeURL(ctrlUrl)) {
-            if (manager.jsBridge != self) {
-                manager.jsBridge = self;
-                [manager recordStage:@"诊断 · 已绑定森林响应页面通道"];
-            }
+        // 新版支付宝 forestControllerForBridge 可能失效（ctrlUrl 取不到），
+        // 回包特征（bubbles/能量数据，只存在于森林页）已判 isForest 即可绑定
+        BOOL urlOk = (!ctrlUrl || isForestHomeURL(ctrlUrl));
+        if (urlOk && manager.jsBridge != self) {
+            manager.jsBridge = self;
+            [manager recordStage:@"蚂蚁森林 · 已绑定森林页面通道（回包）"];
         }
     }
     if ([self respondsToSelector:@selector(_doFlushMessageQueue:url:)]) {
@@ -2873,10 +2879,19 @@ static void portUpdateBridgeReadyStatus(id self, SEL _cmd, id value) {
         }
         id controller = forestControllerForBridge(self);
         NSURL *url = [controller respondsToSelector:@selector(url)] ? [controller url] : nil;
+        // 兜底：controller 失效时从 bridge.contentView 直取 URL
+        if (!url) {
+            id contentView = [self respondsToSelector:@selector(contentView)] ? ((id (*)(id, SEL))objc_msgSend)(self, @selector(contentView)) : nil;
+            if ([contentView respondsToSelector:@selector(url)]) {
+                id u = ((id (*)(id, SEL))objc_msgSend)(contentView, @selector(url));
+                if ([u isKindOfClass:NSURL.class]) url = u;
+                else if ([u isKindOfClass:NSString.class]) url = [NSURL URLWithString:(NSString *)u];
+            }
+        }
         if (isForestHomeURL(url) && !isEarnEnergyURL(url)) {
-            objc_setAssociatedObject(controller, ForestHomeBridgeKey, self, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(controller ?: self, ForestHomeBridgeKey, self, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             dispatch_async(dispatch_get_main_queue(), ^{
-                finishForestHomeStart(controller, self);
+                finishForestHomeStart(controller ?: self, self);
             });
         }
     } @catch (NSException *e) {
