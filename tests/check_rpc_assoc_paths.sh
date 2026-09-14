@@ -31,6 +31,8 @@ fi
 
 echo "[4/9] Checking operationType FIFO 队列（push/pop/remove/clear）..."
 grep -Fq 'static NSMutableArray<NSString *> *gManorPendingOps = nil;' "$source_file"
+grep -Fq 'kMaxPendingManorRPCs' "$source_file"
+grep -Fq 'pending overflow' "$source_file"
 grep -Fq 'static void manorPushPendingOp(NSString *op) {' "$source_file"
 grep -Fq 'static NSString *manorPopPendingOp(void) {' "$source_file"
 grep -Fq 'static void manorRemovePendingOp(NSString *op) {' "$source_file"
