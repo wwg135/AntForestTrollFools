@@ -31,7 +31,7 @@
 //获取当前时间 
 +(NSString*)CurTimeFormatStr {
     NSDateFormatter *formatter =[NSDateFormatter new];
-    [formatter setDateFormat:@"YYYY-MM-dd HH:mm:ss"];
+    [formatter setDateFormat:@"yyyy-MM-dd HH:mm:ss"];
     NSString *currentTimeString = [formatter stringFromDate:[NSDate date]];
     return currentTimeString;
 }

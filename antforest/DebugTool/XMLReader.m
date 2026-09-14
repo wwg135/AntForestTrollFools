@@ -19,7 +19,8 @@ NSString *const kXMLReaderAttributePrefix	= @"@";
 
 @property (nonatomic, strong) NSMutableArray *dictionaryStack;
 @property (nonatomic, strong) NSMutableString *textInProgress;
-@property (nonatomic, strong) NSError *errorPointer;
+@property (nonatomic, strong) NSError *error;
+@property (nonatomic, assign) NSError **errorPointer;
 
 @end
 
@@ -62,7 +63,7 @@ NSString *const kXMLReaderAttributePrefix	= @"@";
 	self = [super init];
     if (self)
     {
-        self.errorPointer = *error;
+        self.errorPointer = error;
     }
     return self;
 }
@@ -170,7 +171,10 @@ NSString *const kXMLReaderAttributePrefix	= @"@";
 - (void)parser:(NSXMLParser *)parser parseErrorOccurred:(NSError *)parseError
 {
     // Set the error pointer to the parser's error object
-    self.errorPointer = parseError;
+    self.error = parseError;
+    if (self.errorPointer) {
+        *self.errorPointer = parseError;
+    }
 }
 
 @end

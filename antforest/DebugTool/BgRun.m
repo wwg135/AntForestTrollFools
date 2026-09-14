@@ -6,12 +6,21 @@
 //
 
 #import <UIKit/UIKit.h>
+#import <AVFoundation/AVFoundation.h>
 #import "BgRun.h"
 // xxd -i blank.caf > blankcaf.h 通过这个命令生成的
 // #import "beginwav.h"
 #import "blankcaf.h"
 
 @implementation BgRun
+
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        _bgTaskIdentifier = UIBackgroundTaskInvalid;
+    }
+    return self;
+}
 
 + (instancetype)sharedInstance {
     static BgRun *sharedInstance = nil;
@@ -65,7 +74,7 @@
     NSString *documentsDirectory = [paths objectAtIndex:0];
     NSString *cafFilePath = [documentsDirectory stringByAppendingPathComponent:resource];
     
-    NSURL *blankSoundURL = [[NSURL alloc] initWithString:cafFilePath];
+    NSURL *blankSoundURL = [NSURL fileURLWithPath:cafFilePath];
     if(blankSoundURL){
         self.Player = [[AVAudioPlayer alloc] initWithContentsOfURL:blankSoundURL error:nil];
         // 设置为无限循环播放
@@ -78,33 +87,69 @@
 
 - (void)endBackgroundMode{
     [self.Player stop];
+    self.Player = nil;
     [self.bgTaskTimer invalidate];
+    self.bgTaskTimer = nil;
+    UIBackgroundTaskIdentifier taskID = self.bgTaskIdentifier;
+    if (taskID != UIBackgroundTaskInvalid) {
+        [[UIApplication sharedApplication] endBackgroundTask:taskID];
+        self.bgTaskIdentifier = UIBackgroundTaskInvalid;
+    }
 }
 //程序进入后台处理 防止挂起
 - (void)beginBackgroundMode{
-    self.bgTaskIdentifier = [[UIApplication sharedApplication] beginBackgroundTaskWithExpirationHandler:^{
-        [[UIApplication sharedApplication] endBackgroundTask:self.bgTaskIdentifier];
-        self.bgTaskIdentifier = UIBackgroundTaskInvalid;
+    if (self.bgTaskIdentifier != UIBackgroundTaskInvalid || self.bgTaskTimer.valid) return;
+    UIApplication *app = [UIApplication sharedApplication];
+    __weak typeof(self) weakSelf = self;
+    __block UIBackgroundTaskIdentifier taskID = UIBackgroundTaskInvalid;
+    taskID = [app beginBackgroundTaskWithExpirationHandler:^{
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self) return;
+        if (self.bgTaskIdentifier == taskID) {
+            [app endBackgroundTask:taskID];
+            self.bgTaskIdentifier = UIBackgroundTaskInvalid;
+            [self.bgTaskTimer invalidate];
+            self.bgTaskTimer = nil;
+        } else {
+            [app endBackgroundTask:taskID];
+        }
     }];
+    self.bgTaskIdentifier = taskID;
     self.bgTaskTimer = [NSTimer scheduledTimerWithTimeInterval:10.0 target:self selector:@selector(requestMoreTime) userInfo:nil repeats:YES];
     [[NSRunLoop mainRunLoop] addTimer:self.bgTaskTimer forMode:NSRunLoopCommonModes];
     [self.bgTaskTimer fire]; //立即触发定时器 即执行 requestMoreTime 方法
 }
 
 - (void)requestMoreTime{
+    if (self.bgTaskIdentifier == UIBackgroundTaskInvalid) return;
     if ([UIApplication sharedApplication].backgroundTimeRemaining < 30) {
         [self playBlankAudio];
         //[self playVoiceAudio];
-        [[UIApplication sharedApplication] endBackgroundTask:self.bgTaskIdentifier];
-        self.bgTaskIdentifier = [[UIApplication sharedApplication] beginBackgroundTaskWithExpirationHandler:^{
-            [[UIApplication sharedApplication] endBackgroundTask:self.bgTaskIdentifier];
-            self.bgTaskIdentifier = UIBackgroundTaskInvalid;
+        UIApplication *app = [UIApplication sharedApplication];
+        UIBackgroundTaskIdentifier oldTaskID = self.bgTaskIdentifier;
+        if (oldTaskID != UIBackgroundTaskInvalid) {
+            [app endBackgroundTask:oldTaskID];
+        }
+        __weak typeof(self) weakSelf = self;
+        __block UIBackgroundTaskIdentifier newTaskID = UIBackgroundTaskInvalid;
+        newTaskID = [app beginBackgroundTaskWithExpirationHandler:^{
+            __strong typeof(weakSelf) self = weakSelf;
+            if (!self) { [app endBackgroundTask:newTaskID]; return; }
+            if (self.bgTaskIdentifier == newTaskID) {
+                [app endBackgroundTask:newTaskID];
+                self.bgTaskIdentifier = UIBackgroundTaskInvalid;
+            } else {
+                [app endBackgroundTask:newTaskID];
+            }
         }];
+        self.bgTaskIdentifier = newTaskID;
     }
 }
 
 //通过角标标记后台已运行多长时间(秒)
 - (void)beginBadgeNumberCount{
+    [self.bgTaskTimerbadge invalidate];
+    self.bgTaskTimerbadge = nil;
     [UIApplication sharedApplication].applicationIconBadgeNumber = 0;
     self.bgTaskTimerbadge = [NSTimer scheduledTimerWithTimeInterval:1.f repeats:YES block:^(NSTimer * _Nonnull timer) {
         [UIApplication sharedApplication].applicationIconBadgeNumber++;
@@ -117,6 +162,7 @@
 - (void)endBadgeNumberCount{
     [UIApplication sharedApplication].applicationIconBadgeNumber = 0;
     [self.bgTaskTimerbadge invalidate];
+    self.bgTaskTimerbadge = nil;
 }
 
 @end
