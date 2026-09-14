@@ -6851,6 +6851,10 @@ static NSString *manorDrawTracerGroupId(NSDictionary *task) {
     if (!self.enableAutoManor) return;
     if (![self activeManorBridge]) return;
     [self flushManorWatchSummaryIfNeeded];
+    // 心跳刷新庄园状态快照（9/13 用户定版位置）：enterFarm 回包带回 manureVO/foodStock 最新值，
+    // 收肥料（manurePotNum>=100 判定）与满仓闸门读的都是这份快照——不刷新则只有进庄园
+    // 那一拍的旧数据，罐满/腾空间要等下次进页才发现。9/14 曾按旧口径删过，用户当天要求加回
+    [self enterManorFarm];
     [self retryManorPendingAutomations];
     // 抽抽乐：两个活动各自「当天一轮」，跑完即收工（当天不再发任何请求，防风控）
     [self runManorDrawMachineDaily];
@@ -6894,7 +6898,7 @@ static NSString *manorDrawTracerGroupId(NSDictionary *task) {
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     if (now - lastEggHarvestTime < 60) return;
     lastEggHarvestTime = now;
-    
+
     NSString *timeStamp = [NSString stringWithFormat:@"%ld", (long)(now * 1000)];
     NSString *randNum = [AntForestManager getNumberRandom:15];
     NSString *url = [self manorRPCUrlString];
