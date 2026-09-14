@@ -2577,111 +2577,14 @@ static inline BOOL isRelevantPluginURL(NSString *urlStr) {
 #endif
 #define AFProbeLog(...) do { if (ENABLE_PROBE_LOGS) NSLog(__VA_ARGS__); } while(0)
 
-static const void *PortRPCSendOriginalIMPKey = &PortRPCSendOriginalIMPKey;
-static const void *PortRPCCallHandlerOriginalIMPKey = &PortRPCCallHandlerOriginalIMPKey;
 
-static IMP portOriginalSendIMPFor(id self) {
-    IMP original = NULL;
-    for (Class cls = object_getClass(self); cls && !original; cls = class_getSuperclass(cls)) {
-        original = [objc_getAssociatedObject(cls, PortRPCSendOriginalIMPKey) pointerValue];
-    }
-    return original;
-}
-
-static IMP portOriginalCallHandlerIMPFor(id self) {
-    IMP original = NULL;
-    for (Class cls = object_getClass(self); cls && !original; cls = class_getSuperclass(cls)) {
-        original = [objc_getAssociatedObject(cls, PortRPCCallHandlerOriginalIMPKey) pointerValue];
-    }
-    return original;
-}
-static void portObserveManorRPCRequest(id arg) {
-    if (!arg) return;
-    static NSTimeInterval lastObserve = 0;
-    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-    if (now - lastObserve < 0.2) return;
-    if ([arg isKindOfClass:NSString.class]) {
-        if ([(NSString *)arg rangeOfString:@"antfarm"].location == NSNotFound) return;
-    } else if (![arg isKindOfClass:NSDictionary.class] && ![arg isKindOfClass:NSArray.class]) {
-        return;
-    }
-    lastObserve = now;
-    [[AntForestManager sharedInstance] noteManorPageRPCRequest:arg];
-}
-
-static id portRPCSendProbe(id self, SEL _cmd, id arg1, id arg2) {
-    @try {
-        portObserveManorRPCRequest(arg1);
-    } @catch (NSException *e) {}
-    IMP original = portOriginalSendIMPFor(self);
-    if (original) return ((id (*)(id, SEL, id, id))original)(self, _cmd, arg1, arg2);
-    return nil;
-}
-
-static id portRPCCallHandlerProbe(id self, SEL _cmd, id handler, id data, id callback) {
-    @try {
-        portObserveManorRPCRequest(data ?: handler);
-    } @catch (NSException *e) {}
-    IMP original = portOriginalCallHandlerIMPFor(self);
-    if (original) return ((id (*)(id, SEL, id, id, id))original)(self, _cmd, handler, data, callback);
-    return nil;
-}
-
+// 官方口径：RPC 探针禁用。v3.4.4 实装版曾 hook PSDJsBridge 的
+// send:responseCallback: / callHandler:data:responseCallback:，与桥接主链重叠，9/15 回退官方空转。
 static BOOL hookRPCProbeMethod(Class cls) {
-    if (!cls) return NO;
-    const char *clsName = class_getName(cls);
-    if (!clsName) return NO;
-    if (strcmp(clsName, "PSDJsBridge") != 0 && strcmp(clsName, "RVKJsBridge") != 0) return NO;
-
-    BOOL installed = NO;
-    SEL sendSel = @selector(send:responseCallback:);
-    SEL handlerSel = @selector(callHandler:data:responseCallback:);
-    Method sendMethod = class_getInstanceMethod(cls, sendSel);
-    Method handlerMethod = class_getInstanceMethod(cls, handlerSel);
-    if (sendMethod && class_getMethodImplementation(cls, sendSel) != (IMP)portRPCSendProbe) {
-        IMP original = method_getImplementation(sendMethod);
-        const char *types = method_getTypeEncoding(sendMethod);
-        // Materialize an inherited method on the target class before replacing it.
-        class_addMethod(cls, sendSel, original, types);
-        Method directMethod = class_getInstanceMethod(cls, sendSel);
-        if (directMethod && method_getImplementation(directMethod) != (IMP)portRPCSendProbe) {
-            original = method_getImplementation(directMethod);
-            objc_setAssociatedObject(cls, PortRPCSendOriginalIMPKey, [NSValue valueWithPointer:original], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            method_setImplementation(directMethod, (IMP)portRPCSendProbe);
-            installed = YES;
-        }
-    }
-    if (handlerMethod && class_getMethodImplementation(cls, handlerSel) != (IMP)portRPCCallHandlerProbe) {
-        IMP original = method_getImplementation(handlerMethod);
-        const char *types = method_getTypeEncoding(handlerMethod);
-        class_addMethod(cls, handlerSel, original, types);
-        Method directMethod = class_getInstanceMethod(cls, handlerSel);
-        if (directMethod && method_getImplementation(directMethod) != (IMP)portRPCCallHandlerProbe) {
-            original = method_getImplementation(directMethod);
-            objc_setAssociatedObject(cls, PortRPCCallHandlerOriginalIMPKey, [NSValue valueWithPointer:original], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            method_setImplementation(directMethod, (IMP)portRPCCallHandlerProbe);
-            installed = YES;
-        }
-    }
-    return installed;
+    return NO;
 }
-
-
 
 static NSString *gLastRpcOperationType = nil;
-
-// 桥接注册：页面每次发 H5 消息都带自己的 bridge+url，交给 registerBridge 按 URL 分类绑定
-static void portDoFlushMessageQueue(id self, SEL _cmd, id message, id url) {
-    if (originalDoFlushMessageQueue) {
-        originalDoFlushMessageQueue(self, _cmd, message, url);
-    }
-    @try {
-        NSString *urlString = [url isKindOfClass:NSString.class] ? (NSString *)url : nil;
-        [[AntForestManager sharedInstance] registerBridge:self withUrl:urlString];
-    } @catch (NSException *e) {
-        NSLog(@"[AntForestPort][Bridge] registerBridge exception: %@", e);
-    }
-}
 
 static id portTransformResponseData(id self, SEL _cmd, id value) {
     id controller = forestControllerForBridge(self);
@@ -3065,22 +2968,11 @@ static void installHooks(void) {
         if (targetBridgeClass) {
             hookMethod(targetBridgeClass, @selector(transformResponseData:), (IMP)portTransformResponseData, (IMP *)&originalTransformResponseData);
             hookMethod(targetBridgeClass, @selector(updateBridgeReadyStatus:), (IMP)portUpdateBridgeReadyStatus, (IMP *)&originalUpdateBridgeReadyStatus);
-            if ([targetBridgeClass instancesRespondToSelector:@selector(_doFlushMessageQueue:url:)]) {
-                hookMethod(targetBridgeClass, @selector(_doFlushMessageQueue:url:), (IMP)portDoFlushMessageQueue, (IMP *)&originalDoFlushMessageQueue);
-            }
+            // v3.4.4 曾在此 hook _doFlushMessageQueue:url: 调 registerBridge——可用包(v3.1)与官方源码均无此
+            // hook，9/15 回退：桥接注册只靠 transformResponseData 回包特征（与可用包口径一致）。
         }
         
-        int classCount = objc_getClassList(NULL, 0);
-        if (classCount > 0) {
-            Class *classes = (Class *)malloc(sizeof(Class) * classCount);
-            if (classes) {
-                classCount = objc_getClassList(classes, classCount);
-                for (int i = 0; i < classCount; i++) {
-                    hookRPCProbeMethod(classes[i]);
-                }
-                free(classes);
-            }
-        }
+        // 全类 RPC 探针扫描已随 9/15 桥接回退移除（hookRPCProbeMethod 停用）
         NSLog(@"[AntForestPort] Bridge and controllers hooked safely.");
     }
 }
