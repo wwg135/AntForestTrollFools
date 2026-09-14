@@ -76,6 +76,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy) NSString *manorH5Url; // 蚂蚁庄园当前 URL
 @property (nonatomic, copy) NSString *lastManorFarmId; // 庄园 ID
 @property (nonatomic, copy) NSString *lastManorAnimalId; // 小鸡 ID
+@property (nonatomic, assign) NSInteger lastManorEggPercent; // 蛋巢产蛋进度 0-100（benevolenceScore×100）
+@property (nonatomic, assign) BOOL lastManorEggPercentKnown; // 蛋巢进度是否已从服务端回包取到
 @property (nonatomic) BOOL isManorChickenEating; // 小鸡当前是否正在进食中
 @property (nonatomic) NSInteger lastManorFoodStock; // 背包饲料存量
 @property (nonatomic) NSInteger lastManorFoodStockLimit; // 背包饲料存量上限

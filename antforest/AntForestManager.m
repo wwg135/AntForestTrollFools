@@ -6378,7 +6378,13 @@ static NSString *manorDrawSceneInObject(id obj, NSUInteger *budget) {
         NSMutableDictionary *item = gManorDrawPend[scene];
         NSInteger remain = [item[@"remain"] integerValue];
         NSInteger round  = [item[@"round"] integerValue];
-        if (remain <= 0 || round >= kManorDrawPendMaxRounds) {
+        // 队列只在「活动最后一天」建立（入队处保证），所以这里以抽完为准，不再受轮数上限
+        if (remain <= 0) {
+            [gManorDrawPend removeObjectForKey:scene];
+            continue;
+        }
+        if (round > 240) {   // 兜底：25s 一轮 ×240 ≈ 100 分钟，防死循环
+            [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园 · 抽抽乐（%@）：补抽超时（剩余 %ld 次未抽完，下轮查询再续）", scene, (long)remain]];
             [gManorDrawPend removeObjectForKey:scene];
             continue;
         }
@@ -6830,12 +6836,20 @@ static NSString *manorDrawTracerGroupId(NSDictionary *task) {
             }
             if (endRaw.length) break;
         }
+        NSInteger remainDays = -1;   // -1=未知（endTime 缺失/解析失败）
         if (endRaw.length) {
             long long raw = [endRaw longLongValue];
             NSDate *endDate = nil;
             if (raw > 1000000000000LL) endDate = [NSDate dateWithTimeIntervalSince1970:(raw / 1000.0)];
             else if (raw > 1000000000LL) endDate = [NSDate dateWithTimeIntervalSince1970:(double)raw];
-            if (endDate) isLastDay = [[NSCalendar currentCalendar] isDateInToday:endDate];
+            if (endDate) {
+                isLastDay = [[NSCalendar currentCalendar] isDateInToday:endDate];
+                // 自然日差：今天到结束日的天数（同一天=0；按自然日算，非 24h 差值）
+                NSDate *startOfToday = [[NSCalendar currentCalendar] startOfDayForDate:[NSDate date]];
+                NSDate *startOfEnd = [[NSCalendar currentCalendar] startOfDayForDate:endDate];
+                remainDays = (NSInteger)([startOfEnd timeIntervalSinceDate:startOfToday] / 86400.0);
+                if (remainDays < 0) remainDays = 0;
+            }
         }
         static dispatch_once_t onceDrawState;
         dispatch_once(&onceDrawState, ^{
@@ -6846,15 +6860,18 @@ static NSString *manorDrawTracerGroupId(NSDictionary *task) {
         gManorDrawEndToday[scene] = @(isLastDay);
         gManorDrawLastDrawTimes[scene] = @(drawTimes);
 
+        NSString *daysText = remainDays >= 0
+            ? (remainDays == 0 ? @"活动今日结束" : [NSString stringWithFormat:@"剩余 %ld 天", (long)remainDays])
+            : @"结束时间未知";
         NSInteger times = 0;
         if (drawTimes >= maxDraw) {
             times = maxDraw;
-            [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园 · 抽抽乐（%@）：已积满 %ld 次，开始一键连抽 %ld 次…", scene, (long)drawTimes, (long)times]];
+            [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园 · 抽抽乐（%@）：%@，已积满 %ld 次，开始一键连抽 %ld 次…", scene, daysText, (long)drawTimes, (long)times]];
         } else if (isLastDay) {
             times = drawTimes > maxDraw ? maxDraw : drawTimes;
-            [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园 · 抽抽乐（%@）：活动今日结束（endTime=%@），剩余 %ld 次全部抽掉…", scene, endRaw ?: @"-", (long)drawTimes]];
+            [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园 · 抽抽乐（%@）：%@（endTime=%@），剩余 %ld 次全部抽掉…", scene, daysText, endRaw ?: @"-", (long)drawTimes]];
         } else {
-            [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园 · 抽抽乐（%@）：已积 %ld/%ld 次，未满不抽（满 %ld 自动连抽）", scene, (long)drawTimes, (long)maxDraw, (long)maxDraw]];
+            [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园 · 抽抽乐（%@）：%@，已积 %ld/%ld 次，未满不抽（满 %ld 自动连抽）", scene, daysText, (long)drawTimes, (long)maxDraw, (long)maxDraw]];
             return;
         }
 
@@ -6865,11 +6882,10 @@ static NSString *manorDrawTracerGroupId(NSDictionary *task) {
 
         NSInteger left = drawTimes - times;
         if (left > 0 && isLastDay) {
-            NSInteger cap = maxDraw * kManorDrawPendMaxRounds;
-            NSInteger queued = left > cap ? cap : left;
-            gManorDrawPend[scene] = [@{@"remain": @(queued), @"round": @0,
+            // 结束当天：剩余次数全部入队，轮数不设上限，25 秒一轮直到抽完
+            gManorDrawPend[scene] = [@{@"remain": @(left), @"round": @0,
                                        @"next": @([[NSDate date] timeIntervalSince1970] + kManorDrawPendInterval)} mutableCopy];
-            [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园 · 抽抽乐（%@）：活动最后一天，单次上限 %ld 次，本轮抽 %ld 次，剩余 %ld 次排队补抽", scene, (long)maxDraw, (long)times, (long)queued]];
+            [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园 · 抽抽乐（%@）：活动最后一天，本轮抽 %ld 次，剩余 %ld 次排队补抽（25 秒一轮直到抽完）", scene, (long)times, (long)left]];
         } else if (left > 0) {
             [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园 · 抽抽乐（%@）：剩余 %ld 次未满 %ld 次，留着不抽（只在活动最后一天才清空）", scene, (long)left, (long)maxDraw]];
         }
@@ -6990,6 +7006,17 @@ static NSString *manorDrawTracerGroupId(NSDictionary *task) {
     static NSTimeInterval lastEggHarvestTime = 0;
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     if (now - lastEggHarvestTime < 60) return;
+    
+    // 蛋巢进度门：进度未知先同步状态不盲收；未满 100% 不发收蛋请求（服务端会回绝）
+    if (!self.lastManorEggPercentKnown) {
+        recordEggDiagOnce(self, @"egg_unknown", @"蚂蚁庄园：暂未识别到蛋巢产蛋进度，先同步状态，不发送收蛋请求");
+        return;
+    }
+    if (self.lastManorEggPercent < 100) {
+        recordEggDiagOnce(self, @"egg_notfull", [NSString stringWithFormat:@"蚂蚁庄园：蛋巢当前 %ld%%，未满 100%%，不发送收蛋请求", (long)self.lastManorEggPercent]);
+        return;
+    }
+    
     lastEggHarvestTime = now;
     
     NSString *timeStamp = [NSString stringWithFormat:@"%ld", (long)(now * 1000)];
@@ -7522,6 +7549,20 @@ static NSTimeInterval gLastManorCheckTime = 0;
                 }
             } else if (ownAnimal[@"animalId"]) {
                 self.lastManorAnimalId = [NSString stringWithFormat:@"%@", ownAnimal[@"animalId"]];
+            }
+            
+            // 蛋巢产蛋进度：farmVO.subFarmVO.farmProduce.benevolenceScore（探针实测 0~1 小数，满格=1.0）
+            NSDictionary *farmVO = [resData[@"farmVO"] isKindOfClass:NSDictionary.class] ? resData[@"farmVO"] : ([dict[@"farmVO"] isKindOfClass:NSDictionary.class] ? dict[@"farmVO"] : nil);
+            NSDictionary *innerSub = [farmVO[@"subFarmVO"] isKindOfClass:NSDictionary.class] ? farmVO[@"subFarmVO"] : subFarm;
+            NSDictionary *farmProduce = [innerSub[@"farmProduce"] isKindOfClass:NSDictionary.class] ? innerSub[@"farmProduce"] : nil;
+            id scoreRaw = farmProduce[@"benevolenceScore"];
+            if (scoreRaw) {
+                double score = [scoreRaw isKindOfClass:NSNumber.class] ? [(NSNumber *)scoreRaw doubleValue] : [(NSString *)scoreRaw doubleValue];
+                if (score > 0 || [scoreRaw isKindOfClass:NSNumber.class]) {
+                    self.lastManorEggPercent = (NSInteger)(score * 100.0 + 0.5);
+                    if (self.lastManorEggPercent > 100) self.lastManorEggPercent = 100;
+                    self.lastManorEggPercentKnown = YES;
+                }
             }
             
             // 访客小鸡检查：院子里 masterFarmId 不是自己农场的，就是来偷吃饲料的访客，逐个赶走
