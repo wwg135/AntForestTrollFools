@@ -1883,7 +1883,7 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
         [lowerTitle containsString:@"下载"] || [lowerType containsString:@"caifu"] || [lowerType containsString:@"download"] ||
         [lowerTitle containsString:@"砍树"] || [lowerTitle containsString:@"关卡"] || [lowerTitle containsString:@"闯关"] || [lowerTitle containsString:@"闯5关"] || [lowerTitle containsString:@"通过"] || [lowerType containsString:@"zh_nlgj"] || [lowerType containsString:@"fkssj"] ||
         [lowerTitle containsString:@"倒水"] || [lowerTitle containsString:@"砸蛋"] || [lowerTitle containsString:@"击杀"] ||
-        [lowerTitle containsString:@"玩一玩"] || [lowerType containsString:@"floatball_app"] || [lowerTitle containsString:@"消除战"] || [lowerTitle containsString:@"花园世界"] || [lowerTitle containsString:@"寻道大千"] || [lowerTitle containsString:@"消消消"] || [lowerTitle containsString:@"小游戏"] ||
+        [lowerType containsString:@"floatball_app"] ||
         [lowerType containsString:@"kuaishou"] || [lowerTitle containsString:@"快手"] ||
         [lowerType containsString:@"meituan"] || [lowerTitle containsString:@"美团"] ||
         [lowerType containsString:@"taobaochengjiu"] || [lowerTitle containsString:@"淘宝成就"] || [lowerTitle containsString:@"周边"] ||
@@ -1900,8 +1900,9 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
         return NO;
     }
     
-    // 5. 明确支持的白名单浏览特征（探针验证 100% 可通过 RPC 浏览完成并领奖）
-    if (([lowerType containsString:@"floatball"] && ![lowerType containsString:@"floatball_app"] && ![lowerTitle containsString:@"玩一玩"]) ||
+    // 5. 明确支持的白名单浏览与农场乐园小游戏特征（探针验证 100% 可通过 RPC 浏览时长完成并领奖）
+    if (([lowerType containsString:@"floatball"] && ![lowerType containsString:@"floatball_app"]) ||
+        [lowerType containsString:@"ncly"] ||
         [lowerType containsString:@"star30s"] ||
         [lowerType containsString:@"denghuo"] ||
         [lowerType containsString:@"chouchoule"] ||
@@ -1912,12 +1913,20 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
         [lowerType containsString:@"wsyh"] || [lowerType containsString:@"wangshang"] ||
         [lowerTitle containsString:@"网商"] || [lowerTitle containsString:@"会员"] ||
         [lowerTitle containsString:@"金豆乐园"] || [lowerTitle containsString:@"抽抽乐"] ||
-        [lowerTitle containsString:@"精选商品"]) {
+        [lowerTitle containsString:@"精选商品"] ||
+        [lowerTitle containsString:@"玩一玩"] ||
+        [lowerTitle containsString:@"小游戏"] ||
+        [lowerTitle containsString:@"寻道大千"] ||
+        [lowerTitle containsString:@"花园世界"] ||
+        [lowerTitle containsString:@"消除战"] ||
+        [lowerTitle containsString:@"消消消"] ||
+        [lowerTitle containsString:@"游戏"] ||
+        [lowerTitle containsString:@"乐园"]) {
         return YES;
     }
     
     // 6. 其他常规纯浏览任务（排除上述黑名单后，标题带浏览/看等特征）
-    if ([lowerTitle containsString:@"看精选"] || [lowerTitle containsString:@"浏览"]) {
+    if ([lowerTitle containsString:@"看精选"] || [lowerTitle containsString:@"浏览"] || [lowerTitle containsString:@"逛"] || [lowerTitle containsString:@"看"]) {
         return YES;
     }
     
@@ -2244,7 +2253,7 @@ static NSString *sLastQueriedSceneCode = nil;
     
     static NSTimeInterval lastQueryFarmTime = 0;
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-    NSTimeInterval minInterval = force ? 3.0 : 6.0;
+    NSTimeInterval minInterval = force ? 1.0 : 6.0;
     if (now - lastQueryFarmTime < minInterval) return;
     lastQueryFarmTime = now;
     
@@ -2533,7 +2542,7 @@ static NSInteger sVitalityAutoRefreshRounds = 0;
                     NSSet<NSString *> *executedScenes = [sExecutedScenesInCurrentRound copy];
                     [sExecutedScenesInCurrentRound removeAllObjects];
                     
-                    if (sHasPerformedWorkInCurrentVitalityRound && sVitalityAutoRefreshRounds < 5) {
+                    if (sHasPerformedWorkInCurrentVitalityRound && sVitalityAutoRefreshRounds < 20) {
                         sHasPerformedWorkInCurrentVitalityRound = NO;
                         sVitalityAutoRefreshRounds++;
                         
@@ -5883,7 +5892,7 @@ static void extractFarmTasksRecursive(id obj, int depth, NSMutableArray *outTask
                 NSString *taskKey = [NSString stringWithFormat:@"%@:%@", sceneCode, taskType];
                 BOOL isMulti = [actionType isEqualToString:@"MULTI_STAGE"] || (rLimit > 1 && rTimes < rLimit) || isMultiStageIncompleteTask(taskTitle, 0, 0) || isMultiStageTaskFromDict(t, nil, bizInfo ?: displayConfig);
                 
-                if (isMulti || [taskType containsString:@"FLOATBALL"] || [taskType containsString:@"ncly"] || [taskTitle containsString:@"玩一玩"]) {
+                if (isMulti || [taskType containsString:@"FLOATBALL"] || [taskType containsString:@"ncly"] || [taskTitle containsString:@"玩一玩"] || [taskTitle containsString:@"小游戏"] || [taskTitle containsString:@"游戏"] || [taskStatus isEqualToString:@"TODO"]) {
                     @synchronized(self) {
                         if ([gDailyFailedTasks containsObject:taskKey]) {
                             [gDailyFailedTasks removeObject:taskKey];
@@ -5893,6 +5902,12 @@ static void extractFarmTasksRecursive(id obj, int depth, NSMutableArray *outTask
                         }
                         saveDailyTaskCache();
                     }
+                }
+                
+                if (rTimes == 0) {
+                    NSString *stage0Key = [NSString stringWithFormat:@"%@:stage_0", taskKey];
+                    if (gFarmTaskRetryCounts[stage0Key]) [gFarmTaskRetryCounts removeObjectForKey:stage0Key];
+                    if (gFarmTaskRetryCounts[taskKey]) [gFarmTaskRetryCounts removeObjectForKey:taskKey];
                 }
                 
                 if ([taskStatus isEqualToString:@"RECEIVED"]) {
@@ -5996,6 +6011,7 @@ static void extractFarmTasksRecursive(id obj, int depth, NSMutableArray *outTask
                     }
                 }
                 if (shouldStart) {
+                    sVitalityAutoRefreshRounds = 0;
                     [self recordStage:[NSString stringWithFormat:@"芭芭农场：规划 %lu 项待完成与领肥料操作", (unsigned long)tasksToQueue.count]];
                     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(400 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
                         [self executeNextVitalityTask];
