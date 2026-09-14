@@ -1668,7 +1668,7 @@ static BOOL isSafeRewardTask(NSString *taskType, NSString *title) {
     }
     
     // 纯浏览/停留计时类任务（如“玩一玩向僵尸开炮 浏览15s”、“玩一玩我的花园世界 浏览30s”、“去神奇鱼塘得能量 逛一逛可得”），安全放行
-    BOOL isDurationBrowseTask = ([cleanTitle containsString:@"浏览"] || [cleanTitle containsString:@"30s"] || [cleanTitle containsString:@"15s"] || [cleanTitle containsString:@"秒"] || [cleanTitle containsString:@"逛"] || [cleanTitle containsString:@"看看"] || [cleanTitle containsString:@"鱼塘"] || [cleanTitle containsString:@"向僵尸开炮"]);
+    BOOL isDurationBrowseTask = ([cleanTitle containsString:@"浏览"] || [cleanTitle containsString:@"30s"] || [cleanTitle containsString:@"15s"] || [cleanTitle containsString:@"秒"] || [cleanTitle containsString:@"逛"] || [cleanTitle containsString:@"看看"] || [cleanTitle containsString:@"鱼塘"] || [cleanTitle containsString:@"向僵尸开炮"] || [cleanTitle containsString:@"花园世界"]);
     if (isDurationBrowseTask) {
         return YES;
     }
@@ -2542,7 +2542,7 @@ static NSInteger sVitalityAutoRefreshRounds = 0;
                     NSSet<NSString *> *executedScenes = [sExecutedScenesInCurrentRound copy];
                     [sExecutedScenesInCurrentRound removeAllObjects];
                     
-                    if (sHasPerformedWorkInCurrentVitalityRound && sVitalityAutoRefreshRounds < 20) {
+                    if (sHasPerformedWorkInCurrentVitalityRound && sVitalityAutoRefreshRounds < 5) {
                         sHasPerformedWorkInCurrentVitalityRound = NO;
                         sVitalityAutoRefreshRounds++;
                         
@@ -2873,6 +2873,17 @@ static NSInteger sVitalityAutoRefreshRounds = 0;
                     [self finishVitalityTask:taskType sceneCode:sceneCode taskTitle:title];
                 });
             } else if ([action isEqualToString:@"receive"]) {
+                if (taskKey.length) {
+                    @synchronized(self) {
+                        if (!gVitalityTaskRetryCounts) gVitalityTaskRetryCounts = [NSMutableDictionary dictionary];
+                        NSInteger curr = [gVitalityTaskRetryCounts[taskKey] integerValue];
+                        gVitalityTaskRetryCounts[taskKey] = @(curr + 1);
+                        if (curr + 1 >= 3) {
+                            [gDailyFailedTasks addObject:taskKey];
+                            saveDailyTaskCache();
+                        }
+                    }
+                }
                 [self recordStage:[NSString stringWithFormat:@"%@：正在提交领取“%@”（%@）...", scenePrefix, title, awardName]];
                 [self receiveVitalityTaskAward:taskType sceneCode:sceneCode taskTitle:title awardName:awardName];
             }
@@ -3144,12 +3155,23 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
         return 15;
     }
     
-    // 3. 无明确倒计时要求时，外链任务需保持运行 2 秒以满足外部服务端的唤起与有效激活校验
-    if ([taskType containsString:@"XIANYU"] || [taskType containsString:@"BBNC"] || [taskType containsString:@"shenqiyutang"] || [taskType containsString:@"SQYT"] || [taskType containsString:@"XLIGHT"] || [taskType containsString:@"JSKP"] || [title containsString:@"UC"] || [title containsString:@"芭芭农场"] || [title containsString:@"施肥"] || [title containsString:@"闲置"] || [title containsString:@"闲鱼"] || [title containsString:@"循环"] || [title containsString:@"市集"] || [title containsString:@"集市"] || [title containsString:@"鱼塘"]) {
+    // 6. 游戏类任务明确指定时长：用户明确指定“我的花园世界”需浏览30秒；玩游戏/小游戏类任务若无正则秒数默认30秒
+    if ([title containsString:@"花园世界"] || [title containsString:@"我的花园世界"]) {
+        return 30;
+    }
+    if ([title containsString:@"玩游戏"] || [title containsString:@"小游戏"] || [taskType containsString:@"GAME"]) {
+        return 30;
+    }
+    if ([title containsString:@"向僵尸开炮"] || [taskType containsString:@"JSKP"]) {
+        return 15;
+    }
+    
+    // 7. 无明确倒计时要求时，外链任务需保持运行 2 秒以满足外部服务端的唤起与有效激活校验
+    if ([taskType containsString:@"XIANYU"] || [taskType containsString:@"BBNC"] || [taskType containsString:@"shenqiyutang"] || [taskType containsString:@"SQYT"] || [taskType containsString:@"XLIGHT"] || [title containsString:@"UC"] || [title containsString:@"芭芭农场"] || [title containsString:@"施肥"] || [title containsString:@"闲置"] || [title containsString:@"闲鱼"] || [title containsString:@"循环"] || [title containsString:@"市集"] || [title containsString:@"集市"] || [title containsString:@"鱼塘"]) {
         return 2;
     }
     
-    // 4. 常规即时任务（如打开快手/淘宝、逛一逛各类专区等）：直接 0 秒秒做
+    // 8. 常规即时任务（如打开快手/淘宝、逛一逛各类专区等）：直接 0 秒秒做
     return 0;
 }
 
@@ -3421,36 +3443,35 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
             // 待领取状态判定：
             // 1. 服务端 taskStatus 明确为 FINISHED, CAN_RECEIVE, WAIT_AWARD, WAIT_RECEIVE 等；
             // 2. 进度已达标且未领完：taskRequire > 0 && taskProgress >= taskRequire && (rightsTimesLimit <= 0 || alreadyReceive < rightsTimesLimit)；
-            // 3. 按钮文案明确带有“领”（如“领取”、“立即领取”），且绝对不含“去”，且 taskStatus 不为 TODO；
-            // 4. doneTimes > alreadyReceive 仅在明确非 TODO 状态下有效（严禁将 TODO 任务误判为待领奖）。
-            NSString *finishedBtnText = bizInfo[@"finishedBtnText"] ?: @"";
+            // 3. 严禁将 TODO 或 INIT 状态的任务判定为待领取（TODO任务尚未完成，绝不能直接领奖，必须作为 browse 或 finish 执行）；
+            // 4. 严禁使用 finishedBtnText！finishedBtnText 仅为任务完结后展示的静态文案模板，未完成时服务端也会下发。
+            //    只有当前 active 按钮 btnText 明确表示可领取且 taskStatus 非 TODO 时，才作为待领依据。
+            BOOL isTodoStatus = [taskStatus isEqualToString:@"TODO"] || [taskStatus isEqualToString:@"INIT"];
+            
             NSString *btnText = bizInfo[@"btnText"] ?: bizInfo[@"buttonText"] ?: baseInfo[@"btnText"] ?: t[@"btnText"] ?: @"";
             if (!btnText.length && [t[@"taskDisplayConfig"] isKindOfClass:NSDictionary.class]) {
                 btnText = t[@"taskDisplayConfig"][@"buttonText"] ?: t[@"taskDisplayConfig"][@"btnText"] ?: @"";
             }
-            BOOL isClaimBtn = ([btnText containsString:@"去领取"]) ||
-                              ([finishedBtnText containsString:@"去领取"]) ||
+            BOOL isClaimBtn = !isTodoStatus && (
+                              ([btnText containsString:@"去领取"]) ||
                               ([btnText containsString:@"领"] && ![btnText containsString:@"去"]) ||
-                              ([finishedBtnText containsString:@"领"] && ![finishedBtnText containsString:@"去"]) ||
                               [btnText isEqualToString:@"领取"] || [btnText isEqualToString:@"领奖"] ||
                               [btnText isEqualToString:@"领步数"] || [btnText isEqualToString:@"立即领取"] ||
                               [btnText isEqualToString:@"领取奖励"] || [btnText isEqualToString:@"领饲料"] ||
                               [btnText isEqualToString:@"领机会"] || [btnText isEqualToString:@"领摸鱼次数"] ||
                               [btnText isEqualToString:@"领能量"] || [btnText isEqualToString:@"领取能量"] ||
-                              [btnText isEqualToString:@"收下"] || [btnText isEqualToString:@"开心收下"];
+                              [btnText isEqualToString:@"收下"] || [btnText isEqualToString:@"开心收下"]);
             BOOL isStatusCanReceive = [taskStatus isEqualToString:@"FINISHED"] ||
                                       [taskStatus isEqualToString:@"CAN_RECEIVE"] ||
                                       [taskStatus isEqualToString:@"WAIT_AWARD"] ||
                                       [taskStatus isEqualToString:@"WAIT_RECEIVE"] ||
                                       [taskStatus isEqualToString:@"TO_RECEIVE"] ||
                                       [taskStatus isEqualToString:@"SUCCESS"];
-            BOOL isProgressMet = (![taskStatus isEqualToString:@"TODO"] && taskRequire > 0 && taskProgress >= taskRequire && (rightsTimesLimit <= 0 || alreadyReceive < rightsTimesLimit));
-            BOOL isDoneTimesMet = (![taskStatus isEqualToString:@"TODO"] && [bizInfo isKindOfClass:NSDictionary.class] && [bizInfo[@"doneTimes"] integerValue] > alreadyReceive && [bizInfo[@"doneTimes"] integerValue] > 0);
+            BOOL isProgressMet = (!isTodoStatus && taskRequire > 0 && taskProgress >= taskRequire && (rightsTimesLimit <= 0 || alreadyReceive < rightsTimesLimit));
+            BOOL isDoneTimesMet = (!isTodoStatus && [bizInfo isKindOfClass:NSDictionary.class] && [bizInfo[@"doneTimes"] integerValue] > alreadyReceive && [bizInfo[@"doneTimes"] integerValue] > 0);
             
             BOOL hasPendingAward = NO;
-            if (isStatusCanReceive || isProgressMet || isDoneTimesMet) {
-                hasPendingAward = YES;
-            } else if (isClaimBtn) {
+            if (!isTodoStatus && (isStatusCanReceive || isProgressMet || isDoneTimesMet || isClaimBtn)) {
                 hasPendingAward = YES;
             }
             
@@ -3474,12 +3495,14 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
                 continue;
             }
             
-            // 如果存在待领奖且之前在失败列表中，撤销失败并重置重试计数
+            // 如果存在待领奖且之前在失败列表中，仅在重试未超限时撤销失败
             if (hasPendingAward) {
                 @synchronized(self) {
-                    if ([gDailyFailedTasks containsObject:taskKey]) {
-                        [gDailyFailedTasks removeObject:taskKey];
-                        gVitalityTaskRetryCounts[taskKey] = @0;
+                    NSInteger currRetries = [gVitalityTaskRetryCounts[taskKey] integerValue];
+                    if (currRetries < 3) {
+                        if ([gDailyFailedTasks containsObject:taskKey]) {
+                            [gDailyFailedTasks removeObject:taskKey];
+                        }
                     }
                     saveDailyTaskCache();
                 }
@@ -3550,9 +3573,9 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
                 continue;
             }
 
-            // 防死循环熔断：如果该任务已连续尝试 5 次以上未成功，跳过本轮（内存防死循环），不永久持久化避免误杀
+            // 防死循环熔断：如果该任务已连续尝试 3 次以上未成功，跳过本轮（防死循环）
             NSInteger vRetries = [gVitalityTaskRetryCounts[taskKey] integerValue];
-            if (vRetries >= 5) {
+            if (vRetries >= 3 || [gDailyFailedTasks containsObject:taskKey]) {
                 NSString *moduleTag = @"森林寻宝/任务中心";
                 if ([sceneCode containsString:@"OCEAN"] || [sceneCode containsString:@"RESCUE"]) {
                     moduleTag = @"神奇海洋";
@@ -3701,7 +3724,6 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
         }
         
         if (shouldStartLoop) {
-            sVitalityAutoRefreshRounds = 0;
             NSString *targetScene = newlyParsedTasks.firstObject[@"sceneCode"] ?: (accTasks.firstObject[@"sceneCode"] ?: respSceneCode);
             NSString *planningPrefix = @"领奖励与森林寻宝";
             if ([targetScene containsString:@"RESCUE"] || [targetScene containsString:@"OCEAN"]) {
@@ -6011,7 +6033,6 @@ static void extractFarmTasksRecursive(id obj, int depth, NSMutableArray *outTask
                     }
                 }
                 if (shouldStart) {
-                    sVitalityAutoRefreshRounds = 0;
                     [self recordStage:[NSString stringWithFormat:@"芭芭农场：规划 %lu 项待完成与领肥料操作", (unsigned long)tasksToQueue.count]];
                     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(400 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
                         [self executeNextVitalityTask];
@@ -6278,6 +6299,7 @@ static BOOL oceanPlanLoggedThisRound = NO;
         oceanPlanLoggedThisRound = NO;
         lastCollectStartedAt = NSDate.date;
         collectionCycle++;
+        sVitalityAutoRefreshRounds = 0;
         NSUInteger cycle = collectionCycle;
         selfPriorityPending = self.enableSelfCollect;
         selfPriorityCycle = cycle;
