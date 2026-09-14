@@ -1863,9 +1863,8 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
         return NO;
     }
     
-    // 2. 弹窗导流与迁移类伪任务（如 ORCHARD_POP_MIGRATE_XLIGHT 引导弹窗），严禁自动执行
+    // 2. 弹窗引导与迁移类伪任务（如 ORCHARD_POP_MIGRATE_XLIGHT 引导弹窗），严禁自动执行
     if ([lowerType containsString:@"pop"] || [lowerType containsString:@"migrate"] ||
-        [lowerType containsString:@"guide"] || [lowerType containsString:@"daoliu"] ||
         [lowerType containsString:@"dialog"] || [lowerTitle containsString:@"轻量"] ||
         [lowerTitle containsString:@"迁移"]) {
         return NO;
@@ -1876,13 +1875,16 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
     if ([lowerType containsString:@"zhifu"] || [lowerType containsString:@"pay"] || [lowerTitle containsString:@"支付"] || [lowerTitle containsString:@"付款"] ||
         [lowerType containsString:@"insure"] || [lowerType containsString:@"baoxian"] || [lowerTitle containsString:@"保险"] ||
         [lowerType containsString:@"loan"] || [lowerTitle containsString:@"借呗"] || [lowerTitle containsString:@"花呗"] ||
-        [lowerType containsString:@"order"] || [lowerType containsString:@"xiadan"] || [lowerTitle containsString:@"下单"] || [lowerTitle containsString:@"购买"] || [lowerTitle containsString:@"订单"] || [lowerType containsString:@"lmct"] ||
+        [lowerType containsString:@"order"] || [lowerType containsString:@"xiadan"] || [lowerTitle containsString:@"下单"] || [lowerTitle containsString:@"购买"] || [lowerTitle containsString:@"订单"] ||
+        [lowerType containsString:@"zadan"] || [lowerTitle containsString:@"砸蛋"] ||
+        [lowerType containsString:@"mhxcz"] ||
+        [lowerType containsString:@"wzzt"] || [lowerTitle containsString:@"王者征途"] || [lowerTitle containsString:@"做30个任务"] || [lowerTitle containsString:@"做任务"] ||
         [lowerType containsString:@"gaode"] || [lowerTitle containsString:@"高德"] || [lowerTitle containsString:@"评价"] ||
         [lowerTitle containsString:@"分享"] || [lowerType containsString:@"sharer"] || [lowerType containsString:@"p2p"] ||
         [lowerTitle containsString:@"组队"] || [lowerTitle containsString:@"合种"] || [lowerTitle containsString:@"帮帮种"] || [lowerType containsString:@"team"] ||
         [lowerTitle containsString:@"下载"] || [lowerType containsString:@"caifu"] || [lowerType containsString:@"download"] ||
         [lowerTitle containsString:@"砍树"] || [lowerTitle containsString:@"关卡"] || [lowerTitle containsString:@"闯关"] || [lowerTitle containsString:@"闯5关"] || [lowerTitle containsString:@"通过"] || [lowerType containsString:@"zh_nlgj"] || [lowerType containsString:@"fkssj"] ||
-        [lowerTitle containsString:@"倒水"] || [lowerTitle containsString:@"砸蛋"] || [lowerTitle containsString:@"击杀"] ||
+        [lowerTitle containsString:@"倒水"] || [lowerTitle containsString:@"击杀"] ||
         [lowerType containsString:@"floatball_app"] ||
         [lowerType containsString:@"kuaishou"] || [lowerTitle containsString:@"快手"] ||
         [lowerType containsString:@"meituan"] || [lowerTitle containsString:@"美团"] ||
@@ -1917,9 +1919,13 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
         [lowerTitle containsString:@"玩一玩"] ||
         [lowerTitle containsString:@"小游戏"] ||
         [lowerTitle containsString:@"寻道大千"] ||
+        [lowerTitle containsString:@"保卫向日葵"] ||
+        [lowerTitle containsString:@"烈焰觉醒"] ||
+        [lowerTitle containsString:@"浪漫餐厅"] || [lowerType containsString:@"lmct"] ||
+        [lowerTitle containsString:@"解螺丝"] ||
         [lowerTitle containsString:@"花园世界"] ||
-        [lowerTitle containsString:@"消除战"] ||
         [lowerTitle containsString:@"消消消"] ||
+        [lowerTitle containsString:@"助农"] || [lowerTitle containsString:@"好货"] || [lowerTitle containsString:@"好物"] ||
         [lowerTitle containsString:@"游戏"] ||
         [lowerTitle containsString:@"乐园"]) {
         return YES;
@@ -5894,7 +5900,7 @@ static void extractFarmTasksRecursive(id obj, int depth, NSMutableArray *outTask
                     taskTitle = [NSString stringWithFormat:@"%@ (%ld/%ld)", taskTitle, (long)MIN(rTimes + 1, rLimit), (long)rLimit];
                 }
                 
-                id rawBtn = displayConfig[@"todoBtn"] ?: displayConfig[@"completeBtn"] ?: displayConfig[@"finishedBtn"] ?: bizInfo[@"taskJumpBtn"] ?: t[@"btnText"] ?: t[@"buttonText"] ?: t[@"actionText"] ?: @"";
+                id rawBtn = displayConfig[@"todoBtn"] ?: displayConfig[@"completeBtn"] ?: bizInfo[@"taskJumpBtn"] ?: t[@"btnText"] ?: t[@"buttonText"] ?: t[@"actionText"] ?: @"";
                 NSString *taskJumpBtn = [rawBtn isKindOfClass:NSString.class] ? (NSString *)rawBtn : ([rawBtn respondsToSelector:@selector(stringValue)] ? [rawBtn stringValue] : @"");
                 NSString *awardDesc = awardCount.length ? [NSString stringWithFormat:@"%@肥", awardCount] : @"肥料奖励";
                 
@@ -5916,20 +5922,11 @@ static void extractFarmTasksRecursive(id obj, int depth, NSMutableArray *outTask
                 
                 if (isMulti || [taskType containsString:@"FLOATBALL"] || [taskType containsString:@"ncly"] || [taskTitle containsString:@"玩一玩"] || [taskTitle containsString:@"小游戏"] || [taskTitle containsString:@"游戏"] || [taskStatus isEqualToString:@"TODO"]) {
                     @synchronized(self) {
-                        if ([gDailyFailedTasks containsObject:taskKey]) {
-                            [gDailyFailedTasks removeObject:taskKey];
-                        }
                         if ([gDailyCompletedTasks containsObject:taskKey]) {
                             [gDailyCompletedTasks removeObject:taskKey];
                         }
                         saveDailyTaskCache();
                     }
-                }
-                
-                if (rTimes == 0) {
-                    NSString *stage0Key = [NSString stringWithFormat:@"%@:stage_0", taskKey];
-                    if (gFarmTaskRetryCounts[stage0Key]) [gFarmTaskRetryCounts removeObjectForKey:stage0Key];
-                    if (gFarmTaskRetryCounts[taskKey]) [gFarmTaskRetryCounts removeObjectForKey:taskKey];
                 }
                 
                 if ([taskStatus isEqualToString:@"RECEIVED"]) {
@@ -5945,9 +5942,10 @@ static void extractFarmTasksRecursive(id obj, int depth, NSMutableArray *outTask
                     continue;
                 }
                 
-                BOOL canClaim = [taskStatus isEqualToString:@"FINISHED"] ||
+                BOOL isTodo = [taskStatus isEqualToString:@"TODO"] || [taskStatus isEqualToString:@"INIT"] || [taskStatus isEqualToString:@"SIGN"];
+                BOOL canClaim = !isTodo && ([taskStatus isEqualToString:@"FINISHED"] ||
                                 [taskStatus isEqualToString:@"CAN_RECEIVE"] ||
-                                (([taskJumpBtn containsString:@"领"] && ![taskJumpBtn containsString:@"去领"] && ![taskJumpBtn containsString:@"去逛"]) && ![taskStatus isEqualToString:@"RECEIVED"]);
+                                (([taskJumpBtn containsString:@"领"] && ![taskJumpBtn containsString:@"去领"] && ![taskJumpBtn containsString:@"去逛"]) && ![taskStatus isEqualToString:@"RECEIVED"]));
                 
                 if (canClaim) {
                     @synchronized(self) {
@@ -5972,22 +5970,20 @@ static void extractFarmTasksRecursive(id obj, int depth, NSMutableArray *outTask
                            ![actionType isEqualToString:@"SPREAD_MANURE"] &&
                            ![actionType isEqualToString:@"ANTFARM_COLLECT_MANURE"] &&
                            ![taskType isEqualToString:@"ANTFARM_COLLECT_MANURE"] &&
-                           ([taskStatus isEqualToString:@"TODO"] || [taskStatus isEqualToString:@"INIT"] || [taskStatus isEqualToString:@"SIGN"])) {
+                           isTodo) {
                     BOOL isSafe = isSafeFarmTask(taskType, taskTitle);
                     if (isSafe) {
                         NSString *retryKey = isMulti ? [NSString stringWithFormat:@"%@:stage_%ld", taskKey, (long)rTimes] : taskKey;
                         @synchronized(self) {
-                            if (!isMulti && [gDailyFailedTasks containsObject:taskKey]) {
+                            if ([gDailyFailedTasks containsObject:taskKey]) {
                                 continue;
                             }
                             NSInteger retries = [gFarmTaskRetryCounts[retryKey] integerValue];
                             if (retries >= 3) {
                                 NSLog(@"🌾 [芭芭农场] 任务【%@】(%@) 已经尝试执行 %ld 次但服务端仍未完成，可能需要真实端内页面交互，自动标记跳过避免死循环", taskTitle, retryKey, (long)retries);
-                                [self recordStage:[NSString stringWithFormat:@"芭芭农场：“%@”需在界面手动完成（服务端要求真实浏览，已跳过）", taskTitle]];
-                                if (!isMulti) {
-                                    [gDailyFailedTasks addObject:taskKey];
-                                    saveDailyTaskCache();
-                                }
+                                [self recordStage:[NSString stringWithFormat:@"芭芭农场：“%@”需在界面手动完成（服务端要求真实操作，已跳过）", taskTitle]];
+                                [gDailyFailedTasks addObject:taskKey];
+                                saveDailyTaskCache();
                                 continue;
                             }
                             if (!isMulti && [gDailyCompletedTasks containsObject:taskKey] && ![taskStatus isEqualToString:@"TODO"]) {
