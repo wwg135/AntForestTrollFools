@@ -2113,17 +2113,14 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
 
 - (void)registerBridge:(id)bridge withUrl:(NSString *)url {
     if (!bridge) return;
+    // 官方口径（Manager.m:1965）：无条件绑定 jsBridge 兜底——URL 链路失效时至少保证森林主通道可用；
+    // 跨业务误绑由 transformResponseData 的槽位清理逻辑（isForest/isManor/isFarm 互斥清洗）兜底。
+    self.jsBridge = bridge;
     
     NSString *effectiveUrl = url.length ? url : [self effectiveUrlForBridge:bridge];
     NSString *lowerUrl = effectiveUrl.lowercaseString;
     
     if (lowerUrl.length) {
-        // 森林首页才绑 jsBridge；其他页面各归各槽位，防止跨业务顶掉森林通道
-        if ([lowerUrl containsString:@"180020010001247580"] ||
-            [lowerUrl containsString:@"60000002"] ||
-            [lowerUrl containsString:@"home.html"]) {
-            self.jsBridge = bridge;
-        }
         if ([lowerUrl containsString:@"180020010001293606"] || [lowerUrl containsString:@"monopoly"] || [lowerUrl containsString:@"hsdwy"] || [lowerUrl containsString:@"patrol"] || [lowerUrl containsString:@"guardian"]) {
             self.monopolyBridge = bridge;
             self.monopolyH5Url = effectiveUrl;
