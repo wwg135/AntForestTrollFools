@@ -7518,17 +7518,18 @@ static NSTimeInterval gLastManorCheckTime = 0;
                 }
             } else if (manorChickenSleeping()) {
                 NSLog(@"🐔 [蚂蚁庄园·小鸡状态] 小鸡在睡觉，不投喂 | 盆内:%ld/%ldg | 饲料存量:%ldg", (long)foodInTrough, (long)foodLimit, (long)foodStock);
+            } else if (!gManorFoodStockKnown) {
+                // v3.3.9d：冷启动首个体检包可能先于库存包到达（foodStock=0），
+                // 0 不代表「背包空」——不能报「需先做任务赚饲料」误导用户，等下一轮自动补判
+                NSLog(@"🐔 [蚂蚁庄园·小鸡状态] 饭盆空闲但背包存量未知（首个库存包未到达），暂缓投喂");
+            } else if (foodStock >= 180) {
+                [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：检测到小鸡饭盆空闲（盆内 %ldg / 背包存量 %ldg），正在自动投喂（优先高级饲料）...", (long)foodInTrough, (long)foodStock]];
+                [self feedManorChickenWithAdvancedFood];
+            } else if (foodStock > 0) {
+                [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：检测到小鸡饭盆空闲，背包存量不足 180g（当前 %ldg），尝试投喂（优先高级饲料）...", (long)foodStock]];
+                [self feedManorChickenWithAdvancedFood];
             } else {
-                NSLog(@"🐔 [蚂蚁庄园·小鸡状态] 饭盆空闲 | 盆内:%ld/%ldg | 饲料存量:%ldg", (long)foodInTrough, (long)foodLimit, (long)foodStock);
-                if (foodStock >= 180) {
-                    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：检测到小鸡饭盆空闲（盆内 %ldg / 背包存量 %ldg），正在自动投喂（优先高级饲料）...", (long)foodInTrough, (long)foodStock]];
-                    [self feedManorChickenWithAdvancedFood];
-                } else if (foodStock > 0) {
-                    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：检测到小鸡饭盆空闲，背包存量不足 180g（当前 %ldg），尝试投喂（优先高级饲料）...", (long)foodStock]];
-                    [self feedManorChickenWithAdvancedFood];
-                } else {
-                    [self recordStage:@"蚂蚁庄园：小鸡饭盆空闲，但背包饲料存量为 0g，需先做任务赚饲料"];
-                }
+                [self recordStage:@"蚂蚁庄园：小鸡饭盆空闲，但背包饲料存量为 0g，需先做任务赚饲料"];
             }
             
             NSDictionary *manureVO = [subFarm[@"manureVO"] isKindOfClass:NSDictionary.class] ? subFarm[@"manureVO"] : nil;
@@ -7684,17 +7685,27 @@ static NSTimeInterval gLastManorCheckTime = 0;
         }
         
         // G. 投喂小鸡回包处理 (feedAnimal)
-        if ([opType containsString:@"feedAnimal"] && ([resData[@"memo"] isEqualToString:@"SUCCESS"] || [dict[@"memo"] isEqualToString:@"SUCCESS"] || [resData[@"resultCode"] isEqualToString:@"100"] || [dict[@"resultCode"] isEqualToString:@"100"] || resData[@"foodStock"] != nil)) {
+        // v3.3.9d：删掉 resData[@"foodStock"] != nil 这条独立判据——状态包（enterFarm/syncAnimalStatus）
+        // 也带 foodStock，一旦被 FIFO 错归类到本分支就会误报「投喂成功」+ 置 isManorChickenEating=YES
+        // （与收蛋 memo=SUCCESS 同型：状态字段存在 ≠ 投喂动作成功）
+        BOOL feedMemoOk = [resData[@"memo"] isEqualToString:@"SUCCESS"] || [dict[@"memo"] isEqualToString:@"SUCCESS"] ||
+                           [resData[@"resultCode"] isEqualToString:@"100"] || [dict[@"resultCode"] isEqualToString:@"100"];
+        if ([opType containsString:@"feedAnimal"] && feedMemoOk) {
             self.isManorChickenEating = YES;
             gWatchFeedOk++;   // 投喂成功逐次记录（不封顶）
             NSInteger curFood = [resData[@"foodStock"] integerValue];
-            if (curFood > 0 || resData[@"foodStock"] != nil) {
-                NSInteger prevFood = self.lastManorFoodStock;
+            NSInteger prevFood = self.lastManorFoodStock;
+            if (curFood > 0) {
                 self.lastManorFoodStock = curFood;
-                NSInteger fed = (prevFood > curFood && prevFood > 0) ? (prevFood - curFood) : 180;
-                [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：小鸡投喂成功（消耗 %ldg 饲料，背包剩余 %ldg）", (long)fed, (long)curFood]];
+                NSInteger fed = (prevFood > curFood) ? (prevFood - curFood) : -1;
+                if (fed > 0) {
+                    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：小鸡投喂成功（消耗 %ldg 饲料，背包剩余 %ldg）", (long)fed, (long)curFood]];
+                } else {
+                    // 冷启动未收到过库存包（prevFood=0）或库存未降：不硬凑 180g，只报剩余
+                    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：小鸡投喂成功（背包剩余 %ldg）", (long)curFood]];
+                }
             } else {
-                [self recordStage:@"蚂蚁庄园：小鸡投喂成功（已倒入 180g 饲料）"];
+                [self recordStage:@"蚂蚁庄园：小鸡投喂成功"];
             }
         }
 
@@ -7733,6 +7744,9 @@ static NSTimeInterval gLastManorCheckTime = 0;
         [self handleManorDrawMachineResponse:opType resData:resData dict:dict];
 
         // I. 家庭签到回包处理：以服务端回执为准标记当天已完成
+        // v3.3.9d：满仓暂存（addFood==0）不算签到失败——家庭签到奖励本身可能不是饲料，
+        // 满仓时服务端回 memo=SUCCESS+addFood=0（受理成功），签到动作实际已生效。
+        // 原代码走 else 打「家庭签到未成功」并置 Pending=NO，签到成功后永远不再触发（当天漏签）
         if (gManorFamilySignPending && [opType containsString:@"receiveFarmTaskAward"]) {
             gManorFamilySignPending = NO;
             NSString *fsMemo = [NSString stringWithFormat:@"%@", resData[@"memo"] ?: (dict[@"memo"] ?: @"")];
@@ -7741,7 +7755,12 @@ static NSTimeInterval gLastManorCheckTime = 0;
                         [resData[@"resultCode"] isEqualToString:@"100"] || [dict[@"resultCode"] isEqualToString:@"100"];
             if (fsOk) {
                 markManorFamilySignDone();
-                [self recordStage:@"☑️ 家庭签到成功（+亲密值）"];
+                NSInteger fsAddFood = [resData[@"haveAddFoodStock"] integerValue];
+                if (fsAddFood > 0) {
+                    [self recordStage:[NSString stringWithFormat:@"☑️ 家庭签到成功（+亲密值，+%ldg 饲料）", (long)fsAddFood]];
+                } else {
+                    [self recordStage:@"☑️ 家庭签到成功（+亲密值）"];
+                }
                 [self syncManorFamilyStatusAndAnimal];
             } else if ([fsMemo containsString:@"已签到"] || [fsMemo containsString:@"重复"] ||
                        [fsMemo containsString:@"已领取"] || [fsMemo containsString:@"签到过"]) {
