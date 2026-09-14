@@ -228,11 +228,6 @@ static void startForestHomeWhenBridgeReady(id controller) {
         NSURL *url = [currentController respondsToSelector:@selector(url)] ? [currentController url] : nil;
         if (!currentController || !isForestHomeURL(url) || isEarnEnergyURL(url)) { waitForBridge = nil; return; }
         id bridge = forestBridgeFromController(currentController) ?: objc_getAssociatedObject(currentController, ForestHomeBridgeKey);
-        // 兜底：controller 直取桥接失败（新版支付宝接口变更）时，用回包侧已绑的 jsBridge
-        if (!bridge && attempts >= 4) {
-            id managerBridge = AntForestManager.sharedInstance.jsBridge;
-            if ([managerBridge isKindOfClass:NSClassFromString(@"PSDJsBridge")]) bridge = managerBridge;
-        }
         if (bridge) {
             finishForestHomeStart(currentController, bridge);
             waitForBridge = nil;
@@ -1622,7 +1617,7 @@ static void installEarnEnergyCollector(id controller) {
 
     [self.view addSubview:grabber];
     UILabel *versionLabel = [[UILabel alloc] init];
-    versionLabel.text = @"当前版本：v3.4.0 正式版";
+    versionLabel.text = @"当前版本：v3.1 正式版";
     versionLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightRegular];
     versionLabel.textColor = [UIColor systemGray2Color];
     versionLabel.textAlignment = NSTextAlignmentCenter;
@@ -2719,12 +2714,11 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
     }
 
     if (isForest) {
-        // 绑定条件放宽：新版支付宝 forestControllerForBridge 可能拿不到 ctrlUrl，
-        // 只要回包特征判了 isForest（bubbles/能量数据等，只存在于森林页）就直接绑
-        BOOL urlOk = (!ctrlUrl || isForestHomeURL(ctrlUrl));
-        if (urlOk && manager.jsBridge != self) {
-            manager.jsBridge = self;
-            [manager recordStage:@"蚂蚁森林 · 已绑定森林页面通道（回包）"];
+        if (ctrlUrl && isForestHomeURL(ctrlUrl)) {
+            if (manager.jsBridge != self) {
+                manager.jsBridge = self;
+                [manager recordStage:@"诊断 · 已绑定森林响应页面通道"];
+            }
         }
     }
     if ([self respondsToSelector:@selector(_doFlushMessageQueue:url:)]) {
