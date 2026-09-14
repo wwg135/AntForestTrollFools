@@ -2665,6 +2665,21 @@ static BOOL hookRPCProbeMethod(Class cls) {
 
 static NSString *gLastRpcOperationType = nil;
 
+// 桥接注册：页面每次发 H5 消息都会经过这里，带自己的 bridge+url。
+// 把 URL 交给 registerBridge 做分类绑定——庄园/农场/森林各页面通道由此激活。
+static void portDoFlushMessageQueue(id self, SEL _cmd, id message, id url) {
+    if (originalDoFlushMessageQueue) {
+        originalDoFlushMessageQueue(self, _cmd, message, url);
+    }
+    @try {
+        AntForestManager *manager = [AntForestManager sharedInstance];
+        NSString *urlString = [url isKindOfClass:NSString.class] ? (NSString *)url : nil;
+        [manager registerBridge:self withUrl:urlString];
+    } @catch (NSException *e) {
+        NSLog(@"[AntForestPort][Bridge] registerBridge exception: %@", e);
+    }
+}
+
 static id portTransformResponseData(id self, SEL _cmd, id value) {
     id controller = forestControllerForBridge(self);
     if (isEnergyRain(nil, controller)) {
