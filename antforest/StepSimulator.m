@@ -127,11 +127,11 @@ static id stepSimulatorHKStatisticsSumQuantity(id self, SEL _cmd) {
             return self.recentRandomStep;
         }
     }
-    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
-    formatter.dateFormat = @"yyyy-MM-dd";
-    formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
-    formatter.timeZone = NSTimeZone.localTimeZone;
-    NSString *seed = [NSString stringWithFormat:@"%@|%ld|%ld", [formatter stringFromDate:NSDate.date], (long)self.minStep, (long)self.maxStep];
+    NSDate *nowDate = NSDate.date;
+    NSCalendar *calendar = [[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian];
+    calendar.timeZone = NSTimeZone.localTimeZone;
+    NSDateComponents *components = [calendar components:(NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay) fromDate:nowDate];
+    NSString *seed = [NSString stringWithFormat:@"%04ld-%02ld-%02ld|%ld|%ld", (long)components.year, (long)components.month, (long)components.day, (long)self.minStep, (long)self.maxStep];
     uint32_t hash = AFStepSimulatorFNVOffset;
     for (const unsigned char *p = (const unsigned char *)seed.UTF8String; p && *p; p++) { hash ^= *p; hash *= AFStepSimulatorFNVPrime; }
     return self.minStep + (NSInteger)(hash % range);
@@ -140,9 +140,20 @@ static id stepSimulatorHKStatisticsSumQuantity(id self, SEL _cmd) {
 - (BOOL)installHookForClass:(Class)cls selector:(SEL)selector replacement:(IMP)replacement original:(IMP *)original name:(NSString *)name {
     if (!cls || !class_getInstanceMethod(cls, selector)) return NO;
     SEL marker = NSSelectorFromString([@"afStepSimulatorHook_" stringByAppendingString:[name stringByReplacingOccurrencesOfString:@"." withString:@"_"]]);
-    if (!class_addMethod(cls, marker, (IMP)stepSimulatorHookMarker, "v@:")) return YES;
+    // Marker creation succeeds only on the first installation. A failed add means
+    // this API was already processed, so do not touch its implementation again.
+    if (!class_addMethod(cls, marker, (IMP)stepSimulatorHookMarker, "v@:")) return NO;
     Method method = class_getInstanceMethod(cls, selector);
-    *original = method_setImplementation(method, replacement);
+    if (!method) return NO;
+    // Do not replace an inherited Method on the superclass. Materialize the
+    // implementation on the target class before installing the simulator hook.
+    class_addMethod(cls, selector, method_getImplementation(method), method_getTypeEncoding(method));
+    method = class_getInstanceMethod(cls, selector);
+    if (!method) return NO;
+    IMP previous = method_getImplementation(method);
+    if (previous == replacement) return NO;
+    if (original && !*original) *original = previous;
+    method_setImplementation(method, replacement);
     [self.hookedAPIs addObject:name];
     NSLog(@"[AntForestStepSim] hooked %@", name);
     return YES;

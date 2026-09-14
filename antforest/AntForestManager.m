@@ -19,6 +19,8 @@ static NSString * const kManorH5FallbackUrl = @"https://render.alipay.com/p/yuya
 // ② 关联：庄园回包不带 operationType（dict/resData 里都没有）。只按字段猜 op，会让
 //    「喂鸡 / 收蛋 / 高级饲料」等回包分支永远进不去，所以发请求时把 op 入队、回包按发送顺序取（照 AntManor gPendingOps）。
 static NSMutableArray<NSString *> *gManorPendingOps = nil;
+// 领取庄园饲料奖励时，把已发出但尚未收到回包的奖励计入预留量，避免并发领取突破库存上限。
+static NSMutableArray<NSDictionary *> *gManorPendingFoodClaims = nil;
 
 static void manorPushPendingOp(NSString *op) {
     if (![op isKindOfClass:NSString.class] || !op.length) return;
@@ -26,7 +28,14 @@ static void manorPushPendingOp(NSString *op) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{ gManorPendingOps = [NSMutableArray array]; });
     @synchronized (gManorPendingOps) {
-        while (gManorPendingOps.count >= 12) [gManorPendingOps removeObjectAtIndex:0];
+        // This queue is a correlation structure, not a cache. Dropping only the
+        // oldest entry would permanently shift every subsequent response. Reset
+        // the whole correlation window on overflow instead.
+        static const NSUInteger kMaxPendingManorRPCs = 12;
+        if (gManorPendingOps.count >= kMaxPendingManorRPCs) {
+            NSLog(@"[AntForest] Manor RPC pending overflow (%lu), resetting correlation queue", (unsigned long)gManorPendingOps.count);
+            [gManorPendingOps removeAllObjects];
+        }
         [gManorPendingOps addObject:op];
     }
 }
@@ -49,9 +58,58 @@ static void manorRemovePendingOp(NSString *op) {
     }
 }
 
+static void manorClearPendingFoodClaims(void);
+
 static void manorClearPendingOps(void) {
-    if (!gManorPendingOps) return;
-    @synchronized (gManorPendingOps) { [gManorPendingOps removeAllObjects]; }
+    if (gManorPendingOps) {
+        @synchronized (gManorPendingOps) { [gManorPendingOps removeAllObjects]; }
+    }
+    manorClearPendingFoodClaims();
+}
+
+static void manorInitPendingFoodClaims(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ gManorPendingFoodClaims = [NSMutableArray array]; });
+}
+
+static NSInteger manorPendingFoodReserved(void) {
+    manorInitPendingFoodClaims();
+    NSInteger total = 0;
+    @synchronized (gManorPendingFoodClaims) {
+        for (NSDictionary *item in gManorPendingFoodClaims) {
+            total += MAX(0, [item[@"reserved"] integerValue]);
+        }
+    }
+    return total;
+}
+
+static void manorReserveFoodClaim(NSString *taskId, NSInteger amount) {
+    if (!taskId.length || amount <= 0) return;
+    manorInitPendingFoodClaims();
+    @synchronized (gManorPendingFoodClaims) {
+        [gManorPendingFoodClaims addObject:@{ @"taskId": taskId, @"reserved": @(amount) }];
+    }
+}
+
+static void manorReleaseFoodClaim(NSString *taskId) {
+    manorInitPendingFoodClaims();
+    @synchronized (gManorPendingFoodClaims) {
+        if (taskId.length) {
+            for (NSInteger i = (NSInteger)gManorPendingFoodClaims.count - 1; i >= 0; i--) {
+                NSDictionary *item = gManorPendingFoodClaims[(NSUInteger)i];
+                if ([item[@"taskId"] isEqualToString:taskId]) {
+                    [gManorPendingFoodClaims removeObjectAtIndex:(NSUInteger)i];
+                    return;
+                }
+            }
+        }
+        if (gManorPendingFoodClaims.count) [gManorPendingFoodClaims removeObjectAtIndex:0];
+    }
+}
+
+static void manorClearPendingFoodClaims(void) {
+    manorInitPendingFoodClaims();
+    @synchronized (gManorPendingFoodClaims) { [gManorPendingFoodClaims removeAllObjects]; }
 }
 
 static NSString *manorOpInArg(id arg) {
@@ -846,6 +904,20 @@ static NSInteger reviveDailyCount(void) {
 
 static NSMutableArray<NSString *> *patrolProbeLogs = nil;
 
+static dispatch_queue_t patrolProbeLogIOQueue(void) {
+    static dispatch_queue_t queue;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        queue = dispatch_queue_create("antforest.probe-log-io", DISPATCH_QUEUE_SERIAL);
+    });
+    return queue;
+}
+
+static NSString *patrolProbeLogFilePath(void) {
+    NSString *docPath = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    return docPath.length ? [docPath stringByAppendingPathComponent:@"AntForestPatrolProbe.log"] : nil;
+}
+
 static BOOL isNoiseProbeLog(NSString *log) {
     if (!log) return YES;
     if ([log containsString:@"deliverByPageId"] ||
@@ -939,15 +1011,16 @@ static BOOL isNoiseProbeLog(NSString *log) {
             [patrolProbeLogs removeObjectAtIndex:0];
         }
     }
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
+    dispatch_async(patrolProbeLogIOQueue(), ^{
         @try {
-            NSString *docPath = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-            NSString *filePath = [docPath stringByAppendingPathComponent:@"AntForestPatrolProbe.log"];
+            NSString *filePath = patrolProbeLogFilePath();
+            if (!filePath.length) return;
             NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:filePath];
             if (!handle) {
                 [[NSFileManager defaultManager] createFileAtPath:filePath contents:nil attributes:nil];
                 handle = [NSFileHandle fileHandleForWritingAtPath:filePath];
             }
+            if (!handle) return;
             [handle seekToEndOfFile];
             [handle writeData:[[entry stringByAppendingString:@"\n\n"] dataUsingEncoding:NSUTF8StringEncoding]];
             [handle closeFile];
@@ -960,11 +1033,12 @@ static BOOL isNoiseProbeLog(NSString *log) {
     @synchronized (patrolProbeLogs) {
         [patrolProbeLogs removeAllObjects];
     }
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
+    dispatch_async(patrolProbeLogIOQueue(), ^{
         @try {
-            NSString *docPath = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-            NSString *filePath = [docPath stringByAppendingPathComponent:@"AntForestPatrolProbe.log"];
-            [[NSFileManager defaultManager] removeItemAtPath:filePath error:nil];
+            NSString *filePath = patrolProbeLogFilePath();
+            if (filePath.length) {
+                [[NSFileManager defaultManager] removeItemAtPath:filePath error:nil];
+            }
         } @catch (NSException *e) {}
     });
 }
@@ -1081,7 +1155,7 @@ NSString* getCurrentDateTimeString() {
     
     for(int i=0; i<count; i++)
     {
-        strRandom = [ strRandom stringByAppendingFormat:@"%i",(arc4random() % 9)];
+        strRandom = [ strRandom stringByAppendingFormat:@"%i",(arc4random_uniform(10))];
     }
     return strRandom;
 }
@@ -5027,7 +5101,10 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
 - (void)receiveManorFarmTaskAwardWithTaskId:(NSString *)taskId title:(NSString *)title {
     if (!self.enableAutoManor || !taskId.length) return;
     PSDJsBridge *bridge = [self activeManorBridge];
-    if (!bridge) return;
+    if (!bridge) {
+        manorReleaseFoodClaim(taskId);
+        return;
+    }
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     NSString *timeStamp = [NSString stringWithFormat:@"%ld", (long)(now * 1000)];
     NSString *randNum = [AntForestManager getNumberRandom:15];
@@ -5056,7 +5133,10 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
         NSString *status = task[@"taskStatus"] ?: @"";
         NSString *title = task[@"title"] ?: (bizKey.length ? bizKey : taskId);
         NSString *mode = task[@"taskMode"] ?: @"";
-        NSInteger award = [task[@"awardCount"] integerValue] ?: ([task[@"canReceiveAwardCount"] integerValue] ?: 90);
+        NSInteger award = [task[@"awardCount"] integerValue];
+        if (award <= 0) award = [task[@"canReceiveAwardCount"] integerValue];
+        if (award <= 0) award = [task[@"awardNum"] integerValue];
+        if (award <= 0) award = [task[@"rewardCount"] integerValue];
         
         if ([status isEqualToString:@"RECEIVED"]) {
             if ([bizKey isEqualToString:@"ANSWER"]) {
@@ -5070,17 +5150,34 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
             if (taskId.length) {
                 NSInteger stock = self.lastManorFoodStock;
                 NSInteger limit = self.lastManorFoodStockLimit > 0 ? self.lastManorFoodStockLimit : 1800;
-                if (stock >= limit && limit > 0) {
+                if (!self.lastManorFoodStockKnown) {
+                    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：尚未拿到最新饲料库存，为防止领取奖励溢出 %ldg 上限，暂不领取“%@”，先刷新庄园状态", (long)limit, title]];
+                    [self enterManorFarm];
+                    continue;
+                }
+                NSInteger reserved = manorPendingFoodReserved();
+                if (limit > 0 && (stock >= limit || (award > 0 && stock + reserved + award > limit))) {
                     static NSTimeInterval lastFullLogTime = 0;
                     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
                     if (now - lastFullLogTime > 60) {
                         lastFullLogTime = now;
-                        [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：饲料背包已满（%ldg/%ldg），暂不领取“%@”，待小鸡进食后再领", (long)stock, (long)limit, title]];
+                        if (award > 0 && stock + reserved + award > limit) {
+                            NSInteger available = MAX(0, limit - stock - reserved);
+                            [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：为防止饲料溢出，暂不领取“%@”（奖励 %ldg，当前 %ldg，待回包预留 %ldg，最多还能放 %ldg）", title, (long)award, (long)stock, (long)reserved, (long)available]];
+                        } else {
+                            [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：饲料背包已满（%ldg/%ldg），暂不领取“%@”，待小鸡进食后再领", (long)stock, (long)limit, title]];
+                        }
                     }
+                    continue;
+                }
+                if (award <= 0) {
+                    // 无法从任务列表确认奖励数值时，宁可延后也不盲领未知数量的饲料。
+                    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：无法确认任务“%@”的饲料奖励数量，为防止超出 %ldg 上限，暂不领取", title, (long)limit]];
                     continue;
                 }
                 NSString *claimKey = [NSString stringWithFormat:@"ANTFARM_CLAIM_TASK:%@", taskId];
                 if (![gDailyCompletedTasks containsObject:claimKey]) {
+                    manorReserveFoodClaim(taskId, award);
                     [gDailyCompletedTasks addObject:claimKey];
                     saveDailyTaskCache();
                     [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：发现已完成任务“%@”，正在领取 %ldg 饲料...", title, (long)award]];
@@ -6851,10 +6948,6 @@ static NSString *manorDrawTracerGroupId(NSDictionary *task) {
     if (!self.enableAutoManor) return;
     if (![self activeManorBridge]) return;
     [self flushManorWatchSummaryIfNeeded];
-    // 心跳刷新庄园状态快照（9/13 用户定版位置）：enterFarm 回包带回 manureVO/foodStock 最新值，
-    // 收肥料（manurePotNum>=100 判定）与满仓闸门读的都是这份快照——不刷新则只有进庄园
-    // 那一拍的旧数据，罐满/腾空间要等下次进页才发现。9/14 曾按旧口径删过，用户当天要求加回
-    [self enterManorFarm];
     [self retryManorPendingAutomations];
     // 抽抽乐：两个活动各自「当天一轮」，跑完即收工（当天不再发任何请求，防风控）
     [self runManorDrawMachineDaily];
@@ -6898,7 +6991,7 @@ static NSString *manorDrawTracerGroupId(NSDictionary *task) {
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     if (now - lastEggHarvestTime < 60) return;
     lastEggHarvestTime = now;
-
+    
     NSString *timeStamp = [NSString stringWithFormat:@"%ld", (long)(now * 1000)];
     NSString *randNum = [AntForestManager getNumberRandom:15];
     NSString *url = [self manorRPCUrlString];
@@ -7385,6 +7478,8 @@ static NSTimeInterval gLastManorCheckTime = 0;
     if (self.manorBridge && gManorHeldBridge != self.manorBridge) {
         manorClearPendingOps();   // 换页 / WebView 重建：旧请求的回包不会再来，清空 FIFO 防错位
         gManorHeldBridge = self.manorBridge;
+        // 旧 WebView 的库存快照不能用于新页面的领奖容量判断。
+        self.lastManorFoodStockKnown = NO;
     }
     [self startManorEggWatchTimer];
     if (![dict isKindOfClass:NSDictionary.class]) return;
@@ -7443,8 +7538,9 @@ static NSTimeInterval gLastManorCheckTime = 0;
                 foodStock = [dict[@"foodStock"] integerValue];
             }
             NSInteger foodStockLimit = [subFarm[@"foodStockLimit"] respondsToSelector:@selector(integerValue)] ? [subFarm[@"foodStockLimit"] integerValue] : ([resData[@"foodStockLimit"] respondsToSelector:@selector(integerValue)] ? [resData[@"foodStockLimit"] integerValue] : 1800);
-            if (foodStock > 0 || subFarm[@"foodStock"] != nil) {
-                self.lastManorFoodStock = foodStock;
+            if (foodStock > 0 || subFarm[@"foodStock"] != nil || resData[@"foodStock"] != nil || dict[@"foodStock"] != nil) {
+                self.lastManorFoodStock = MAX(0, foodStock);
+                self.lastManorFoodStockKnown = YES;
             }
             if (foodStockLimit > 0) {
                 self.lastManorFoodStockLimit = foodStockLimit;
@@ -7583,6 +7679,19 @@ static NSTimeInterval gLastManorCheckTime = 0;
         if (!gManorFamilySignPending && (resData[@"haveAddFoodStock"] || [opType containsString:@"receiveFarmTaskAward"])) {
             NSInteger addFood = [resData[@"haveAddFoodStock"] integerValue];
             NSInteger curFood = [resData[@"foodStock"] integerValue];
+            NSString *respTaskId = nil;
+            for (NSString *key in @[@"taskId", @"receiveTaskId", @"awardTaskId"]) {
+                id value = resData[key] ?: dict[key];
+                if ([value isKindOfClass:NSString.class] && [(NSString *)value length]) { respTaskId = value; break; }
+            }
+            if ([opType containsString:@"receiveFarmTaskAward"] &&
+                (respTaskId.length || resData[@"haveAddFoodStock"] != nil || resData[@"foodStock"] != nil)) {
+                manorReleaseFoodClaim(respTaskId);
+            }
+            if (resData[@"foodStock"] != nil) {
+                self.lastManorFoodStock = MAX(0, curFood);
+                self.lastManorFoodStockKnown = YES;
+            }
             if (addFood > 0) {
                 if (curFood > 0) self.lastManorFoodStock = curFood;
                 [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：成功领取饲料 +%ldg（背包存量 %ldg）", (long)addFood, (long)(curFood > 0 ? curFood : self.lastManorFoodStock)]];
@@ -7618,7 +7727,8 @@ static NSTimeInterval gLastManorCheckTime = 0;
             NSInteger curFood = [resData[@"foodStock"] integerValue];
             if (curFood > 0 || resData[@"foodStock"] != nil) {
                 NSInteger prevFood = self.lastManorFoodStock;
-                self.lastManorFoodStock = curFood;
+                self.lastManorFoodStock = MAX(0, curFood);
+                self.lastManorFoodStockKnown = YES;
                 NSInteger fed = (prevFood > curFood && prevFood > 0) ? (prevFood - curFood) : 180;
                 [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：小鸡投喂成功（消耗 %ldg 饲料，背包剩余 %ldg）", (long)fed, (long)curFood]];
             } else {

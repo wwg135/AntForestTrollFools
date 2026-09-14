@@ -79,6 +79,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic) BOOL isManorChickenEating; // 小鸡当前是否正在进食中
 @property (nonatomic) NSInteger lastManorFoodStock; // 背包饲料存量
 @property (nonatomic) NSInteger lastManorFoodStockLimit; // 背包饲料存量上限
+@property (nonatomic) BOOL lastManorFoodStockKnown; // 进程启动后是否已收到库存回包（冷启动前 lastManorFoodStock 恒为 0，满仓闸门与体检链据此区分「未知」与「真 0」）
 @property (nonatomic, copy) NSString *lastManorManureCollectDate; // 最近一次收取小鸡肥料的日期
 @property (nonatomic) BOOL manorTaskPanelOpened; // 是否已打开领饲料面板
 @property (atomic, assign) BOOL isScanRunning; // 扫描进行中独占锁
