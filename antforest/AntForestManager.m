@@ -7773,9 +7773,10 @@ static NSTimeInterval gLastManorCheckTime = 0;
 
         // L. 收鸡蛋回包处理 (harvestProduce)：服务端确认收到蛋才输出日志，蛋巢无蛋被回绝则静默
         if ([opType containsString:@"harvestProduce"]) {
-            BOOL eggOk = [resData[@"success"] boolValue] || [dict[@"success"] boolValue] ||
-                         [resData[@"memo"] isEqualToString:@"SUCCESS"] || [dict[@"memo"] isEqualToString:@"SUCCESS"] ||
-                         [resData[@"resultCode"] isEqualToString:@"100"] || [dict[@"resultCode"] isEqualToString:@"100"];
+            // v3.3.9c：收蛋成功只认 success 字段显式 true（AntManor autoHarvest 同款口径）——
+            // memo=SUCCESS/resultCode=100 只是「请求受理成功」，蛋未满 100% 时服务端也这么回，
+            // 旧判定误报「已收取」（9/14 用户实证：蛋没到 1 个就提示已领取）
+            BOOL eggOk = [resData[@"success"] boolValue] || [dict[@"success"] boolValue];
             if (eggOk) {
                 gWatchEggOk++;   // 收到蛋逐次记录（不封顶）
                 [self recordStage:@"蚂蚁庄园：已收取小鸡下的鸡蛋（蛋巢已刷新）"];
