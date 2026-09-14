@@ -1569,6 +1569,12 @@ static NSMutableDictionary<NSString *, NSNumber *> *gVitalityTaskRetryCounts = n
 // v3.3.6 抽抽乐熔断表（定义前置：initDailyTaskCache 跨天清零要用；机制见 DrawMachine 段）
 static NSMutableDictionary<NSString *, NSNumber *> *gManorDrawFailCounts = nil;
 static NSMutableSet<NSString *> *gManorDrawFailedTasks = nil;
+// v3.3.9 领饲料在途/失败记账（定义前置：initDailyTaskCache 跨天清零要用；机制见 handleManorTaskList FINISHED 分支）
+static NSInteger kManorClaimFailThreshold = 2;                                    // 连续失败 ≥2 次当日熔断（抽抽乐同款阈值）
+static NSInteger kManorClaimInFlightSeconds = 90;                                 // 领取在途窗口：超时视为回执丢失，允许重发
+static NSMutableDictionary<NSString *, NSNumber *> *gManorClaimInFlightAt = nil;  // taskId -> 发起领取时刻
+static NSMutableDictionary<NSString *, NSNumber *> *gManorClaimFailCounts = nil;  // taskId -> 连续失败次数
+static NSMutableArray<NSString *> *gManorClaimQueue = nil;                        // 在途领取 FIFO（回包无 taskId 时按队首对账）
 
 static void initDailyTaskCache(void) {
     NSString *today = getCurrentDateString();
@@ -1587,6 +1593,10 @@ static void initDailyTaskCache(void) {
         // v3.3.6：跨天重置抽抽乐熔断表（与森林 gDailyFailedTasks 当日失效同口径，次日自动重试）
         gManorDrawFailCounts = nil;
         gManorDrawFailedTasks = nil;
+        // v3.3.9：跨天重置领饲料在途/失败/队列记账（与上面同口径，次日自动重试）
+        gManorClaimInFlightAt = nil;
+        gManorClaimFailCounts = nil;
+        gManorClaimQueue = nil;
         NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
         NSString *savedDate = [defaults stringForKey:@"vitality_task_cache_date"];
         if ([savedDate isEqualToString:today]) {
@@ -5080,12 +5090,27 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
                     continue;
                 }
                 NSString *claimKey = [NSString stringWithFormat:@"ANTFARM_CLAIM_TASK:%@", taskId];
-                if (![gDailyCompletedTasks containsObject:claimKey]) {
-                    [gDailyCompletedTasks addObject:claimKey];
+                // v3.3.9 改「成功才记账」：不在发请求前写 claimKey（旧版先记账后领取，
+                // 一次回执丢失就当天永不再试 = 用户 9/14 实测「任务做完却永不领料」的根因）。
+                // 改为：在途窗口防重发 + 领奖成功回执才落账 + 连续失败 2 次当日熔断（抽抽乐同款）。
+                if (!gManorClaimInFlightAt) gManorClaimInFlightAt = [NSMutableDictionary dictionary];
+                if (!gManorClaimFailCounts) gManorClaimFailCounts = [NSMutableDictionary dictionary];
+                if (!gManorClaimQueue) gManorClaimQueue = [NSMutableArray array];
+                NSNumber *inFlightAt = gManorClaimInFlightAt[taskId];
+                NSTimeInterval claimNow = [[NSDate date] timeIntervalSince1970];
+                BOOL inFlightFresh = inFlightAt && (claimNow - inFlightAt.doubleValue) < kManorClaimInFlightSeconds;
+                if (inFlightFresh) continue;   // 上一次领取还在 90s 在途窗口内，不重发
+                BOOL tripped = [gManorClaimFailCounts[taskId] integerValue] >= kManorClaimFailThreshold;
+                if (tripped) continue;         // 连续失败 ≥2 次当日熔断（跨天由 initDailyTaskCache 重置）
+                gManorClaimInFlightAt[taskId] = @(claimNow);
+                [gManorClaimQueue removeObject:taskId];
+                [gManorClaimQueue addObject:taskId];   // 在途 FIFO：回包无 taskId 时按队首对账
+                if ([gDailyCompletedTasks containsObject:claimKey]) {
+                    [gDailyCompletedTasks removeObject:claimKey];   // 旧版遗留的「未成功账」，先清掉允许重领
                     saveDailyTaskCache();
-                    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：发现已完成任务“%@”，正在领取 %ldg 饲料...", title, (long)award]];
-                    [self receiveManorFarmTaskAwardWithTaskId:taskId title:title];
                 }
+                [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：发现已完成任务“%@”，正在领取 %ldg 饲料...", title, (long)award]];
+                [self receiveManorFarmTaskAwardWithTaskId:taskId title:title];
             }
             continue;
         }
@@ -7374,6 +7399,9 @@ static NSTimeInterval gLastManorCheckTime = 0;
         [self signManorFamily];
     }
     [self harvestManorEgg];
+    // v3.3.9 补查庄园任务列表：旧版任务列表只有进页 4 秒一次入口，错过后当天不再查 = 任务做完没人领。
+    // 心跳 60s 一轮补查；防刷由三层兜底：handleManorTaskList 4 秒节流 + 领取在途窗口 90s + 失败 2 次当日熔断
+    [self queryManorFarmTasks];
 }
 
 - (void)handleManorResponse:(NSDictionary *)dict {
@@ -7580,6 +7608,34 @@ static NSTimeInterval gLastManorCheckTime = 0;
         if (!gManorFamilySignPending && (resData[@"haveAddFoodStock"] || [opType containsString:@"receiveFarmTaskAward"])) {
             NSInteger addFood = [resData[@"haveAddFoodStock"] integerValue];
             NSInteger curFood = [resData[@"foodStock"] integerValue];
+            // v3.3.9 领奖成功回执落账：只有这里确认成功才写 ANTFARM_CLAIM_TASK 账 + 清在途/失败计数；
+            // 显式失败的回执则累计失败计数（≥2 次当日熔断），无判定（超时/丢失）什么都不记，90s 后自动重发
+            NSString *claimedTaskId = gManorClaimQueue.firstObject ?: @"";
+            if (addFood > 0 || [resData[@"memo"] isEqualToString:@"SUCCESS"] || [dict[@"memo"] isEqualToString:@"SUCCESS"]) {
+                if (claimedTaskId.length) {
+                    if (!gManorClaimInFlightAt) gManorClaimInFlightAt = [NSMutableDictionary dictionary];
+                    if (!gManorClaimFailCounts) gManorClaimFailCounts = [NSMutableDictionary dictionary];
+                    if (!gManorClaimQueue) gManorClaimQueue = [NSMutableArray array];
+                    [gManorClaimInFlightAt removeObjectForKey:claimedTaskId];
+                    [gManorClaimFailCounts removeObjectForKey:claimedTaskId];
+                    [gManorClaimQueue removeObject:claimedTaskId];
+                    NSString *okKey = [NSString stringWithFormat:@"ANTFARM_CLAIM_TASK:%@", claimedTaskId];
+                    if (![gDailyCompletedTasks containsObject:okKey]) {
+                        [gDailyCompletedTasks addObject:okKey];
+                        saveDailyTaskCache();
+                    }
+                }
+            } else if ([opType containsString:@"receiveFarmTaskAward"] && claimedTaskId.length) {
+                // 显式失败回执：连续失败 +1（与 v3.3.6 抽抽乐熔断同口径，只按领奖回执累计）
+                if (!gManorClaimFailCounts) gManorClaimFailCounts = [NSMutableDictionary dictionary];
+                NSInteger fails = [gManorClaimFailCounts[claimedTaskId] integerValue] + 1;
+                gManorClaimFailCounts[claimedTaskId] = @(fails);
+                if (fails >= kManorClaimFailThreshold) {
+                    [gManorClaimInFlightAt removeObjectForKey:claimedTaskId];
+                    [gManorClaimQueue removeObject:claimedTaskId];
+                    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：任务「%@」连续 %@ 次领取未成功，今日熔断跳过（次日自动重试）", claimedTaskId, @(fails)]];
+                }
+            }
             if (addFood > 0) {
                 if (curFood > 0) self.lastManorFoodStock = curFood;
                 [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：成功领取饲料 +%ldg（背包存量 %ldg）", (long)addFood, (long)(curFood > 0 ? curFood : self.lastManorFoodStock)]];
