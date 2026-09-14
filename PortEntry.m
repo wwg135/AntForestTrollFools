@@ -1617,7 +1617,7 @@ static void installEarnEnergyCollector(id controller) {
 
     [self.view addSubview:grabber];
     UILabel *versionLabel = [[UILabel alloc] init];
-    versionLabel.text = @"当前版本：v3.1 正式版";
+    versionLabel.text = @"当前版本：v3.4.0 正式版";
     versionLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightRegular];
     versionLabel.textColor = [UIColor systemGray2Color];
     versionLabel.textAlignment = NSTextAlignmentCenter;
