@@ -2113,12 +2113,23 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
 
 - (void)registerBridge:(id)bridge withUrl:(NSString *)url {
     if (!bridge) return;
-    self.jsBridge = bridge;
     
     NSString *effectiveUrl = url.length ? url : [self effectiveUrlForBridge:bridge];
     NSString *lowerUrl = effectiveUrl.lowercaseString;
     
     if (lowerUrl.length) {
+        // 森林首页才绑 jsBridge（180020010001247580/60000002/home.html）；
+        // 其余页面各归各的槽位，绝不能盲绑 jsBridge——否则庄园/农场页面桥接会把
+        // 森林通道顶掉，首页「等待领奖励任务桥接」永远等不到（v11 同款病根）。
+        if ([lowerUrl containsString:@"180020010001247580"] ||
+            [lowerUrl containsString:@"60000002"] ||
+            [lowerUrl containsString:@"home.html"]) {
+            BOOL changed = (self.jsBridge != bridge);
+            self.jsBridge = bridge;
+            if (changed) {
+                [self recordStage:@"蚂蚁森林 · 已绑定森林页面通道"];
+            }
+        }
         if ([lowerUrl containsString:@"180020010001293606"] || [lowerUrl containsString:@"monopoly"] || [lowerUrl containsString:@"hsdwy"] || [lowerUrl containsString:@"patrol"] || [lowerUrl containsString:@"guardian"]) {
             self.monopolyBridge = bridge;
             self.monopolyH5Url = effectiveUrl;
