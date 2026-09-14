@@ -16,6 +16,8 @@ static const void *GiftFullProbeKey = &GiftFullProbeKey;
 
 static id findWebViewInController(id controller);
 static BOOL hookMethod(Class cls, SEL selector, IMP replacement, IMP *original);
+static void portDoFlushMessageQueue(id self, SEL _cmd, id message, id url);
+static void (*originalDoFlushMessageQueue)(id, SEL, id, id);
 static void tryAutoCollectWaterGift(void);
 static void reportWaterGiftTapResult(void);
 static void refreshTabBarFinance(void);
@@ -3035,6 +3037,11 @@ static void installHooks(void) {
         if (targetBridgeClass) {
             hookMethod(targetBridgeClass, @selector(transformResponseData:), (IMP)portTransformResponseData, (IMP *)&originalTransformResponseData);
             hookMethod(targetBridgeClass, @selector(updateBridgeReadyStatus:), (IMP)portUpdateBridgeReadyStatus, (IMP *)&originalUpdateBridgeReadyStatus);
+            // 桥接注册：页面每次发 H5 消息都带自己的 bridge+url，按 URL 分类注册各业务通道
+            // （v3.3.8 时代 registerBridge 无人调用是死代码；庄园/森林通道靠这里激活）
+            if ([targetBridgeClass instancesRespondToSelector:@selector(_doFlushMessageQueue:url:)]) {
+                hookMethod(targetBridgeClass, @selector(_doFlushMessageQueue:url:), (IMP)portDoFlushMessageQueue, (IMP *)&originalDoFlushMessageQueue);
+            }
         }
         
         int classCount = objc_getClassList(NULL, 0);
