@@ -16,8 +16,6 @@ static const void *GiftFullProbeKey = &GiftFullProbeKey;
 
 static id findWebViewInController(id controller);
 static BOOL hookMethod(Class cls, SEL selector, IMP replacement, IMP *original);
-static void portDoFlushMessageQueue(id self, SEL _cmd, id message, id url);
-static void (*originalDoFlushMessageQueue)(id, SEL, id, id);
 static void tryAutoCollectWaterGift(void);
 static void reportWaterGiftTapResult(void);
 static void refreshTabBarFinance(void);
@@ -230,6 +228,11 @@ static void startForestHomeWhenBridgeReady(id controller) {
         NSURL *url = [currentController respondsToSelector:@selector(url)] ? [currentController url] : nil;
         if (!currentController || !isForestHomeURL(url) || isEarnEnergyURL(url)) { waitForBridge = nil; return; }
         id bridge = forestBridgeFromController(currentController) ?: objc_getAssociatedObject(currentController, ForestHomeBridgeKey);
+        // 兜底：controller 直取桥接失败（新版支付宝接口变更）时，用回包侧已绑的 jsBridge
+        if (!bridge && attempts >= 4) {
+            id managerBridge = AntForestManager.sharedInstance.jsBridge;
+            if ([managerBridge isKindOfClass:NSClassFromString(@"PSDJsBridge")]) bridge = managerBridge;
+        }
         if (bridge) {
             finishForestHomeStart(currentController, bridge);
             waitForBridge = nil;
@@ -2665,21 +2668,6 @@ static BOOL hookRPCProbeMethod(Class cls) {
 
 static NSString *gLastRpcOperationType = nil;
 
-// 桥接注册：页面每次发 H5 消息都会经过这里，带自己的 bridge+url。
-// 把 URL 交给 registerBridge 做分类绑定——庄园/农场/森林各页面通道由此激活。
-static void portDoFlushMessageQueue(id self, SEL _cmd, id message, id url) {
-    if (originalDoFlushMessageQueue) {
-        originalDoFlushMessageQueue(self, _cmd, message, url);
-    }
-    @try {
-        AntForestManager *manager = [AntForestManager sharedInstance];
-        NSString *urlString = [url isKindOfClass:NSString.class] ? (NSString *)url : nil;
-        [manager registerBridge:self withUrl:urlString];
-    } @catch (NSException *e) {
-        NSLog(@"[AntForestPort][Bridge] registerBridge exception: %@", e);
-    }
-}
-
 static id portTransformResponseData(id self, SEL _cmd, id value) {
     id controller = forestControllerForBridge(self);
     if (isEnergyRain(nil, controller)) {
@@ -2731,11 +2719,12 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
     }
 
     if (isForest) {
-        if (ctrlUrl && isForestHomeURL(ctrlUrl)) {
-            if (manager.jsBridge != self) {
-                manager.jsBridge = self;
-                [manager recordStage:@"诊断 · 已绑定森林响应页面通道"];
-            }
+        // 绑定条件放宽：新版支付宝 forestControllerForBridge 可能拿不到 ctrlUrl，
+        // 只要回包特征判了 isForest（bubbles/能量数据等，只存在于森林页）就直接绑
+        BOOL urlOk = (!ctrlUrl || isForestHomeURL(ctrlUrl));
+        if (urlOk && manager.jsBridge != self) {
+            manager.jsBridge = self;
+            [manager recordStage:@"蚂蚁森林 · 已绑定森林页面通道（回包）"];
         }
     }
     if ([self respondsToSelector:@selector(_doFlushMessageQueue:url:)]) {
@@ -3052,11 +3041,6 @@ static void installHooks(void) {
         if (targetBridgeClass) {
             hookMethod(targetBridgeClass, @selector(transformResponseData:), (IMP)portTransformResponseData, (IMP *)&originalTransformResponseData);
             hookMethod(targetBridgeClass, @selector(updateBridgeReadyStatus:), (IMP)portUpdateBridgeReadyStatus, (IMP *)&originalUpdateBridgeReadyStatus);
-            // 桥接注册：页面每次发 H5 消息都带自己的 bridge+url，按 URL 分类注册各业务通道
-            // （v3.3.8 时代 registerBridge 无人调用是死代码；庄园/森林通道靠这里激活）
-            if ([targetBridgeClass instancesRespondToSelector:@selector(_doFlushMessageQueue:url:)]) {
-                hookMethod(targetBridgeClass, @selector(_doFlushMessageQueue:url:), (IMP)portDoFlushMessageQueue, (IMP *)&originalDoFlushMessageQueue);
-            }
         }
         
         int classCount = objc_getClassList(NULL, 0);
