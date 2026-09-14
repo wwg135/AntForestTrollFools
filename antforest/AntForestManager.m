@@ -5610,13 +5610,14 @@ static void manorNoteCuisineFail(NSString *cuisineId, NSString *reason) {
     
     // 4 秒无回包：按「没喂进去」处理（不记成功、拉黑这一个），1.2 秒后继续下一个
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4000 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
-        if (!gManorCuisineInFlight) return;
+        if (!gManorCuisineInFlight) return;   // 回包已到并被处理：超时分支作废
         gManorCuisineInFlight = NO;
         NSString *stuckId = gManorCuisineInFlightId;
         if (stuckId.length) [gManorCuisineBadIds addObject:stuckId];
-        manorNoteCuisineFail(stuckId, @"4 秒无回执");
-        [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：高级饲料 %@ 4 秒无回执，本轮跳过（已成功 %lu 个）",
-                           stuckId.length ? stuckId : @"未知菜谱", (unsigned long)gManorCuisineFedCount]];
+        // v3.3.9：超时不拉黑库存、不进「未投喂」结算账——大概率是回包在路上（本轮末尾常见），
+        // 下一轮起手库存过期会重新核库，服务端说还有就再喂，说没有就归「判无库存」不走失败账
+        [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：高级饲料 %@ 4 秒无回执，本轮先跳过（回包迟到不再重试这一个，下轮重新核库）",
+                           stuckId.length ? stuckId : @"未知菜谱"]];
         if (gManorCuisineFedCount >= 15) {
             [self stopManorAdvancedFoodFeed:@"连喂 15 个未收到成功回执" silent:NO];
             return;
@@ -6000,6 +6001,9 @@ static NSString *getCurrentHourString(void) {
     if (left > 0) gManorCuisineStock[cuisineId] = @(left);
     else [gManorCuisineStock removeObjectForKey:cuisineId];
     manorSaveCuisineStock();
+    // v3.3.9 剩 1 个喂不进修复：本地账扣到 1 时主动让路——下一次喂它之前先向服务端要真实库存
+    //（本地账 ≥ 真实库存时，最后一个会因服务端「不足/无库存」被拒，留一句 4 秒无回执/被拒失败账）
+    if (left == 1) gManorCuisineStockAt = 0;   // 置过期 → 下轮起手 requestManorCuisineStockIfNeeded 重新核库
     return left;
 }
 
