@@ -1572,7 +1572,9 @@ static NSMutableSet<NSString *> *gManorDrawFailedTasks = nil;
 // v3.3.9 领饲料在途记账（定义前置：initDailyTaskCache 跨天清零要用；机制见 handleManorTaskList FINISHED 分支）
 static NSInteger kManorClaimInFlightSeconds = 90;                                 // 领取在途窗口：超时视为回执丢失，允许重发
 static NSMutableDictionary<NSString *, NSNumber *> *gManorClaimInFlightAt = nil;  // taskId -> 发起领取时刻
-static NSMutableArray<NSString *> *gManorClaimQueue = nil;                        // 在途领取 FIFO（回包无 taskId 时按队首对账）
+static NSMutableArray<NSString *> *gManorClaimQueue = nil;                        // 在途领取 FIFO（v3.3.9e 起恒≤1：串行领取，回包确认后才发下一个）
+static NSMutableDictionary<NSString *, NSNumber *> *gManorClaimAward = nil;      // taskId -> 标称奖励额（回包侧校验 addFood 用）
+static NSTimeInterval gLastManorClaimChainQuery = 0;                              // 串行链重查节流
 
 static void initDailyTaskCache(void) {
     NSString *today = getCurrentDateString();
@@ -1594,6 +1596,7 @@ static void initDailyTaskCache(void) {
         // v3.3.9：跨天重置领饲料在途/队列记账（与上面同口径，次日自动重试）
         gManorClaimInFlightAt = nil;
         gManorClaimQueue = nil;
+        gManorClaimAward = nil;
         NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
         NSString *savedDate = [defaults stringForKey:@"vitality_task_cache_date"];
         if ([savedDate isEqualToString:today]) {
@@ -5105,17 +5108,27 @@ static BOOL gManorFoodStockKnown = NO;
                 // 一次回执丢失就当天永不再试 = 用户 9/14 实测「任务做完却永不领料」的根因）。
                 // 改为：在途窗口防重发 + 领奖成功回执才落账。v3.3.9c：熔断跳过整体移除（用户口径：
 // 满仓是暂时的，小鸡进食腾空间后当天就该领上——失败计数不再拦截重试）
+                // v3.3.9f 防重复领取死循环：已确认领取成功的任务直接跳过——
+                // 服务端任务列表可能滞后（仍回 FINISHED），没有此守卫会「领取→落账→重查→再领」
+                // 循环到天黑，串行链推进（领成功立即重查）会把它放大成持续 RPC = 发热根因
+                if ([gDailyCompletedTasks containsObject:claimKey]) continue;
                 if (!gManorClaimInFlightAt) gManorClaimInFlightAt = [NSMutableDictionary dictionary];
                 if (!gManorClaimQueue) gManorClaimQueue = [NSMutableArray array];
+                if (!gManorClaimAward) gManorClaimAward = [NSMutableDictionary dictionary];
+                // v3.3.9e 串行领取：上一个领取未拿到回执前不发下一个。
+                // 9/14 吞料实证：一轮连发 3 个（270+90+90），RPC 回包乱序时 FIFO 对账把拒收回包
+                // 对到别的任务上 → 被拒任务被错误落账「已领成功」→ 永不重试 = 饲料被吞。
+                // 队列恒 ≤1 后对账天然一对一，且回包 foodStock 会刷新库存，闸门逐个判定天然防超发
+                if (gManorClaimQueue.count > 0) continue;   // 在途领取未回执，等下一轮（60s 心跳）
                 NSNumber *inFlightAt = gManorClaimInFlightAt[taskId];
                 NSTimeInterval claimNow = [[NSDate date] timeIntervalSince1970];
                 BOOL inFlightFresh = inFlightAt && (claimNow - inFlightAt.doubleValue) < kManorClaimInFlightSeconds;
                 if (inFlightFresh) continue;   // 上一次领取还在 90s 在途窗口内，不重发
                 gManorClaimInFlightAt[taskId] = @(claimNow);
+                gManorClaimAward[taskId] = @(award);
                 [gManorClaimQueue removeObject:taskId];
-                [gManorClaimQueue addObject:taskId];   // 在途 FIFO：回包无 taskId 时按队首对账
+                [gManorClaimQueue addObject:taskId];   // 在途 FIFO（恒≤1）：回包按队首对账
                 if ([gDailyCompletedTasks containsObject:claimKey]) {
-                    [gDailyCompletedTasks removeObject:claimKey];   // 旧版遗留的「未成功账」，先清掉允许重领
                     saveDailyTaskCache();
                 }
                 [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：发现已完成任务“%@”，正在领取 %ldg 饲料...", title, (long)award]];
@@ -7651,6 +7664,7 @@ static NSTimeInterval gLastManorCheckTime = 0;
                 // 一律按暂存处理：清在途，60s 心跳自然重试，当天内直到领上为止
                 [gManorClaimInFlightAt removeObjectForKey:claimedTaskId];
                 [gManorClaimQueue removeObject:claimedTaskId];
+                [gManorClaimAward removeObjectForKey:claimedTaskId];
                 static NSTimeInterval lastFullClaimLog = 0;
                 NSTimeInterval logNow = [[NSDate date] timeIntervalSince1970];
                 if (logNow - lastFullClaimLog > 60) {
@@ -7661,6 +7675,22 @@ static NSTimeInterval gLastManorCheckTime = 0;
             if (addFood > 0) {
                 if (curFood > 0) self.lastManorFoodStock = curFood;
                 [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：成功领取饲料 +%ldg（背包存量 %ldg）", (long)addFood, (long)(curFood > 0 ? curFood : self.lastManorFoodStock)]];
+                // v3.3.9e 串行链推进：领到 1 个后立即重查任务列表 → 马上领取下一个（不等 60s 心跳）。
+                // 只在成功分支触发——暂存分支若也推进，被拒任务会形成「领取→拒→重查→再领」0.5s 一次的
+                // RPC 死循环（9/14 手机发热实证）。暂存重试统一走 60s 心跳节奏
+                NSTimeInterval chainNow = [[NSDate date] timeIntervalSince1970];
+                NSTimeInterval chainDelay = (chainNow - gLastManorClaimChainQuery < 4.0) ? 4.5 : 0.5;
+                gLastManorClaimChainQuery = chainNow;
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(chainDelay * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+                    [self queryManorFarmTasks];
+                });
+                // v3.3.9e：到账额 < 标称额 = 服务端截断（9/14 吞料实证：满仓附近领取可能被部分到账）——
+                // 任务已完成无法再领，只如实打出差额让用户知道被吞了多少
+                NSNumber *expectAward = gManorClaimAward[claimedTaskId];
+                if (expectAward && addFood > 0 && addFood < expectAward.integerValue) {
+                    [self recordStage:[NSString stringWithFormat:@"⚠️ 蚂蚁庄园：「%@」标称 %ldg 只到账 %ldg（服务端截断，差额未补发）", claimedTaskId, (long)expectAward.integerValue, (long)addFood]];
+                }
+                [gManorClaimAward removeObjectForKey:claimedTaskId];
             }
             // v3.3.9b：删掉「memo=SUCCESS 就提示成功」——满仓时服务端也回 SUCCESS 但没加粮，误报「领取成功」
         }
