@@ -75,8 +75,12 @@ case "$timeout_block" in
     *) echo "❌ 超时应把该菜谱拉黑，避免同一轮反复撞同一组"; exit 1 ;;
 esac
 case "$timeout_block" in
-    *'4 秒无回执，本轮跳过'*) ;;
+    *'4 秒无回执，本轮先跳过'*) ;;
     *) echo "❌ 超时必须在面板留痕（9/11 用户反馈：失败静默 → 看不出哪个没喂进去）"; exit 1 ;;
+esac
+# v3.3.9 剩 1 个喂不进修复：超时不再进失败账/不再拉黑库存清零，改走「下轮重新核库」
+case "$timeout_block" in
+    *'manorNoteCuisineFail(stuckId'*'4 秒无回执'*) echo "❌ 超时不得进 manorNoteCuisineFail 失败账（回包迟到≠投喂失败，9/14 实证最后一个高级饲料被误报失败）"; exit 1 ;;
 esac
 
 echo "[11/13] Checking 负向：silent 停止（没库存）不得再转普通饲料..."
@@ -96,7 +100,6 @@ grep -Fq 'sh tests/check_cuisine_stock_paths.sh' "$makefile"
 
 echo "[13/13] Checking 本轮结算日志：成功/失败/判无库存 + 未投喂明细（9/11 用户反馈「日志说全部投喂完、实际还有 1 个没喂进去」）..."
 grep -Fq 'static void manorNoteCuisineFail(NSString *cuisineId, NSString *reason) {' "$source_file"
-grep -Fq 'manorNoteCuisineFail(stuckId, @"4 秒无回执");' "$source_file"
 grep -Fq 'manorNoteCuisineFail(gManorCuisineInFlightId, why);' "$source_file"
 grep -Fq 'gManorCuisineRoundSkip++;' "$source_file"
 grep -Fq -- '- (void)logManorCuisineRoundSummary {' "$source_file"
