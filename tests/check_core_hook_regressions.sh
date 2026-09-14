@@ -6,19 +6,19 @@ port="$root/PortEntry.m"
 step="$root/antforest/StepSimulator.m"
 manager="$root/antforest/AntForestManager.m"
 
-printf '%s\n' '[1/5] Checking RPC original IMP keys are independent...'
-grep -Fq 'PortRPCSendOriginalIMPKey' "$port"
-grep -Fq 'PortRPCCallHandlerOriginalIMPKey' "$port"
-if grep -Fq 'PortRPCOriginalIMPKey' "$port"; then
-    echo '❌ legacy shared RPC IMP key remains'
+printf '%s\n' '[1/5] Checking RPC probe is disabled (official stance)...'
+grep -Fq 'static BOOL hookRPCProbeMethod(Class cls) {' "$port"
+grep -Fq 'return NO;' "$port"
+if grep -Fq 'PortRPCSendOriginalIMPKey' "$port"; then
+    echo '❌ v3.4.4 实装探针残留（9/15 已回退官方空转口径）'
     exit 1
 fi
 
-echo '[2/5] Checking RPC hooks materialize inherited methods before replacement...'
-grep -Fq 'class_addMethod(cls, sendSel, original, types)' "$port"
-grep -Fq 'class_addMethod(cls, handlerSel, original, types)' "$port"
-grep -Fq 'method_setImplementation(directMethod, (IMP)portRPCSendProbe)' "$port"
-grep -Fq 'method_setImplementation(directMethod, (IMP)portRPCCallHandlerProbe)' "$port"
+echo '[2/5] Checking _doFlushMessageQueue is NOT hooked (v3.1/official parity)...'
+if grep -Fq 'hookMethod(targetBridgeClass, @selector(_doFlushMessageQueue' "$port"; then
+    echo '❌ _doFlushMessageQueue hook 不应存在（桥接注册只靠回包特征）'
+    exit 1
+fi
 
 echo '[3/5] Checking StepSimulator first-install marker semantics...'
 grep -Fq 'if (!class_addMethod(cls, marker, (IMP)stepSimulatorHookMarker, "v@:")) return NO;' "$step"

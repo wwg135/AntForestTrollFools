@@ -18,7 +18,7 @@ if grep -Fq 'window.__afRewardEntryRetry' "$source_file"; then exit 1; fi
 if grep -Fq '领奖励入口探针' "$source_file"; then exit 1; fi
 if grep -Fq '[gDailyCompletedTasks containsObject:taskKey] && ![taskStatus isEqualToString:@"FINISHED"]' "$source_file"; then exit 1; fi
 grep -Fq 'static BOOL hookRPCProbeMethod(Class cls)' "$entry_file"
-grep -Fq 'objc_getClassList(classes, classCount)' "$entry_file"
+if grep -Fq 'objc_getClassList(classes, classCount)' "$entry_file"; then echo '❌ 全类探针扫描应已移除(9/15)'; exit 1; fi
 grep -Fq 'startSilentRewardContext' "$entry_file"
 grep -Fq 'daemonView' "$entry_file"
 grep -Fq '首页后台：会话状态（会话=' "$entry_file"

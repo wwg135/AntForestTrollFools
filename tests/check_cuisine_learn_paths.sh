@@ -58,15 +58,12 @@ if grep -Fq 'antmanor_advanced' "$source_file" "$makefile"; then
 fi
 grep -Fq 'sh tests/check_cuisine_learn_paths.sh' "$makefile"
 
-echo "[9/12] Checking 页面自身请求观察（PortEntry 桥钩子 → 学真实菜谱）..."
-grep -Fq 'portObserveManorRPCRequest' "$port_file"
-grep -Fq 'method_setImplementation(directMethod, (IMP)portRPCSendProbe)' "$port_file"
-grep -Fq 'method_setImplementation(directMethod, (IMP)portRPCCallHandlerProbe)' "$port_file"
-grep -Fq 'PortRPCSendOriginalIMPKey' "$port_file"
-grep -Fq 'PortRPCCallHandlerOriginalIMPKey' "$port_file"
-grep -Fq '[[AntForestManager sharedInstance] noteManorPageRPCRequest:arg]' "$port_file"
-grep -Fq -- '-(void)noteManorPageRPCRequest:(id)payload;' "$header_file"
-grep -Fq -- '- (void)noteManorPageRPCRequest:(id)payload {' "$source_file"
+echo "[9/12] Checking 回包侧学菜谱链在位（探针已随 9/15 桥接回退停用，学习只走回包）..."
+if grep -Fq 'portRPCSendProbe' "$port_file"; then
+    echo '❌ 探针 hook 残留（9/15 已回退官方空转口径，学习只走回包侧）'
+    exit 1
+fi
+grep -Fq -- '-(void)learnManorCuisinesFromObject:(id)obj;' "$header_file"
 
 echo "[10/12] Checking 被拒菜谱跳过（不整轮停，全被拒才转普通饲料）..."
 grep -Fq 'manorNextCuisineToFeed' "$source_file"
