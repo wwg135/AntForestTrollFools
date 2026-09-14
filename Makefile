@@ -4,12 +4,15 @@ LIPO := $(shell xcrun --sdk iphoneos --find lipo)
 TARGET := build/AntForestPort-Ocean.dylib
 IOS14_TARGET := build/AntForestPort-Ocean-iOS14.dylib
 ARM64_TARGET := build/AntForestPort-arm64.dylib
-ARM64E_TARGET := build/AntForestPort-arm64e.dylib
+V32_TARGET := build/AntForestPort-v3.2-beta.dylib
+V32_IOS14_TARGET := build/AntForestPort-v3.2-beta-iOS14.dylib
 SOURCES := PortEntry.m antforest/AntForestManager.m antforest/StepSimulator.m antforest/DebugTool/Tool.m antforest/DebugTool/UIView+Toast.m
 
 .PHONY: all clean test ios14
 
 all: $(TARGET) $(IOS14_TARGET)
+	@cp -f $(TARGET) $(V32_TARGET)
+	@cp -f $(IOS14_TARGET) $(V32_IOS14_TARGET)
 
 test:
 	sh tests/check_water_gift_recheck.sh
