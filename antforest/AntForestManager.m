@@ -5081,6 +5081,9 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
                 NSInteger stock = self.lastManorFoodStock;
                 NSInteger limit = self.lastManorFoodStockLimit > 0 ? self.lastManorFoodStockLimit : 1800;
                 if (stock >= limit && limit > 0) {
+                    // v3.3.9b：满仓期间失败不计数——满仓被拒是「暂时的环境闸门」（小鸡进食腾空间后就能领），
+                    // 计进熔断会把任务拉黑到当天结束，违背「当天就该领完」口径
+                    [gManorClaimFailCounts removeObjectForKey:taskId];
                     static NSTimeInterval lastFullLogTime = 0;
                     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
                     if (now - lastFullLogTime > 60) {
@@ -7612,10 +7615,16 @@ static NSTimeInterval gLastManorCheckTime = 0;
         if (!gManorFamilySignPending && (resData[@"haveAddFoodStock"] || [opType containsString:@"receiveFarmTaskAward"])) {
             NSInteger addFood = [resData[@"haveAddFoodStock"] integerValue];
             NSInteger curFood = [resData[@"foodStock"] integerValue];
-            // v3.3.9 领奖成功回执落账：只有这里确认成功才写 ANTFARM_CLAIM_TASK 账 + 清在途/失败计数；
-            // 显式失败的回执则累计失败计数（≥2 次当日熔断），无判定（超时/丢失）什么都不记，90s 后自动重发
+            // v3.3.9b 领奖回执三分判定：
+            // ① addFood>0 = 真领取成功 → 落账 + 清在途/失败计数
+            // ② addFood==0 且背包满（curFood≥limit）= 服务端「请求成功但没加粮」（9/14 实证满仓时回 memo=SUCCESS）→
+            //    不记成功不记失败，清在途让 60s 心跳自然重试——小鸡进食腾出空间后就能领上（用户口径：当天就该领完）
+            // ③ addFood==0 且非满仓 = 显式失败 → 失败计数 +1，连续 2 次当日熔断（只对非满仓失败生效）
+            NSInteger claimLimit = self.lastManorFoodStockLimit > 0 ? self.lastManorFoodStockLimit : 1800;
+            NSInteger stockNow = curFood > 0 ? curFood : self.lastManorFoodStock;
+            BOOL backpackFull = (stockNow >= claimLimit && claimLimit > 0);
             NSString *claimedTaskId = gManorClaimQueue.firstObject ?: @"";
-            if (addFood > 0 || [resData[@"memo"] isEqualToString:@"SUCCESS"] || [dict[@"memo"] isEqualToString:@"SUCCESS"]) {
+            if (addFood > 0) {
                 if (claimedTaskId.length) {
                     if (!gManorClaimInFlightAt) gManorClaimInFlightAt = [NSMutableDictionary dictionary];
                     if (!gManorClaimFailCounts) gManorClaimFailCounts = [NSMutableDictionary dictionary];
@@ -7630,23 +7639,33 @@ static NSTimeInterval gLastManorCheckTime = 0;
                     }
                 }
             } else if ([opType containsString:@"receiveFarmTaskAward"] && claimedTaskId.length) {
-                // 显式失败回执：连续失败 +1（与 v3.3.6 抽抽乐熔断同口径，只按领奖回执累计）
-                if (!gManorClaimFailCounts) gManorClaimFailCounts = [NSMutableDictionary dictionary];
-                NSInteger fails = [gManorClaimFailCounts[claimedTaskId] integerValue] + 1;
-                gManorClaimFailCounts[claimedTaskId] = @(fails);
-                if (fails >= kManorClaimFailThreshold) {
+                if (backpackFull) {
+                    // 满仓暂存：清在途（90s 后心跳可重试），不计数不落账，等背包腾出空间
                     [gManorClaimInFlightAt removeObjectForKey:claimedTaskId];
                     [gManorClaimQueue removeObject:claimedTaskId];
-                    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：任务「%@」连续 %@ 次领取未成功，今日熔断跳过（次日自动重试）", claimedTaskId, @(fails)]];
+                    static NSTimeInterval lastFullClaimLog = 0;
+                    NSTimeInterval logNow = [[NSDate date] timeIntervalSince1970];
+                    if (logNow - lastFullClaimLog > 60) {
+                        lastFullClaimLog = logNow;
+                        [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：背包已满（%ldg/%ldg），「%@」奖励暂存，待小鸡进食腾出空间自动补领", (long)stockNow, (long)claimLimit, claimedTaskId]];
+                    }
+                } else {
+                    // 显式失败回执：连续失败 +1（与 v3.3.6 抽抽乐熔断同口径，只按领奖回执累计）
+                    if (!gManorClaimFailCounts) gManorClaimFailCounts = [NSMutableDictionary dictionary];
+                    NSInteger fails = [gManorClaimFailCounts[claimedTaskId] integerValue] + 1;
+                    gManorClaimFailCounts[claimedTaskId] = @(fails);
+                    if (fails >= kManorClaimFailThreshold) {
+                        [gManorClaimInFlightAt removeObjectForKey:claimedTaskId];
+                        [gManorClaimQueue removeObject:claimedTaskId];
+                        [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：任务「%@」连续 %@ 次领取未成功，今日熔断跳过（次日自动重试）", claimedTaskId, @(fails)]];
+                    }
                 }
             }
             if (addFood > 0) {
                 if (curFood > 0) self.lastManorFoodStock = curFood;
                 [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：成功领取饲料 +%ldg（背包存量 %ldg）", (long)addFood, (long)(curFood > 0 ? curFood : self.lastManorFoodStock)]];
-            } else if ([resData[@"memo"] isEqualToString:@"SUCCESS"] || [dict[@"memo"] isEqualToString:@"SUCCESS"]) {
-                if (curFood > 0) self.lastManorFoodStock = curFood;
-                [self recordStage:@"蚂蚁庄园：成功领取饲料奖励"];
             }
+            // v3.3.9b：删掉「memo=SUCCESS 就提示成功」——满仓时服务端也回 SUCCESS 但没加粮，误报「领取成功」
         }
 
         // E2. 抽抽乐诊断（v3.1.9）：listFarmTask 回包**真**没带 farmTaskList 才留一条原文
