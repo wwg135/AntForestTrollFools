@@ -2570,41 +2570,24 @@ static inline BOOL isRelevantPluginURL(NSString *urlStr) {
 #endif
 #define AFProbeLog(...) do { if (ENABLE_PROBE_LOGS) NSLog(__VA_ARGS__); } while(0)
 
-static const void *PortRPCOriginalIMPKey = &PortRPCOriginalIMPKey;
-static id portCallRPC(id self, SEL _cmd, id rpcConfig, id completeBlock) {
-    @try {
-        NSString *str = nil;
-        if ([rpcConfig isKindOfClass:NSString.class]) str = rpcConfig;
-        else if ([NSJSONSerialization isValidJSONObject:rpcConfig]) {
-            NSData *d = [NSJSONSerialization dataWithJSONObject:rpcConfig options:0 error:nil];
-            if (d) str = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
-        }
-        if (!str) str = [rpcConfig description];
-        
-        if (str.length && !isNoiseProbeLog(str)) {
-            AFProbeLog(@"\n🔍 [PatrolProbe-RPC-REQ]\n📦 %@", str);
-            [[AntForestManager sharedInstance] recordProbeLog:[NSString stringWithFormat:@"[RPC-REQ] %@", str]];
-        }
-    } @catch (NSException *e) {}
-    
-    IMP original = NULL;
-    for (Class cls = object_getClass(self); cls && !original; cls = class_getSuperclass(cls)) {
-        original = [objc_getAssociatedObject(cls, PortRPCOriginalIMPKey) pointerValue];
-    }
-    if (original) {
-        return ((id (*)(id, SEL, id, id))original)(self, _cmd, rpcConfig, completeBlock);
-    }
-    return nil;
-}
+static const void *PortRPCSendOriginalIMPKey = &PortRPCSendOriginalIMPKey;
+static const void *PortRPCCallHandlerOriginalIMPKey = &PortRPCCallHandlerOriginalIMPKey;
 
-static IMP portOriginalIMPFor(id self) {
+static IMP portOriginalSendIMPFor(id self) {
     IMP original = NULL;
     for (Class cls = object_getClass(self); cls && !original; cls = class_getSuperclass(cls)) {
-        original = [objc_getAssociatedObject(cls, PortRPCOriginalIMPKey) pointerValue];
+        original = [objc_getAssociatedObject(cls, PortRPCSendOriginalIMPKey) pointerValue];
     }
     return original;
 }
 
+static IMP portOriginalCallHandlerIMPFor(id self) {
+    IMP original = NULL;
+    for (Class cls = object_getClass(self); cls && !original; cls = class_getSuperclass(cls)) {
+        original = [objc_getAssociatedObject(cls, PortRPCCallHandlerOriginalIMPKey) pointerValue];
+    }
+    return original;
+}
 static void portObserveManorRPCRequest(id arg) {
     if (!arg) return;
     static NSTimeInterval lastObserve = 0;
@@ -2623,7 +2606,7 @@ static id portRPCSendProbe(id self, SEL _cmd, id arg1, id arg2) {
     @try {
         portObserveManorRPCRequest(arg1);
     } @catch (NSException *e) {}
-    IMP original = portOriginalIMPFor(self);
+    IMP original = portOriginalSendIMPFor(self);
     if (original) return ((id (*)(id, SEL, id, id))original)(self, _cmd, arg1, arg2);
     return nil;
 }
@@ -2632,7 +2615,7 @@ static id portRPCCallHandlerProbe(id self, SEL _cmd, id handler, id data, id cal
     @try {
         portObserveManorRPCRequest(data ?: handler);
     } @catch (NSException *e) {}
-    IMP original = portOriginalIMPFor(self);
+    IMP original = portOriginalCallHandlerIMPFor(self);
     if (original) return ((id (*)(id, SEL, id, id, id))original)(self, _cmd, handler, data, callback);
     return nil;
 }
@@ -2649,14 +2632,29 @@ static BOOL hookRPCProbeMethod(Class cls) {
     Method sendMethod = class_getInstanceMethod(cls, sendSel);
     Method handlerMethod = class_getInstanceMethod(cls, handlerSel);
     if (sendMethod && class_getMethodImplementation(cls, sendSel) != (IMP)portRPCSendProbe) {
-        objc_setAssociatedObject(cls, PortRPCOriginalIMPKey, [NSValue valueWithPointer:(IMP)class_getMethodImplementation(cls, sendSel)], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        class_replaceMethod(cls, sendSel, (IMP)portRPCSendProbe, method_getTypeEncoding(sendMethod));
-        installed = YES;
+        IMP original = method_getImplementation(sendMethod);
+        const char *types = method_getTypeEncoding(sendMethod);
+        // Materialize an inherited method on the target class before replacing it.
+        class_addMethod(cls, sendSel, original, types);
+        Method directMethod = class_getInstanceMethod(cls, sendSel);
+        if (directMethod && method_getImplementation(directMethod) != (IMP)portRPCSendProbe) {
+            original = method_getImplementation(directMethod);
+            objc_setAssociatedObject(cls, PortRPCSendOriginalIMPKey, [NSValue valueWithPointer:original], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            method_setImplementation(directMethod, (IMP)portRPCSendProbe);
+            installed = YES;
+        }
     }
     if (handlerMethod && class_getMethodImplementation(cls, handlerSel) != (IMP)portRPCCallHandlerProbe) {
-        objc_setAssociatedObject(cls, PortRPCOriginalIMPKey, [NSValue valueWithPointer:(IMP)class_getMethodImplementation(cls, handlerSel)], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        class_replaceMethod(cls, handlerSel, (IMP)portRPCCallHandlerProbe, method_getTypeEncoding(handlerMethod));
-        installed = YES;
+        IMP original = method_getImplementation(handlerMethod);
+        const char *types = method_getTypeEncoding(handlerMethod);
+        class_addMethod(cls, handlerSel, original, types);
+        Method directMethod = class_getInstanceMethod(cls, handlerSel);
+        if (directMethod && method_getImplementation(directMethod) != (IMP)portRPCCallHandlerProbe) {
+            original = method_getImplementation(directMethod);
+            objc_setAssociatedObject(cls, PortRPCCallHandlerOriginalIMPKey, [NSValue valueWithPointer:original], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            method_setImplementation(directMethod, (IMP)portRPCCallHandlerProbe);
+            installed = YES;
+        }
     }
     return installed;
 }
@@ -2874,10 +2872,21 @@ static void portUpdateBridgeReadyStatus(id self, SEL _cmd, id value) {
 
 static BOOL hookMethod(Class cls, SEL selector, IMP replacement, IMP *original) {
     if (!cls || !selector || !replacement) return NO;
+
+    // class_getInstanceMethod() may return an inherited Method. Never mutate the
+    // superclass's Method when installing a tweak hook: first materialize the
+    // inherited implementation on the target class, then replace that direct Method.
     Method method = class_getInstanceMethod(cls, selector);
     if (!method) return NO;
+    if (!class_addMethod(cls, selector, method_getImplementation(method), method_getTypeEncoding(method))) {
+        method = class_getInstanceMethod(cls, selector);
+    } else {
+        method = class_getInstanceMethod(cls, selector);
+    }
+    if (!method) return NO;
+
     IMP existing = method_getImplementation(method);
-    if (existing == replacement) return NO; // Already hooked!
+    if (existing == replacement) return NO; // Already hooked.
     IMP prev = method_setImplementation(method, replacement);
     if (original && !*original) {
         *original = prev;

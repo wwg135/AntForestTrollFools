@@ -1,6 +1,6 @@
-SDK := $(shell xcrun --sdk iphoneos --show-sdk-path)
-CLANG := $(shell xcrun --sdk iphoneos --find clang)
-LIPO := $(shell xcrun --sdk iphoneos --find lipo)
+SDK = $(shell xcrun --sdk iphoneos --show-sdk-path)
+CLANG = $(shell xcrun --sdk iphoneos --find clang)
+LIPO = $(shell xcrun --sdk iphoneos --find lipo)
 TARGET := build/AntForestPort-Ocean.dylib
 IOS14_TARGET := build/AntForestPort-Ocean-iOS14.dylib
 ARM64_TARGET := build/AntForestPort-arm64.dylib
@@ -12,6 +12,9 @@ SOURCES := PortEntry.m antforest/AntForestManager.m antforest/StepSimulator.m an
 all: $(TARGET) $(IOS14_TARGET)
 
 test:
+	sh tests/check_round3_regressions.sh
+	sh tests/check_food_reward_capacity.sh
+	sh tests/check_core_hook_regressions.sh
 	sh tests/check_water_gift_recheck.sh
 	sh tests/check_reward_patrol_paths.sh
 	sh tests/check_ocean_task_paths.sh
