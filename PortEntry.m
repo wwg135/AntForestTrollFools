@@ -16,6 +16,8 @@ static const void *GiftFullProbeKey = &GiftFullProbeKey;
 
 static id findWebViewInController(id controller);
 static BOOL hookMethod(Class cls, SEL selector, IMP replacement, IMP *original);
+static void portDoFlushMessageQueue(id self, SEL _cmd, id message, id url);
+static void (*originalDoFlushMessageQueue)(id, SEL, id, id);
 static void tryAutoCollectWaterGift(void);
 static void reportWaterGiftTapResult(void);
 static void refreshTabBarFinance(void);
@@ -2663,6 +2665,19 @@ static BOOL hookRPCProbeMethod(Class cls) {
 
 static NSString *gLastRpcOperationType = nil;
 
+// 桥接注册：页面每次发 H5 消息都带自己的 bridge+url，交给 registerBridge 按 URL 分类绑定
+static void portDoFlushMessageQueue(id self, SEL _cmd, id message, id url) {
+    if (originalDoFlushMessageQueue) {
+        originalDoFlushMessageQueue(self, _cmd, message, url);
+    }
+    @try {
+        NSString *urlString = [url isKindOfClass:NSString.class] ? (NSString *)url : nil;
+        [[AntForestManager sharedInstance] registerBridge:self withUrl:urlString];
+    } @catch (NSException *e) {
+        NSLog(@"[AntForestPort][Bridge] registerBridge exception: %@", e);
+    }
+}
+
 static id portTransformResponseData(id self, SEL _cmd, id value) {
     id controller = forestControllerForBridge(self);
     if (isEnergyRain(nil, controller)) {
@@ -3035,6 +3050,9 @@ static void installHooks(void) {
         if (targetBridgeClass) {
             hookMethod(targetBridgeClass, @selector(transformResponseData:), (IMP)portTransformResponseData, (IMP *)&originalTransformResponseData);
             hookMethod(targetBridgeClass, @selector(updateBridgeReadyStatus:), (IMP)portUpdateBridgeReadyStatus, (IMP *)&originalUpdateBridgeReadyStatus);
+            if ([targetBridgeClass instancesRespondToSelector:@selector(_doFlushMessageQueue:url:)]) {
+                hookMethod(targetBridgeClass, @selector(_doFlushMessageQueue:url:), (IMP)portDoFlushMessageQueue, (IMP *)&originalDoFlushMessageQueue);
+            }
         }
         
         int classCount = objc_getClassList(NULL, 0);
