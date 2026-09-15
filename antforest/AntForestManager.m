@@ -5507,7 +5507,7 @@ static NSString *getCurrentHourString(void) {
         return;
     }
     self.manorEggWatchTimer = [NSTimer scheduledTimerWithTimeInterval:kManorEggWatchInterval target:self selector:@selector(manorEggWatchTick) userInfo:nil repeats:YES];
-    [self recordStage:@"蚂蚁庄园 · 收蛋监控已启动（60 秒一轮，进度满 100% 才发收蛋请求）"];
+    [self recordStage:@"蚂蚁庄园 · 收蛋监控已启动（60 秒一轮，鸡蛋攒满 100% 自动收）"];
 }
 
 // 每一轮心跳：补跑睡觉/家庭签到/收蛋/抽抽乐（各自「当天一次 + 冷却」规则，重复调用不刷请求）
@@ -5538,13 +5538,13 @@ static NSString *getCurrentHourString(void) {
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     if (now - lastEggHarvestTime < 60) return;
     
-    // 蛋巢进度门：进度未知先同步状态不盲收；未满 100% 不发收蛋请求（服务端会回绝）
+    // 蛋巢进度门：进度未知先同步状态不盲收；未满 100% 暂不收取，等攒满一颗再收
     if (!self.lastManorEggPercentKnown) {
-        recordEggDiagOnce(self, @"egg_unknown", @"蚂蚁庄园：暂未识别到蛋巢产蛋进度，先同步状态，不发送收蛋请求");
+        recordEggDiagOnce(self, @"egg_unknown", @"蚂蚁庄园：产蛋进度同步中，待同步到进度后自动收取鸡蛋");
         return;
     }
     if (self.lastManorEggPercent < 100) {
-        recordEggDiagOnce(self, @"egg_notfull", [NSString stringWithFormat:@"蚂蚁庄园：蛋巢当前 %ld%%，未满 100%%，不发送收蛋请求", (long)self.lastManorEggPercent]);
+        recordEggDiagOnce(self, @"egg_notfull", [NSString stringWithFormat:@"蚂蚁庄园：鸡蛋进度 %ld%%，暂不收取，攒满 100%% 后自动收", (long)self.lastManorEggPercent]);
         return;
     }
     lastEggHarvestTime = now;
