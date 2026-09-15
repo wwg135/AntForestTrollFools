@@ -82,6 +82,8 @@ chk "无机会日志带机会数=0"       "$M" '本轮无抽奖机会（机会�
 chk "缺字段≠0（缺 blance 不当无机会）" "$M" '机会数未取到（回包无 blance 键）'
 chk "缺字段留顶层键诊断"         "$M" 'forestDrawTopKeys'
 chk "后台拉取结果自证行"         "$M" '后台拉取成功（不进寻宝页面也拿到任务）'
+chk "任务扫描覆盖 subTaskList"   "$M" '@"taskInfoList", @"taskList", @"subTaskList"'
+chk "自证行细分待做/其余"         "$M" '（待做 %ld、其余已处理 %ld）'
 chk "探测间隔 30 分钟"           "$M" 'kForestDrawProbeGap  = 1800.0'
 
 echo "=== 8. 负向断言（历史坑） ==="
