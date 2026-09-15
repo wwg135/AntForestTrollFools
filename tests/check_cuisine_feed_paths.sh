@@ -7,9 +7,9 @@ makefile="$(dirname "$0")/../Makefile"
 
 echo "[1/7] Checking advanced-feed implementation & .h declaration..."
 grep -Fq -- '- (void)feedManorChickenWithAdvancedFood {' "$source_file"
-grep -Fq -- '- (void)stopManorAdvancedFoodFeed:(NSString *)reason {' "$source_file"
+grep -Fq -- '- (void)stopManorAdvancedFoodFeed:(NSString *)reason silent:(BOOL)silent {' "$source_file"
 grep -Fq -- '-(void)feedManorChickenWithAdvancedFood;' "$header_file"
-grep -Fq -- '-(void)stopManorAdvancedFoodFeed:(NSString *)reason;' "$header_file"
+grep -Fq -- '-(void)stopManorAdvancedFoodFeed:(NSString *)reason silent:(BOOL)silent;' "$header_file"
 grep -Fq -- '-(void)feedManorChicken;' "$header_file"   # 同族方法作为对照
 
 echo "[2/7] Checking useFarmFood rpc shape (flat 1-per-request / 7 cuisines)..."
@@ -50,9 +50,10 @@ grep -Fq '还没吃完' "$source_file"
 grep -Fq '已满' "$source_file"
 
 echo "[6/7] Checking panel logs (send / success / pause)..."
-grep -Fq '蚂蚁庄园：优先投喂高级饲料（逐个投喂）' "$source_file"
+grep -Fq '高级饲料投喂开始（识别到持有' "$source_file"
 grep -Fq '正在投喂第 %lu 个高级饲料' "$source_file"
-grep -Fq '高级饲料投喂成功（第 %lu 个）' "$source_file"
+grep -Fq '高级饲料投喂成功（第 %lu 个，' "$source_file"
+grep -Fq '高级饲料本轮结算——成功' "$source_file"
 grep -Fq '高级饲料投喂暂停（%@）' "$source_file"
 
 echo "[7/7] Checking no leftover AntManor switch for this feature..."
