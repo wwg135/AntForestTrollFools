@@ -7329,6 +7329,26 @@ static BOOL gManorSnackRunning = NO;                     // 本轮零食投喂�
 
 #pragma mark - 抽抽乐（DrawMachine）自动攒次数与一键连抽
 
+// 拉权威状态的节流（盆内余粮未知时用 enterFarm 回包补齐，避免瞎喂）
+static NSTimeInterval gLastManorTroughPullAt = 0;
+
+// 小鸡进食状态（服务端权威字段）：ownAnimal.animalStatusVO 或 animals[].animalStatusVO
+// 9/15 探针实测：syncAnimalStatus 回包常带 ownAnimal.animalStatusVO.animalFeedStatus=EATING
+static NSString *manorChickenFeedStatus(NSDictionary *ownAnimal, NSDictionary *subFarm, NSDictionary *innerSub) {
+    NSDictionary *vo = [ownAnimal[@"animalStatusVO"] isKindOfClass:NSDictionary.class] ? ownAnimal[@"animalStatusVO"] : nil;
+    if (!vo) {
+        NSArray *animals = [subFarm[@"animals"] isKindOfClass:NSArray.class] ? subFarm[@"animals"] : ([innerSub[@"animals"] isKindOfClass:NSArray.class] ? innerSub[@"animals"] : nil);
+        for (id a in animals) {
+            if ([a isKindOfClass:NSDictionary.class] && [((NSDictionary *)a)[@"animalStatusVO"] isKindOfClass:NSDictionary.class]) {
+                vo = ((NSDictionary *)a)[@"animalStatusVO"];
+                break;
+            }
+        }
+    }
+    id st = vo[@"animalFeedStatus"];
+    return [st isKindOfClass:NSString.class] ? st : nil;
+}
+
 - (void)handleManorResponse:(NSDictionary *)dict {
     if (!self.enableAutoManor) return;
     // 收蛋/抽抽乐监控：强持有庄园 Bridge（页面关闭后监控链仍可发请求）
@@ -7348,8 +7368,22 @@ static BOOL gManorSnackRunning = NO;                     // 本轮零食投喂�
         [self learnManorSnackStockFromObject:dict];
         
         
-        // A. 小鸡与饭盆状态检测 (subFarmVO / ownAnimal)
-        NSDictionary *subFarm = [resData[@"subFarmVO"] isKindOfClass:NSDictionary.class] ? resData[@"subFarmVO"] : ([dict[@"subFarmVO"] isKindOfClass:NSDictionary.class] ? dict[@"subFarmVO"] : nil);
+        // A. 小鸡与饭盆状态检测 (subFarmVO / farmVO.subFarmVO / ownAnimal)
+        // 回包形态实测（9/15 探针）：状态三处都可能出现；且有的包 subFarmVO 只有 foodStock、
+        // 没有盆内余粮字段，还有 subFarmVO={} 的空壳包——所以优先挑「带 foodInTrough 的那一个」
+        NSDictionary *outerFarmVO = [resData[@"farmVO"] isKindOfClass:NSDictionary.class] ? resData[@"farmVO"] : ([dict[@"farmVO"] isKindOfClass:NSDictionary.class] ? dict[@"farmVO"] : nil);
+        NSDictionary *farmSubVO = [outerFarmVO[@"subFarmVO"] isKindOfClass:NSDictionary.class] ? outerFarmVO[@"subFarmVO"] : nil;
+        NSMutableArray *subFarmCands = [NSMutableArray array];
+        for (id cand in @[resData[@"subFarmVO"] ?: @{}, dict[@"subFarmVO"] ?: @{}, farmSubVO ?: @{}]) {
+            if (![cand isKindOfClass:NSDictionary.class]) continue;
+            if ([(NSDictionary *)cand count] == 0) continue;
+            [subFarmCands addObject:cand];
+        }
+        NSDictionary *subFarm = nil;
+        for (NSDictionary *cand in subFarmCands) {
+            if (cand[@"foodInTrough"]) { subFarm = cand; break; }
+        }
+        if (!subFarm) subFarm = subFarmCands.firstObject;
         NSDictionary *ownAnimal = [resData[@"ownAnimal"] isKindOfClass:NSDictionary.class] ? resData[@"ownAnimal"] : ([dict[@"ownAnimal"] isKindOfClass:NSDictionary.class] ? dict[@"ownAnimal"] : nil);
         
         if (subFarm || ownAnimal) {
@@ -7383,8 +7417,8 @@ static BOOL gManorSnackRunning = NO;                     // 本轮零食投喂�
             }
             
             // 蛋巢产蛋进度：farmVO.subFarmVO.farmProduce.benevolenceScore（探针实测 0~1 小数，满格=1.0）
-            NSDictionary *farmVO = [resData[@"farmVO"] isKindOfClass:NSDictionary.class] ? resData[@"farmVO"] : ([dict[@"farmVO"] isKindOfClass:NSDictionary.class] ? dict[@"farmVO"] : nil);
-            NSDictionary *innerSub = [farmVO[@"subFarmVO"] isKindOfClass:NSDictionary.class] ? farmVO[@"subFarmVO"] : subFarm;
+            NSDictionary *farmVO = outerFarmVO;
+            NSDictionary *innerSub = farmSubVO ?: subFarm;
             NSDictionary *farmProduce = [innerSub[@"farmProduce"] isKindOfClass:NSDictionary.class] ? innerSub[@"farmProduce"] : nil;
             id scoreRaw = farmProduce[@"benevolenceScore"];
             if (scoreRaw) {
@@ -7417,15 +7451,19 @@ static BOOL gManorSnackRunning = NO;                     // 本轮零食投喂�
                 self.lastManorFoodStockLimit = foodStockLimit;
             }
             
-            NSInteger foodInTrough = 0;
-            if (subFarm[@"foodInTrough"]) {
-                foodInTrough = [subFarm[@"foodInTrough"] integerValue];
-            }
-            NSInteger foodLimit = [subFarm[@"foodInTroughLimit"] respondsToSelector:@selector(integerValue)] ? [subFarm[@"foodInTroughLimit"] integerValue] : 180;
-            NSInteger countdown = [subFarm[@"countdown"] respondsToSelector:@selector(integerValue)] ? [subFarm[@"countdown"] integerValue] : 0;
+            // 盆内余粮：字段缺失 ≠ 值为 0（9/15 探针实测：状态包整条不带 foodInTrough，读成 0 就误判饭盆空闲）
+            id troughRaw = subFarm[@"foodInTrough"] ?: innerSub[@"foodInTrough"];
+            BOOL manorTroughKnown = (troughRaw != nil);
+            NSInteger foodInTrough = manorTroughKnown ? [troughRaw integerValue] : 0;
+            id troughLimitRaw = subFarm[@"foodInTroughLimit"] ?: innerSub[@"foodInTroughLimit"];
+            NSInteger foodLimit = [troughLimitRaw respondsToSelector:@selector(integerValue)] ? [troughLimitRaw integerValue] : 180;
+            id troughCountRaw = subFarm[@"countdown"] ?: innerSub[@"countdown"];
+            NSInteger countdown = [troughCountRaw respondsToSelector:@selector(integerValue)] ? [troughCountRaw integerValue] : 0;
             
-            // 真实判定：食盆余粮满了，或者倒计时大于0且盆内有粮，才算真正进食中
-            BOOL isEating = (foodInTrough >= foodLimit) || (countdown > 0 && foodInTrough > 0);
+            // 真实判定：服务端进食状态权威优先；其次食盆余粮满了，或倒计时大于0且盆内有粮
+            NSString *feedStatus = manorChickenFeedStatus(ownAnimal, subFarm, innerSub);
+            BOOL serverEating = [feedStatus isEqualToString:@"EATING"];
+            BOOL isEating = serverEating || (foodInTrough >= foodLimit) || (countdown > 0 && foodInTrough > 0);
             self.isManorChickenEating = isEating;
             
             if (isEating) {
@@ -7443,6 +7481,14 @@ static BOOL gManorSnackRunning = NO;                     // 本轮零食投喂�
                     } else {
                         [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：小鸡正在进食中（背包存量 %ldg），暂无需喂食", (long)foodStock]];
                     }
+                }
+            } else if (!manorTroughKnown) {
+                NSLog(@"🐔 [蚂蚁庄园·小鸡状态] 盆内余粮未知（本回包未带 foodInTrough）| 饲料存量:%ldg", (long)foodStock);
+                recordEggDiagOnce(self, @"trough_unknown", @"蚂蚁庄园：回包未带盆内余粮，无法判定饭盆空否，本轮暂缓投喂（不盲喂）");
+                NSTimeInterval pullNow = [[NSDate date] timeIntervalSince1970];
+                if (pullNow - gLastManorTroughPullAt > 60) {
+                    gLastManorTroughPullAt = pullNow;
+                    [self enterManorFarm];
                 }
             } else {
                 NSLog(@"🐔 [蚂蚁庄园·小鸡状态] 饭盆空闲 | 盆内:%ld/%ldg | 饲料存量:%ldg", (long)foodInTrough, (long)foodLimit, (long)foodStock);
