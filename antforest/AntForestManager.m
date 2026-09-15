@@ -5191,27 +5191,6 @@ static BOOL manorClaimHasReply(NSString *taskId) {
 
 // v3.4.1：领奖回包留痕 —— 面板日志是滚动窗口（庄园每 5 分钟写几条，隔夜就被挤掉），
 // 这里把最近 10 条回包摘要落盘，每次进程启动后的第一轮体检补打一遍，保证「隔夜再导出」也能看到。
-static NSString * const kManorClaimTrailKey = @"manor_claim_reply_trail";
-
-static void manorClaimTrailAppend(NSString *line) {
-    if (!line.length) return;
-    static NSDateFormatter *trailFmt = nil;
-    if (!trailFmt) { trailFmt = [[NSDateFormatter alloc] init]; trailFmt.dateFormat = @"MM-dd HH:mm:ss"; }
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    NSMutableArray *arr = [[defaults arrayForKey:kManorClaimTrailKey] mutableCopy] ?: [NSMutableArray array];
-    [arr addObject:[NSString stringWithFormat:@"%@ %@", [trailFmt stringFromDate:[NSDate date]], line]];
-    while (arr.count > 10) [arr removeObjectAtIndex:0];
-    [defaults setObject:arr forKey:kManorClaimTrailKey];
-    [defaults synchronize];
-}
-
-static void manorClaimTrailDump(AntForestManager *mgr) {
-    NSArray *trail = [[NSUserDefaults standardUserDefaults] arrayForKey:kManorClaimTrailKey];
-    if (!trail.count) return;
-    for (NSString *entry in trail) {
-        [mgr recordStage:[NSString stringWithFormat:@"蚂蚁庄园 · 领奖回包[留痕] %@", entry]];
-    }
-}
 
 static void manorClaimMarkReply(NSString *taskId) {
     if (!taskId.length) return;
@@ -6661,11 +6640,6 @@ static NSTimeInterval gLastManorCheckTime = 0;
     self.isManorChickenEating = NO;
     
     [self recordStage:@"蚂蚁庄园：正在执行日常自动化体检..."];
-    static BOOL manorTrailDumped = NO;
-    if (!manorTrailDumped) {   // v3.4.1：每进程补打一次领奖回包留痕（隔夜导出也能看到）
-        manorTrailDumped = YES;
-        manorClaimTrailDump(self);
-    }
     
     // 0. 主动刷新庄园主页状态（获取小鸡进食、饭盆余粮、饲料存量等状态）
     [self enterManorFarm];
@@ -8601,13 +8575,7 @@ static void manorScheduleFeedWake(AntForestManager *mgr, NSInteger countdown) {
                 NSString *awaitId = gManorClaimAwaitTaskId ?: @"";
                 gManorClaimLastReplyAt = [[NSDate date] timeIntervalSince1970];
                 gManorClaimAwaitTaskId = nil;
-                manorClaimTrailAppend([NSString stringWithFormat:@"领取回包 op=%@ code=%@ memo=%@", respOp.length ? respOp : @"(无)", respCode.length ? respCode : @"(无)", respMemo.length ? respMemo : @"(无)"]);
-                [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园 · 领取回包（taskId=%@）：op=%@ code=%@ memo=%@ · 顶层键=%@",
-                                   awaitId.length ? awaitId : @"（未记录）",
-                                   respOp.length ? respOp : @"（无）",
-                                   respCode.length ? respCode : @"（无）",
-                                   respMemo.length ? respMemo : @"（无）",
-                                   [[dict allKeys] componentsJoinedByString:@","]]];
+                // v3.4.6：回包明细打印已删（诊断使命完成）——只保留「回包即记账」与状态解析
                 manorClaimMarkReply(awaitId);
             }
         }
@@ -8889,17 +8857,12 @@ static void manorScheduleFeedWake(AntForestManager *mgr, NSInteger countdown) {
             NSString *holdNote = gManorFamilySignPending ? @"（家庭签到在途：只记不吞，不据此改背包存量）" : @"";
             if (addFood > 0) {
                 if (!gManorFamilySignPending && curFood > 0) self.lastManorFoodStock = curFood;
-                manorClaimTrailAppend([NSString stringWithFormat:@"成功领取饲料 +%ldg（背包 %ldg）", (long)addFood, (long)(curFood > 0 ? curFood : self.lastManorFoodStock)]);
                 [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：成功领取饲料 +%ldg（背包存量 %ldg）%@", (long)addFood, (long)(curFood > 0 ? curFood : self.lastManorFoodStock), holdNote]];
             } else if (memoSuccess) {
                 if (!gManorFamilySignPending && curFood > 0) self.lastManorFoodStock = curFood;
                 [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：成功领取饲料奖励%@", holdNote]];
             } else {
                 // v3.3.10：兜底留痕——原来 addFood=0 且 memo≠SUCCESS 时完全静默（回包到了看不见）
-                manorClaimTrailAppend([NSString stringWithFormat:@"领奖回包 haveAddFoodStock=%@ foodStock=%@ memo=%@",
-                                       resData[@"haveAddFoodStock"] ?: dict[@"haveAddFoodStock"] ?: @"(无)",
-                                       resData[@"foodStock"] ?: dict[@"foodStock"] ?: @"(无)",
-                                       (resData[@"memo"] ?: dict[@"memo"]) ?: @"(无)"]);
                 [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园 · 领奖回包：haveAddFoodStock=%@ foodStock=%@ memo=%@ · 顶层键=%@",
                                    resData[@"haveAddFoodStock"] ?: dict[@"haveAddFoodStock"] ?: @"(无)",
                                    resData[@"foodStock"] ?: dict[@"foodStock"] ?: @"(无)",
