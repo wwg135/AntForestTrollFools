@@ -5020,6 +5020,10 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
     
     initDailyTaskCache();
     
+    // 待领饲料合计（g）：已完成待领的普通饲料任务之和（CUISINE 单位是「个」，不计入 g）
+    NSInteger pendingTaskAward = manorPendingTaskFeedAward(taskList);
+    NSInteger pendingTotalAward = pendingTaskAward + gManorTodaySignAward;
+    
     NSInteger taskDelayIndex = 0;
     
     for (NSDictionary *task in taskList) {
@@ -5029,7 +5033,15 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
         NSString *status = task[@"taskStatus"] ?: @"";
         NSString *title = task[@"title"] ?: (bizKey.length ? bizKey : taskId);
         NSString *mode = task[@"taskMode"] ?: @"";
-        NSInteger award = [task[@"awardCount"] integerValue] ?: ([task[@"canReceiveAwardCount"] integerValue] ?: 90);
+        // 奖励单位实测（9/15 抓包 36 条任务）：awardType=ALLPURPOSE 单位是 g；CUISINE 单位是「个」（菜谱）。
+        // 旧代码没区分，把 CUISINE 的 canReceiveAwardCount=3 当成 3g 饲料，也把 TODO 任务的「还能赚多少」当待领
+        NSString *awardType = [task[@"awardType"] isKindOfClass:NSString.class] ? task[@"awardType"] : @"";
+        BOOL isFoodAward = [awardType isEqualToString:@"ALLPURPOSE"];
+        NSInteger award = [task[@"awardCount"] respondsToSelector:@selector(integerValue)] ? [task[@"awardCount"] integerValue] : 0;
+        if (award <= 0) {
+            award = [task[@"canReceiveAwardCount"] respondsToSelector:@selector(integerValue)] ? [task[@"canReceiveAwardCount"] integerValue] : 0;
+        }
+        NSString *awardUnit = isFoodAward ? @"g" : @"个";
         
         if ([status isEqualToString:@"RECEIVED"]) {
             if ([bizKey isEqualToString:@"ANSWER"]) {
@@ -5044,12 +5056,12 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
                 NSInteger stock = self.lastManorFoodStock;
                 NSInteger limit = self.lastManorFoodStockLimit > 0 ? self.lastManorFoodStockLimit : 1800;
                 // v3.1.5 防吞（对齐官方 3.2 beta）：当前存量 + 本次可领 > 上限 即挂起，杜绝领出溢出被系统作废
-                if (limit > 0 && stock + award > limit) {
+                if (isFoodAward && limit > 0 && stock + award > limit) {
                     static NSTimeInterval lastFullLogTime = 0;
                     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
                     if (now - lastFullLogTime > 60) {
                         lastFullLogTime = now;
-                        [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：饲料背包已满或将溢出（当前 %ldg/%ldg，待领 %ldg），暂不领取“%@”，待小鸡进食后再领", (long)stock, (long)limit, (long)award, title]];
+                        [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：饲料背包已满或将溢出（当前 %ldg/%ldg，待领合计 %ldg = 任务 %ldg + 今日签到 %ldg），暂不领取“%@”，待小鸡进食后再领", (long)stock, (long)limit, (long)pendingTotalAward, (long)pendingTaskAward, (long)gManorTodaySignAward, title]];
                     }
                     // 挂起记账：本轮不领，小鸡进食消耗后自然回落，下轮再领（幂等，防重复记账）
                     NSString *suspendKey = [NSString stringWithFormat:@"ANTFARM_SUSPEND_TASK:%@", taskId];
@@ -5063,7 +5075,7 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
                 if (![gDailyCompletedTasks containsObject:claimKey]) {
                     [gDailyCompletedTasks addObject:claimKey];
                     saveDailyTaskCache();
-                    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：发现已完成任务“%@”，正在领取 %ldg 饲料（预估容量 %ldg/%ldg）...", title, (long)award, (long)stock, (long)limit]];
+                    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：发现已完成任务“%@”，正在领取 %ld%@ 奖励（预估容量 %ldg/%ldg）...", title, (long)award, awardUnit, (long)stock, (long)limit]];
                     [self receiveManorFarmTaskAwardWithTaskId:taskId title:title];
                 }
             }
@@ -7332,6 +7344,23 @@ static BOOL gManorSnackRunning = NO;                     // 本轮零食投喂�
 // 拉权威状态的节流（盆内余粮未知时用 enterFarm 回包补齐，避免瞎喂）
 static NSTimeInterval gLastManorTroughPullAt = 0;
 
+// 今日连续签到的饲料量（signList 实测：signKey=当天 且 signed=true 时的 awardCount，单位 g）
+static NSInteger gManorTodaySignAward = 0;
+
+// 待领饲料合计（g）= 已完成待领的普通饲料任务之和；CUISINE 的 awardCount 单位是「个」，不计入
+static NSInteger manorPendingTaskFeedAward(NSArray *taskList) {
+    NSInteger total = 0;
+    for (id item in taskList) {
+        if (![item isKindOfClass:NSDictionary.class]) continue;
+        NSDictionary *t = item;
+        if (![t[@"taskStatus"] isEqualToString:@"FINISHED"]) continue;
+        if (![t[@"awardType"] isEqualToString:@"ALLPURPOSE"]) continue;
+        id n = t[@"awardCount"];
+        if ([n respondsToSelector:@selector(integerValue)]) total += [n integerValue];
+    }
+    return total;
+}
+
 // 小鸡进食状态（服务端权威字段）：ownAnimal.animalStatusVO 或 animals[].animalStatusVO
 // 9/15 探针实测：syncAnimalStatus 回包常带 ownAnimal.animalStatusVO.animalFeedStatus=EATING
 static NSString *manorChickenFeedStatus(NSDictionary *ownAnimal, NSDictionary *subFarm, NSDictionary *innerSub) {
@@ -7535,6 +7564,7 @@ static NSString *manorChickenFeedStatus(NSDictionary *ownAnimal, NSDictionary *s
                     }
                 }
             }
+            gManorTodaySignAward = todaySigned ? award : 0;
             if (todaySigned) {
                 static NSString *lastLoggedSignKey = nil;
                 if (![lastLoggedSignKey isEqualToString:today]) {
