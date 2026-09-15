@@ -2139,6 +2139,9 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
 
 // v3.3.6：领奖励桥接「等待」日志节流（原来每轮一条，用户反馈一直刷屏）
 static NSTimeInterval gRewardWaitLogAt = 0;
+// v3.3.10：进程启动时刻（启动宽限用）与背包存量最近同步时刻（诊断行标注新鲜度用）
+static NSTimeInterval gProcStartAt = 0;
+static NSTimeInterval gManorFoodStockSyncedAt = 0;
 
 -(void)queryVitalityTaskList {
     [self queryVitalityTaskListWithForce:NO];
@@ -2153,7 +2156,11 @@ static NSTimeInterval gRewardWaitLogAt = 0;
         if (self.enableAutoRewardTasks && !bridge) {
             // 进等待态只报一次，之后最多 30 分钟一条；桥接可用即复位（下次失去桥接立刻再报）
             NSTimeInterval nowWait = [[NSDate date] timeIntervalSince1970];
-            if (gRewardWaitLogAt == 0 || nowWait - gRewardWaitLogAt > 1800) {
+            // v3.3.10：启动宽限——进程起来后 120 秒内页面通常还没加载完（实测庄园页 3~6 秒就绑上），
+            // 此窗口内的「暂无桥接」是误报，不提示也不占用节流额度；超时仍无桥接才提示
+            if (gProcStartAt <= 0) gProcStartAt = nowWait;
+            BOOL inStartupGrace = (nowWait - gProcStartAt < 120.0);
+            if (!inStartupGrace && (gRewardWaitLogAt == 0 || nowWait - gRewardWaitLogAt > 1800)) {
                 gRewardWaitLogAt = nowWait;
                 [self recordStage:@"首页后台：暂无领奖励任务桥接（进一次蚂蚁森林首页即可绑定 H5 会话，绑定后自动接管领奖励与森林寻宝）"];
             }
@@ -5239,15 +5246,22 @@ static void manorClaimMarkReply(NSString *taskId) {
         // 带背包存量/上限——一眼对账「是不是仓位满了导致不领」
         NSInteger diagStock = self.lastManorFoodStock;
         NSInteger diagLimit = self.lastManorFoodStockLimit > 0 ? self.lastManorFoodStockLimit : 1800;
-        manorDiag = [NSString stringWithFormat:@"%@ · 背包 %ldg/%ldg%@", manorDiag, (long)diagStock, (long)diagLimit,
-                     (diagStock + 180 > diagLimit) ? @"（已近上限，领奖会挂起等腾空后补领）" : @""];
+        NSString *manorDiagCore = [NSString stringWithFormat:@"%@ · 背包 %ldg/%ldg%@", manorDiag, (long)diagStock, (long)diagLimit,
+                                   (diagStock + 180 > diagLimit) ? @"（已近上限，领奖会挂起等腾空后补领）" : @""];
         static NSString *lastManorDiagLine = nil;
         static NSString *lastManorDiagDay = nil;
         NSString *diagDay = getCurrentDateString();
-        if (![manorDiag isEqualToString:lastManorDiagLine] || ![diagDay isEqualToString:lastManorDiagDay]) {
-            lastManorDiagLine = [manorDiag copy];
+        // 去重只看核心文本（背包新鲜度时间戳会变，不能进签名，否则每轮都会重打）
+        if (![manorDiagCore isEqualToString:lastManorDiagLine] || ![diagDay isEqualToString:lastManorDiagDay]) {
+            lastManorDiagLine = [manorDiagCore copy];
             lastManorDiagDay = [diagDay copy];
-            [self recordStage:manorDiag];
+            NSString *stockFresh = @"";
+            if (gManorFoodStockSyncedAt > 0) {
+                static NSDateFormatter *diagTimeFmt = nil;
+                if (!diagTimeFmt) { diagTimeFmt = [[NSDateFormatter alloc] init]; diagTimeFmt.dateFormat = @"HH:mm:ss"; }
+                stockFresh = [NSString stringWithFormat:@"（状态包同步于 %@）", [diagTimeFmt stringFromDate:[NSDate dateWithTimeIntervalSince1970:gManorFoodStockSyncedAt]]];
+            }
+            [self recordStage:[manorDiagCore stringByAppendingString:stockFresh]];
         }
     }
 
@@ -8663,6 +8677,7 @@ static void manorScheduleFeedWake(AntForestManager *mgr, NSInteger countdown) {
             if (stockFromPacket) {
                 self.lastManorFoodStock = foodStock;
                 gManorFoodStockKnown = YES;
+                gManorFoodStockSyncedAt = [[NSDate date] timeIntervalSince1970];   // v3.3.10：标注诊断行背包值的新鲜度
             } else if (gManorFoodStockKnown) {
                 foodStock = self.lastManorFoodStock;
             }
@@ -8844,15 +8859,27 @@ static void manorScheduleFeedWake(AntForestManager *mgr, NSInteger countdown) {
         
         // E. 领饲料奖励回包处理 (receiveFarmTaskAward)
         NSString *opType = [NSString stringWithFormat:@"%@", dict[@"operationType"] ?: (resData[@"operationType"] ?: (self.lastRpcOperationType ?: @""))];
-        if (!gManorFamilySignPending && (resData[@"haveAddFoodStock"] || [opType containsString:@"receiveFarmTaskAward"])) {
+        // v3.3.10：家庭签到在途时不再整段吞掉（原来这一支直接跳过 → 领奖回包到了也没有任何日志）
+        BOOL manorClaimReplySeen = (resData[@"haveAddFoodStock"] != nil || dict[@"haveAddFoodStock"] != nil ||
+                                    [opType containsString:@"receiveFarmTaskAward"]);
+        if (manorClaimReplySeen) {
             NSInteger addFood = [resData[@"haveAddFoodStock"] integerValue];
             NSInteger curFood = [resData[@"foodStock"] integerValue];
+            BOOL memoSuccess = ([resData[@"memo"] isEqualToString:@"SUCCESS"] || [dict[@"memo"] isEqualToString:@"SUCCESS"]);
+            NSString *holdNote = gManorFamilySignPending ? @"（家庭签到在途：只记不吞，不据此改背包存量）" : @"";
             if (addFood > 0) {
-                if (curFood > 0) self.lastManorFoodStock = curFood;
-                [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：成功领取饲料 +%ldg（背包存量 %ldg）", (long)addFood, (long)(curFood > 0 ? curFood : self.lastManorFoodStock)]];
-            } else if ([resData[@"memo"] isEqualToString:@"SUCCESS"] || [dict[@"memo"] isEqualToString:@"SUCCESS"]) {
-                if (curFood > 0) self.lastManorFoodStock = curFood;
-                [self recordStage:@"蚂蚁庄园：成功领取饲料奖励"];
+                if (!gManorFamilySignPending && curFood > 0) self.lastManorFoodStock = curFood;
+                [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：成功领取饲料 +%ldg（背包存量 %ldg）%@", (long)addFood, (long)(curFood > 0 ? curFood : self.lastManorFoodStock), holdNote]];
+            } else if (memoSuccess) {
+                if (!gManorFamilySignPending && curFood > 0) self.lastManorFoodStock = curFood;
+                [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：成功领取饲料奖励%@", holdNote]];
+            } else {
+                // v3.3.10：兜底留痕——原来 addFood=0 且 memo≠SUCCESS 时完全静默（回包到了看不见）
+                [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园 · 领奖回包：haveAddFoodStock=%@ foodStock=%@ memo=%@ · 顶层键=%@",
+                                   resData[@"haveAddFoodStock"] ?: dict[@"haveAddFoodStock"] ?: @"(无)",
+                                   resData[@"foodStock"] ?: dict[@"foodStock"] ?: @"(无)",
+                                   (resData[@"memo"] ?: dict[@"memo"]) ?: @"(无)",
+                                   [[dict allKeys] componentsJoinedByString:@","]]];
             }
         }
         
