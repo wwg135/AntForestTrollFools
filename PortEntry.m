@@ -18,12 +18,15 @@ static id findWebViewInController(id controller);
 static BOOL hookMethod(Class cls, SEL selector, IMP replacement, IMP *original);
 static void tryAutoCollectWaterGift(void);
 static void reportWaterGiftTapResult(void);
+static void refreshTabBarFinance(void);
+static BOOL hideFinanceEnabled(void);
 
 static void portInstallMarker(id self, SEL _cmd) {}
 static NSInteger const AntForestButtonTag = 941204;
 static NSString * const AntForestButtonXKey = @"AntForestButtonX";
 static NSString * const AntForestButtonYKey = @"AntForestButtonY";
 static NSString * const AntForestButtonSideKey = @"AntForestButtonSide";
+static NSString * const AntForestHideFinanceKey = @"antforest_hideFinance";
 static const void *AntForestButtonCollapsedKey = &AntForestButtonCollapsedKey;
 static const void *AntForestButtonCollapseTokenKey = &AntForestButtonCollapseTokenKey;
 static const void *ForestHomeStartKey = &ForestHomeStartKey;
@@ -202,6 +205,10 @@ static void finishForestHomeStart(id controller, id bridge) {
     manager.jsBridge = bridge;
     objc_setAssociatedObject(controller, ForestHomeStartKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     [manager recordStage:@"收取 · 森林首页 H5 Bridge 已就绪"];
+    // v3.3.0：森林首页桥一就绪 → 8 秒后尝试后台拉取寻宝任务与抽奖（不进寻宝页面的「路 A」；30 分钟节流、被拒即停当日）
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [manager forestDrawBackgroundProbe];
+    });
     startSilentRewardContext(controller);
     if (manager.enableWaterOnLaunch) [manager startLaunchWateringThenCollect];
     else if (manager.enableAutoCollect) {
@@ -1328,7 +1335,7 @@ static void installEarnEnergyCollector(id controller) {
     UISwitch *oceanSwitch = [[UISwitch alloc] init]; oceanSwitch.on = AntForestManager.sharedInstance.enableCleanOcean; oceanSwitch.translatesAutoresizingMaskIntoConstraints = NO; [oceanSwitch addTarget:self action:@selector(toggleCleanOcean:) forControlEvents:UIControlEventValueChanged]; [ocean addSubview:oceanSwitch];
     UIButton *oceanTasks = [self settingsButtonWithTitle:@"神奇海洋（自动任务）" detail:@"自动完成海洋日常任务与拼图领奖" icon:@"sparkles.rectangle.stack.fill" action:nil];
     UISwitch *oceanTasksSwitch = [[UISwitch alloc] init]; oceanTasksSwitch.on = AntForestManager.sharedInstance.enableAutoOceanTasks; oceanTasksSwitch.translatesAutoresizingMaskIntoConstraints = NO; [oceanTasksSwitch addTarget:self action:@selector(toggleAutoOceanTasks:) forControlEvents:UIControlEventValueChanged]; [oceanTasks addSubview:oceanTasksSwitch];
-    UIButton *reward = [self settingsButtonWithTitle:@"领奖励 & 森林寻宝" detail:@"自动浏览任务、奖励领取、森林寻宝需手动进入才能触发自动浏览任务。" icon:@"gift.fill" action:nil];
+    UIButton *reward = [self settingsButtonWithTitle:@"领奖励 & 森林寻宝" detail:@"自动浏览任务、奖励领取；森林寻宝自动做任务并把当天机会一次性连抽（后台尝试，失败自动熔断）" icon:@"gift.fill" action:nil];
     UISwitch *rewardSwitch = [[UISwitch alloc] init]; rewardSwitch.on = AntForestManager.sharedInstance.enableAutoRewardTasks; rewardSwitch.translatesAutoresizingMaskIntoConstraints = NO; [rewardSwitch addTarget:self action:@selector(toggleAutoRewardTasks:) forControlEvents:UIControlEventValueChanged]; [reward addSubview:rewardSwitch];
     
     UIButton *aiFish = [self settingsButtonWithTitle:@"AI摸鱼（任务与机会）" detail:@"手动进入AI摸鱼自动完成奖励任务并领取" icon:@"fish.fill" action:nil];
@@ -1343,7 +1350,10 @@ static void installEarnEnergyCollector(id controller) {
     UIButton *patrolNew = [self settingsButtonWithTitle:@"新版保护地（大富翁）" detail:@"手动进入保护地后自动完成更多巡护步数任务" icon:@"dice.fill" action:nil];
     UISwitch *patrolNewSwitch = [[UISwitch alloc] init]; patrolNewSwitch.on = AntForestManager.sharedInstance.enableAutoPatrolNew; patrolNewSwitch.translatesAutoresizingMaskIntoConstraints = NO; [patrolNewSwitch addTarget:self action:@selector(toggleAutoPatrolNew:) forControlEvents:UIControlEventValueChanged]; [patrolNew addSubview:patrolNewSwitch];
     
-    [contentView addSubview:schedule]; [contentView addSubview:step]; [contentView addSubview:water]; [contentView addSubview:revive]; [contentView addSubview:earn]; [contentView addSubview:ocean]; [contentView addSubview:oceanTasks]; [contentView addSubview:reward]; [contentView addSubview:aiFish]; [contentView addSubview:farmTasks]; [contentView addSubview:manorTasks]; [contentView addSubview:patrolNew];
+    UIButton *hideFinance = [self settingsButtonWithTitle:@"隐藏理财" detail:@"隐藏支付宝底栏理财" icon:@"eye.slash.fill" action:nil];
+    UISwitch *hideFinanceSwitch = [[UISwitch alloc] init]; hideFinanceSwitch.on = hideFinanceEnabled(); hideFinanceSwitch.translatesAutoresizingMaskIntoConstraints = NO; [hideFinanceSwitch addTarget:self action:@selector(toggleHideFinance:) forControlEvents:UIControlEventValueChanged]; [hideFinance addSubview:hideFinanceSwitch];
+    
+    [contentView addSubview:schedule]; [contentView addSubview:step]; [contentView addSubview:water]; [contentView addSubview:revive]; [contentView addSubview:earn]; [contentView addSubview:ocean]; [contentView addSubview:oceanTasks]; [contentView addSubview:reward]; [contentView addSubview:aiFish]; [contentView addSubview:farmTasks]; [contentView addSubview:manorTasks]; [contentView addSubview:patrolNew]; [contentView addSubview:hideFinance];
     [NSLayoutConstraint activateConstraints:@[
         [contentView.topAnchor constraintEqualToAnchor:scrollView.contentLayoutGuide.topAnchor],
         [contentView.leadingAnchor constraintEqualToAnchor:scrollView.contentLayoutGuide.leadingAnchor],
@@ -1363,7 +1373,8 @@ static void installEarnEnergyCollector(id controller) {
         [farmTasks.topAnchor constraintEqualToAnchor:aiFish.bottomAnchor constant:12], [farmTasks.leadingAnchor constraintEqualToAnchor:schedule.leadingAnchor], [farmTasks.trailingAnchor constraintEqualToAnchor:schedule.trailingAnchor], [farmTasks.heightAnchor constraintEqualToConstant:70],
         [manorTasks.topAnchor constraintEqualToAnchor:farmTasks.bottomAnchor constant:12], [manorTasks.leadingAnchor constraintEqualToAnchor:schedule.leadingAnchor], [manorTasks.trailingAnchor constraintEqualToAnchor:schedule.trailingAnchor], [manorTasks.heightAnchor constraintEqualToConstant:70],
         [patrolNew.topAnchor constraintEqualToAnchor:manorTasks.bottomAnchor constant:12], [patrolNew.leadingAnchor constraintEqualToAnchor:schedule.leadingAnchor], [patrolNew.trailingAnchor constraintEqualToAnchor:schedule.trailingAnchor], [patrolNew.heightAnchor constraintEqualToConstant:70],
-        [patrolNew.bottomAnchor constraintEqualToAnchor:contentView.bottomAnchor constant:-24],
+        [hideFinance.topAnchor constraintEqualToAnchor:patrolNew.bottomAnchor constant:12], [hideFinance.leadingAnchor constraintEqualToAnchor:schedule.leadingAnchor], [hideFinance.trailingAnchor constraintEqualToAnchor:schedule.trailingAnchor], [hideFinance.heightAnchor constraintEqualToConstant:70],
+        [hideFinance.bottomAnchor constraintEqualToAnchor:contentView.bottomAnchor constant:-24],
         
         [reviveSwitch.trailingAnchor constraintEqualToAnchor:revive.trailingAnchor constant:-18], [reviveSwitch.centerYAnchor constraintEqualToAnchor:revive.centerYAnchor],
         [earnSwitch.trailingAnchor constraintEqualToAnchor:earn.trailingAnchor constant:-18], [earnSwitch.centerYAnchor constraintEqualToAnchor:earn.centerYAnchor],
@@ -1374,6 +1385,7 @@ static void installEarnEnergyCollector(id controller) {
         [farmTasksSwitch.trailingAnchor constraintEqualToAnchor:farmTasks.trailingAnchor constant:-18], [farmTasksSwitch.centerYAnchor constraintEqualToAnchor:farmTasks.centerYAnchor],
         [manorTasksSwitch.trailingAnchor constraintEqualToAnchor:manorTasks.trailingAnchor constant:-18], [manorTasksSwitch.centerYAnchor constraintEqualToAnchor:manorTasks.centerYAnchor],
         [patrolNewSwitch.trailingAnchor constraintEqualToAnchor:patrolNew.trailingAnchor constant:-18], [patrolNewSwitch.centerYAnchor constraintEqualToAnchor:patrolNew.centerYAnchor],
+        [hideFinanceSwitch.trailingAnchor constraintEqualToAnchor:hideFinance.trailingAnchor constant:-18], [hideFinanceSwitch.centerYAnchor constraintEqualToAnchor:hideFinance.centerYAnchor],
     ]];
 }
 
@@ -1410,6 +1422,7 @@ static void installEarnEnergyCollector(id controller) {
 - (void)toggleAutoFarmTasks:(UISwitch *)sender { AntForestManager.sharedInstance.enableAutoFarmTasks = sender.on; [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"enableAutoFarmTasks"]; [AntForestManager.sharedInstance recordStage:[NSString stringWithFormat:@"芭芭农场 · 做任务集肥料已%@", sender.on ? @"开启" : @"关闭"]]; }
 - (void)toggleAutoManor:(UISwitch *)sender { AntForestManager.sharedInstance.enableAutoManor = sender.on; [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"enableAutoManor"]; [AntForestManager.sharedInstance recordStage:[NSString stringWithFormat:@"蚂蚁庄园 · 功能已%@", sender.on ? @"开启" : @"关闭"]]; }
 - (void)toggleAutoPatrolNew:(UISwitch *)sender { AntForestManager.sharedInstance.enableAutoPatrolNew = sender.on; [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"enableAutoPatrolNew"]; [AntForestManager.sharedInstance recordStage:[NSString stringWithFormat:@"新版保护地（大富翁） · 功能已%@", sender.on ? @"开启" : @"关闭"]]; }
+- (void)toggleHideFinance:(UISwitch *)sender { [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:AntForestHideFinanceKey]; refreshTabBarFinance(); }
 - (void)close { [self dismissViewControllerAnimated:YES completion:nil]; }
 
 @end
@@ -1590,7 +1603,7 @@ static void installEarnEnergyCollector(id controller) {
 
     [self.view addSubview:grabber];
     UILabel *versionLabel = [[UILabel alloc] init];
-    versionLabel.text = @"当前版本：v3.1 正式版";
+    versionLabel.text = @"当前版本：v3.4.8-probe";
     versionLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightRegular];
     versionLabel.textColor = [UIColor systemGray2Color];
     versionLabel.textAlignment = NSTextAlignmentCenter;
@@ -2268,6 +2281,10 @@ static void portViewDidAppear(id self, SEL _cmd, BOOL animated) {
         }
         NSLog(@"[AntForestPort] 🎰 进入森林寻宝，已就绪 Bridge: %@", bridge);
         [manager recordStage:@"森林寻宝：进入寻宝界面，已就绪 Bridge，开始拉取寻宝任务与抽奖机会..."];
+        // v3.2.8：页面进来 35 秒后兜底扫一轮抽奖（任务批次收尾也会触发，此处防漏）
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(35.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [manager forestDrawSweepAfterTaskBatch:@"ANTFOREST_NORMAL_DRAW_TASK"];
+        });
         NSArray<NSNumber *> *delays = @[@400, @1200, @2500];
         for (NSNumber *d in delays) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)([d integerValue] * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
@@ -2652,6 +2669,98 @@ static BOOL hookMethod(Class cls, SEL selector, IMP replacement, IMP *original) 
     return YES;
 }
 
+static UIViewController *gFinanceStashVC = nil;
+
+static BOOL hideFinanceEnabled(void) {
+    return [[NSUserDefaults standardUserDefaults] boolForKey:AntForestHideFinanceKey];
+}
+
+static UITabBarController *findTabBarVC(UIViewController *vc) {
+    if (!vc) return nil;
+    if ([vc isKindOfClass:UITabBarController.class]) return (UITabBarController *)vc;
+    for (UIViewController *child in vc.childViewControllers) {
+        UITabBarController *found = findTabBarVC(child);
+        if (found) return found;
+    }
+    return nil;
+}
+
+static UITabBarController *rootTabBarVC(void) {
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if (![scene isKindOfClass:UIWindowScene.class]) continue;
+        for (UIWindow *window in ((UIWindowScene *)scene).windows) {
+            if (!window.rootViewController) continue;
+            UITabBarController *found = findTabBarVC(window.rootViewController);
+            if (found) return found;
+        }
+    }
+    return nil;
+}
+
+static void removeFinanceTabsFromTBC(UITabBarController *tbc) {
+    if (!tbc || gFinanceStashVC) return;
+    NSArray *controllers = tbc.viewControllers;
+    if (!controllers || controllers.count < 4) return;
+    NSUInteger financeIndex = NSNotFound;
+    for (NSUInteger i = 0; i < controllers.count; i++) {
+        if ([((UIViewController *)controllers[i]).tabBarItem.title isEqualToString:@"理财"]) { financeIndex = i; break; }
+    }
+    if (financeIndex == NSNotFound) financeIndex = 1;
+    if (financeIndex >= controllers.count) return;
+    gFinanceStashVC = controllers[financeIndex];
+    NSMutableArray *remaining = [NSMutableArray arrayWithArray:controllers];
+    [remaining removeObjectAtIndex:financeIndex];
+    @try {
+        [tbc setViewControllers:remaining animated:NO];
+        if (tbc.selectedIndex >= financeIndex) tbc.selectedIndex = tbc.selectedIndex - 1;
+    } @catch (NSException *e) {
+        gFinanceStashVC = nil;
+    }
+}
+
+static void restoreFinanceTabsFromTBC(UITabBarController *tbc) {
+    if (!tbc || !gFinanceStashVC) return;
+    NSMutableArray *controllers = [NSMutableArray arrayWithArray:tbc.viewControllers];
+    if ([controllers containsObject:gFinanceStashVC]) { gFinanceStashVC = nil; return; }
+    NSUInteger insertIndex = 1;
+    for (NSUInteger i = 0; i < controllers.count; i++) {
+        if ([((UIViewController *)controllers[i]).tabBarItem.title isEqualToString:@"消息"]) { insertIndex = i; break; }
+    }
+    UIViewController *stash = gFinanceStashVC;
+    gFinanceStashVC = nil;
+    [controllers insertObject:stash atIndex:MIN(insertIndex, controllers.count)];
+    @try {
+        [tbc setViewControllers:controllers animated:NO];
+        if (tbc.selectedIndex >= insertIndex) tbc.selectedIndex = tbc.selectedIndex + 1;
+    } @catch (NSException *e) {
+    }
+}
+
+static void removeFinanceTab(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{ removeFinanceTabsFromTBC(rootTabBarVC()); });
+}
+
+static void restoreFinanceTab(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{ restoreFinanceTabsFromTBC(rootTabBarVC()); });
+}
+
+static void refreshTabBarFinance(void) {
+    if (hideFinanceEnabled()) {
+        removeFinanceTab();
+    } else {
+        restoreFinanceTab();
+    }
+}
+
+static void (*originalTabBarLayoutSubviews)(UITabBar *self, SEL _cmd);
+static void portTabBarLayoutSubviews(UITabBar *self, SEL _cmd) {
+    if (originalTabBarLayoutSubviews) originalTabBarLayoutSubviews(self, _cmd);
+    if (!hideFinanceEnabled() || gFinanceStashVC) return;
+    UIResponder *responder = ((UIView *)self).nextResponder;
+    while (responder && ![responder isKindOfClass:UITabBarController.class]) responder = responder.nextResponder;
+    if (responder) removeFinanceTabsFromTBC((UITabBarController *)responder);
+}
+
 static void (*originalDTViewDidAppear)(UIViewController *self, SEL _cmd, BOOL animated);
 static void portDTViewDidAppear(UIViewController *self, SEL _cmd, BOOL animated) {
     if (originalDTViewDidAppear) originalDTViewDidAppear(self, _cmd, animated);
@@ -2673,6 +2782,7 @@ static void installHooks(void) {
         [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *notification) {
             shouldRevealLeafOnNextForestAppearance = YES;
             [[AFStepSimulator shared] installAvailableHooks];
+            if (hideFinanceEnabled()) removeFinanceTab();
         }];
         [[AFStepSimulator shared] installAvailableHooks];
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [[AFStepSimulator shared] installAvailableHooks]; });
@@ -2687,6 +2797,11 @@ static void installHooks(void) {
         if (dtController) {
             class_addMethod(dtController, @selector(antforestHandlePan:), (IMP)handleButtonPan, "v@:@");
             hookMethod(dtController, @selector(viewDidAppear:), (IMP)portDTViewDidAppear, (IMP *)&originalDTViewDidAppear);
+        }
+        
+        Class tabBarClass = NSClassFromString(@"UITabBar");
+        if (tabBarClass) {
+            hookMethod(tabBarClass, @selector(layoutSubviews), (IMP)portTabBarLayoutSubviews, (IMP *)&originalTabBarLayoutSubviews);
         }
         
         Class psdClass = NSClassFromString(@"PSDJsBridge");
