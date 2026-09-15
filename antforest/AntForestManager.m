@@ -6107,20 +6107,78 @@ static NSString * const kManorSleepDoneDateKey = @"antforest_manor_sleep_date";
 // 家庭组 ID（rpc31 抓包实证，与 AntManor 同一账号）
 static NSString * const kManorFamilyGroupId    = @"0372620009220250119202832812";
 
-// 每天 20:00 之后才送小鸡回别墅睡觉
-static BOOL isManorSleepTime(void) {
-    NSDateComponents *comp = [[NSCalendar currentCalendar] components:NSCalendarUnitHour fromDate:[NSDate date]];
-    return comp.hour >= 20;
+// 睡觉窗口 20:00–次日 06:00（服务端 sleepBeginTime/sleepEndTime 抓包实测同口径）
+static const NSInteger kManorSleepWindowStartHour = 20;
+static const NSInteger kManorSleepWindowEndHour = 6;
+static const NSTimeInterval kManorSleepRetryCooldown = 300.0;   // 被拒后 5 分钟重试（有 canSleep 权威判据，不必再盲等 30 分钟）
+static const NSTimeInterval kManorSleepForceGap = 60.0;         // canSleep=true 时强制送睡的最小间隔，防请求风暴
+
+// 服务端睡觉许可（sleepNotifyInfo.canSleep）：0=本会话还没收到 / 1=可以睡 / -1=不可以睡（进食/外出）
+static NSInteger gManorCanSleepState = 0;
+
+static NSInteger manorCurrentHour(void) {
+    return [[NSCalendar currentCalendar] components:NSCalendarUnitHour fromDate:[NSDate date]].hour;
 }
 
-// 当天是否已睡过（落盘，跨启动有效，避免夜里反复重发）
+// 窗口判定：跨零点区间都算（20:00–次日 06:00）——旧写法只判 hour>=20，凌晨 0–5 点整段被漏掉
+static BOOL isManorSleepTime(void) {
+    NSInteger hour = manorCurrentHour();
+    return (hour >= kManorSleepWindowStartHour || hour < kManorSleepWindowEndHour);
+}
+
+// 「夜」的键：20:00–次日 06:00 算同一夜——凌晨取前一天日期，避免跨零点被当成两夜
+// （否则 0 点后那次重复送睡会把「新的一天」提前标记，导致次日晚上不送睡）
+static NSString *manorSleepNightKey(void) {
+    if (manorCurrentHour() >= kManorSleepWindowEndHour) return getCurrentDateString();
+    NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
+    fmt.dateFormat = @"yyyy-MM-dd";
+    return [fmt stringFromDate:[[NSDate date] dateByAddingTimeInterval:-24 * 3600]];
+}
+
+// 今/今夜是否已睡过（落盘，跨启动有效，避免夜里反复重发）
 static BOOL isManorSleepDoneToday(void) {
     NSString *last = [[NSUserDefaults standardUserDefaults] stringForKey:kManorSleepDoneDateKey];
-    return [last isEqualToString:getCurrentDateString()];
+    return [last isEqualToString:manorSleepNightKey()];
 }
 
 static void markManorSleepDone(void) {
-    [[NSUserDefaults standardUserDefaults] setObject:getCurrentDateString() forKey:kManorSleepDoneDateKey];
+    [[NSUserDefaults standardUserDefaults] setObject:manorSleepNightKey() forKey:kManorSleepDoneDateKey];
+}
+
+// 20:00 边界单次定时（对齐 AntManor v15 scheduleManorSleepAt20）：到点主动拉一次状态，
+// 由状态包驱动体检链去送睡——单次定时非轮询，无发热风险
+static NSInteger gManorSleepAt20Seq = 0;
+static NSTimeInterval gManorSleepAt20FireAt = 0;
+
+static NSTimeInterval manorSecondsUntilNext20(void) {
+    NSCalendar *cal = [NSCalendar currentCalendar];
+    NSDate *now = [NSDate date];
+    NSDateComponents *comp = [cal components:(NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay) fromDate:now];
+    comp.hour = kManorSleepWindowStartHour;
+    comp.minute = 0;
+    comp.second = 0;
+    NSDate *target = [cal dateFromComponents:comp];
+    NSTimeInterval delta = [target timeIntervalSinceDate:now];
+    if (delta <= 0) delta += 24 * 3600;
+    return delta;
+}
+
+static void manorScheduleSleepAt20(AntForestManager *mgr) {
+    if (!mgr) return;
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    NSTimeInterval fireAt = now + manorSecondsUntilNext20() + 1.0;
+    if (gManorSleepAt20FireAt > 0 && (fireAt - gManorSleepAt20FireAt) < 60.0) return;   // 今天这个 20:00 已排程
+    gManorSleepAt20FireAt = fireAt;
+    NSInteger seq = ++gManorSleepAt20Seq;
+    NSTimeInterval delay = fireAt - now;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (seq != gManorSleepAt20Seq) return;
+        gManorSleepAt20FireAt = 0;
+        if (!mgr.enableAutoManor) return;
+        [mgr recordStage:@"蚂蚁庄园：到 20:00 睡觉时间了，主动刷新状态送小鸡回别墅..."];
+        [mgr enterManorFarm];
+        manorScheduleSleepAt20(mgr);   // 预约下一夜
+    });
 }
 
 // v3.1.5：零点窗口补跑当日去重（对齐官方 3.2 beta lastManorSignDate 思路，跨启动有效）
@@ -6138,23 +6196,31 @@ static void markManorMidnightSweepDoneToday(void) {
 - (void)sleepManorChicken {
     if (!self.enableAutoManor) return;
     if (!isManorSleepTime()) {
-        [self recordStage:@"蚂蚁庄园：还没到 20:00，小鸡先在外面玩"];
+        recordEggDiagOnce(self, @"sleep_wait", @"蚂蚁庄园：还没到 20:00（睡觉窗口 20:00–次日 6:00），小鸡先在外面玩");
         return;
     }
-    if (isManorSleepDoneToday()) return;  // 当日已睡，静默跳过
+    if (isManorSleepDoneToday()) return;  // 今夜已睡，静默跳过
 
-    // 失败重试节流：同一晚每 30 分钟最多一次（小鸡外出或正在进食时服务端会拒）
+    // 服务端权威判据：canSleep=false（小鸡在进食/外出）时不盲发——白烧 enterFamily+sleep 两个请求
+    if (gManorCanSleepState == -1) {
+        recordEggDiagOnce(self, @"sleep_server_no", @"蚂蚁庄园：服务端暂时不允许睡觉（小鸡在进食/外出），稍后自动重试");
+        return;
+    }
+
+    // 重试冷却：只有服务端明说能睡（canSleep=true）才允许绕过 5 分钟冷却，但至少间隔 60 秒防风暴
+    BOOL serverSaysCanSleep = (gManorCanSleepState == 1);
+    NSTimeInterval minGap = serverSaysCanSleep ? kManorSleepForceGap : kManorSleepRetryCooldown;
     static NSTimeInterval lastSleepAttempt = 0;
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-    if (lastSleepAttempt > 0 && now - lastSleepAttempt < 1800) {
-        [self recordStage:@"蚂蚁庄园：睡觉重试冷却中（每 30 分钟一次）"];
+    if (lastSleepAttempt > 0 && now - lastSleepAttempt < minGap) {
+        recordEggDiagOnce(self, @"sleep_cool", @"蚂蚁庄园：睡觉重试冷却中，稍后自动重试");
         return;
     }
     lastSleepAttempt = now;
 
     PSDJsBridge *bridge = (self.manorBridge && self.manorBridge != self.jsBridge) ? self.manorBridge : nil;
     if (!bridge) {
-        [self recordStage:@"蚂蚁庄园：睡觉跳过（庄园桥接未就绪）"];
+        recordEggDiagOnce(self, @"sleep_bridge", @"蚂蚁庄园：睡觉跳过（庄园桥接未就绪）");
         return;
     }
 
@@ -6207,7 +6273,7 @@ static void markManorFamilySignDone(void) {
 
     PSDJsBridge *bridge = (self.manorBridge && self.manorBridge != self.jsBridge) ? self.manorBridge : nil;
     if (!bridge) {
-        [self recordStage:@"蚂蚁庄园：家庭签到跳过（庄园桥接未就绪）"];
+        recordEggDiagOnce(self, @"familysign_bridge", @"蚂蚁庄园：家庭签到跳过（庄园桥接未就绪）");
         return;
     }
     // 防重入 + 失败重试节流：链外补跑时 30 分钟内最多发一次
@@ -6315,7 +6381,8 @@ static NSTimeInterval gLastManorCheckTime = 0;
         [self queryManorFarmTasks];
     });
 
-    // 6. 夜间睡觉（每天 20:00 后送小鸡回家庭别墅，当天只睡一次）
+    // 6. 夜间睡觉（窗口 20:00–次日 6:00 任意时候都可睡，每夜只睡一次）
+    manorScheduleSleepAt20(self);   // 到 20:00 边界主动拉状态，不依赖页面回包
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5200 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
         if (!isManorSleepDoneToday()) [self sleepManorChicken];
     });
@@ -7474,6 +7541,11 @@ static void manorScheduleFeedWake(AntForestManager *mgr, NSInteger countdown) {
         // 库存识别：菜谱条目（cuisineList）+ 零食包（foodInfos）同时学
         [self learnManorCuisineStockFromObject:dict];
         [self learnManorSnackStockFromObject:dict];
+        // 睡觉许可（服务端权威）：sleepNotifyInfo.canSleep —— 窗口内 false 表示小鸡在进食/外出，送睡必被拒
+        NSDictionary *sleepNotify = [resData[@"sleepNotifyInfo"] isKindOfClass:NSDictionary.class] ? resData[@"sleepNotifyInfo"] : ([dict[@"sleepNotifyInfo"] isKindOfClass:NSDictionary.class] ? dict[@"sleepNotifyInfo"] : nil);
+        if (sleepNotify[@"canSleep"] != nil) {
+            gManorCanSleepState = [sleepNotify[@"canSleep"] boolValue] ? 1 : -1;
+        }
         
         
         // A. 小鸡与饭盆状态检测 (subFarmVO / farmVO.subFarmVO / ownAnimal)
