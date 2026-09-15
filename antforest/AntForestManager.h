@@ -181,6 +181,8 @@ NS_ASSUME_NONNULL_BEGIN
 -(void)recordCollectedEnergyFromResponse:(id)args;
 -(NSString*)getUserName:(NSString*)uid;
 -(void)addLog:(NSString *)logMessage;
+- (void)forestDrawSweepAfterTaskBatch:(NSString *)taskScene;   // v3.2.8 森林寻宝：查机会并把当天机会一次连抽
+- (void)forestDrawBackgroundProbe;                              // v3.2.8 森林寻宝：不进寻宝页面的后台尝试（10 分钟节流）
 -(void)recordStage:(NSString *)stage;
 -(void)recordProbeLog:(NSString *)log;
 -(void)clearProbeLogs;

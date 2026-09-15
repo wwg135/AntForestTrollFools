@@ -57,6 +57,21 @@ static id gManorHeldBridge = nil;
 static NSMutableDictionary<NSString *, NSNumber *> *gManorDrawFailCounts = nil;
 static NSMutableSet<NSString *> *gManorDrawFailedTasks = nil;
 
+// v3.2.8：森林寻宝（服务端名「森林抽抽乐」）自动抽奖 —— 方法前置声明（实现见文件后部同名 section）
+@interface AntForestManager (ForestTreasureDraw)
+- (PSDJsBridge *)forestDrawBridge;
+- (NSString *)forestDrawUrlForScene:(NSString *)scene bridge:(PSDJsBridge *)bridge;
+- (void)forestDrawBackgroundProbe;
+- (void)forestDrawSweepAfterTaskBatch:(NSString *)taskScene;
+- (void)forestDrawStepNext;
+- (void)forestDrawAdvanceScene;
+- (void)forestDrawArmTimeout;
+- (void)forestDrawQueryChancesForScene:(NSString *)scene force:(BOOL)force;
+- (void)forestDrawSendBatchForScene:(NSString *)scene times:(NSInteger)times;
+- (void)forestDrawNoteReject:(NSString *)scene;
+- (void)forestDrawHandleResponse:(NSString *)opType resData:(NSDictionary *)resData;
+@end
+
 @implementation AntForestManager
 
 static AntForestManager *afm = nil;
@@ -2022,6 +2037,10 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
 - (void)registerBridge:(id)bridge withUrl:(NSString *)url {
     if (!bridge) return;
     self.jsBridge = bridge;
+    // v3.2.8：桥一就绪就尝试后台拉一次寻宝任务与抽奖（不进寻宝页面的「路 A」实测；10 分钟节流）
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [self forestDrawBackgroundProbe];
+    });
     
     NSString *effectiveUrl = url.length ? url : [self effectiveUrlForBridge:bridge];
     NSString *lowerUrl = effectiveUrl.lowercaseString;
@@ -2617,6 +2636,10 @@ static NSInteger sVitalityAutoRefreshRounds = 0;
                             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                                 [self queryLotteryTaskListWithForce:YES];
                                 [self notifyActiveH5PageToRefresh];
+                            });
+                            // v3.2.8：任务批次收尾 → 查机会并把当天机会一次性连抽掉（用户口径：无阈值、不跨天）
+                            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                                [self forestDrawSweepAfterTaskBatch:@"ANTFOREST_NORMAL_DRAW_TASK"];
                             });
                         }
                         if ([executedScenes containsObject:@"VITALITY"] || !executedScenes.count) {
@@ -3216,6 +3239,8 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
         NSString *resDesc = [NSString stringWithFormat:@"%@", data[@"desc"] ?: (data[@"resultDesc"] ?: @"")];
         NSString *errMsg = [NSString stringWithFormat:@"%@", data[@"errorMessage"] ?: @""];
         NSString *opType = [NSString stringWithFormat:@"%@", (args[@"operationType"] ?: data[@"operationType"]) ?: @""];
+        // v3.2.8：森林寻宝抽奖族回包（drawSync / batchDraw / enterDrawGroup）解析机会数与奖品
+        [self forestDrawHandleResponse:opType resData:data];
         NSDictionary *finishVO = [data[@"finishAwardResultVO"] isKindOfClass:NSDictionary.class] ? data[@"finishAwardResultVO"] : ([data[@"finishVO"] isKindOfClass:NSDictionary.class] ? data[@"finishVO"] : nil);
         NSDictionary *receiveVO = [data[@"receiveAwardResultVO"] isKindOfClass:NSDictionary.class] ? data[@"receiveAwardResultVO"] : ([data[@"awardResultVO"] isKindOfClass:NSDictionary.class] ? data[@"awardResultVO"] : nil);
         BOOL finishHasNoNextStage = ([finishVO isKindOfClass:NSDictionary.class] && finishVO[@"hasNextStage"] && ![finishVO[@"hasNextStage"] boolValue]);
@@ -6801,6 +6826,349 @@ static NSDate *manorDrawEndDateFromPacket(NSDictionary *resData, NSDictionary *d
     if (dur <= 0) return nil;
     double ms = dur > 1e6 ? dur : dur * 1000.0;   // 实证单位是毫秒；小数值按秒兜底
     return [NSDate dateWithTimeIntervalSince1970:([[NSDate date] timeIntervalSince1970] + ms / 1000.0)];
+}
+
+#pragma mark - 森林寻宝（服务端名：森林抽抽乐）自动抽奖 v3.2.8
+
+// 9/15 真机取证（ManorProbe v0.2.7，日志 [TRS→]/[TRS*]）：
+//   op 族 = com.alipay.antiepdrawprod.*（前缀既非 antfarm / antiep / antforest —— 这就是此前「全资产 0 命中」的原因）
+//   连抽 = batchDrawopengreen{sceneCode, times:N, activityId, userId, source:"IPicon", requestType:"RPC"}
+//   机会 = resData.drawAsset.blance（服务端拼写就是 blance：实测抽前 2 → 抽后 0，totalTimes 40 → 42）
+//   活动 = drawSceneGroups[]（name / drawActivity{activityId,endTime,sceneCode}）；奖品 = drawResultList[].prizeVO
+// 用户口径：无阈值、每天做完任务当天一次性连抽（不跨天攒；与庄园抽抽乐「攒满 10 才抽」是两套口径）
+static NSString * const kForestDrawSceneNormal   = @"ANTFOREST_NORMAL_DRAW";
+static NSString * const kForestDrawSceneActivity = @"ANTFOREST_ACTIVITY_DRAW";
+static NSInteger const kForestDrawRejectLimit    = 3;
+static NSTimeInterval const kForestDrawThrottle  = 90.0;
+static NSTimeInterval const kForestDrawReplyWait = 12.0;
+static NSTimeInterval const kForestDrawProbeGap  = 600.0;
+
+static NSMutableDictionary<NSString *, NSString *> *gForestDrawActId = nil;
+static NSMutableDictionary<NSString *, NSString *> *gForestDrawActName = nil;
+static NSMutableDictionary<NSString *, NSNumber *> *gForestDrawEndAt = nil;
+static NSMutableDictionary<NSString *, NSNumber *> *gForestDrawBalance = nil;
+static NSMutableDictionary<NSString *, NSNumber *> *gForestDrawInFlight = nil;
+static NSMutableDictionary<NSString *, NSNumber *> *gForestDrawRejects = nil;
+static NSMutableDictionary<NSString *, NSNumber *> *gForestDrawThrottleAt = nil;
+static NSMutableSet<NSString *> *gForestDrawQuietLogged = nil;
+static NSMutableArray<NSString *> *gForestDrawQueue = nil;
+static NSString *gForestDrawUserId = nil;
+static NSString *gForestDrawDayKey = nil;
+static NSString *gForestDrawPendingScene = nil;
+static NSString *gForestDrawPendingKind = nil;
+static NSTimeInterval gForestDrawPendingAt = 0;
+static NSTimeInterval gForestDrawLastSweep = 0;
+static NSTimeInterval gForestDrawLastProbe = 0;
+static NSInteger gForestDrawQueueIndex = -1;
+static NSUInteger gForestDrawSeq = 0;
+
+static void forestDrawInitState(void) {
+    static dispatch_once_t onceForestDraw;
+    dispatch_once(&onceForestDraw, ^{
+        gForestDrawActId = [NSMutableDictionary dictionary];
+        gForestDrawActName = [NSMutableDictionary dictionary];
+        gForestDrawEndAt = [NSMutableDictionary dictionary];
+        gForestDrawBalance = [NSMutableDictionary dictionary];
+        gForestDrawInFlight = [NSMutableDictionary dictionary];
+        gForestDrawRejects = [NSMutableDictionary dictionary];
+        gForestDrawThrottleAt = [NSMutableDictionary dictionary];
+        gForestDrawQuietLogged = [NSMutableSet set];
+        gForestDrawQueue = [NSMutableArray array];
+        gForestDrawDayKey = getCurrentDateString();
+    });
+}
+
+// 跨日复位：被拒计数/静默标记清零（机会数由服务端给，不跨天攒）
+static void forestDrawResetIfNewDay(void) {
+    forestDrawInitState();
+    NSString *today = getCurrentDateString();
+    if ([today isEqualToString:gForestDrawDayKey]) return;
+    gForestDrawDayKey = today;
+    [gForestDrawRejects removeAllObjects];
+    [gForestDrawQuietLogged removeAllObjects];
+    [gForestDrawInFlight removeAllObjects];
+}
+
+static NSString *forestDrawSceneName(NSString *scene) {
+    NSString *n = gForestDrawActName[scene];
+    if (n.length) return n;
+    return [scene containsString:@"ACTIVITY"] ? @"活动版" : @"普通版";
+}
+
+// 复用庄园抽抽乐的天数口径（0 天=今天结束、取不到=未知）
+static NSString *forestDrawDaysText(NSString *scene) {
+    NSNumber *endAt = gForestDrawEndAt[scene];
+    if (!endAt) return @"剩余天数未知";
+    NSDate *endDate = manorDrawDateFromRaw(endAt);
+    return manorDrawDaysText(manorDrawRemainingDays(endDate), endDate);
+}
+
+// 每天每场景只留一条的静默日志（防刷屏）
+static void forestDrawQuietLog(AntForestManager *mgr, NSString *scene, NSString *text) {
+    NSString *key = [NSString stringWithFormat:@"%@|%@", getCurrentDateString(), scene ?: @""];
+    @synchronized (gForestDrawQuietLogged) {
+        if ([gForestDrawQuietLogged containsObject:key]) return;
+        [gForestDrawQuietLogged addObject:key];
+    }
+    [mgr recordStage:text];
+}
+
+// 递归遍历回包（限深 8、限节点 4000，防大 body 卡顿）
+static void forestDrawWalk(id obj, NSInteger depth, NSInteger *budget, void (^visit)(NSDictionary *)) {
+    if (!obj || depth > 8 || *budget <= 0) return;
+    (*budget)--;
+    if ([obj isKindOfClass:NSDictionary.class]) {
+        visit((NSDictionary *)obj);
+        for (id v in [(NSDictionary *)obj allValues]) forestDrawWalk(v, depth + 1, budget, visit);
+    } else if ([obj isKindOfClass:NSArray.class]) {
+        for (id v in (NSArray *)obj) forestDrawWalk(v, depth + 1, budget, visit);
+    }
+}
+
+// 回包被动学习：登录 uid / 两个活动的 activityId、结束时间、名称（少发请求，任何寻宝族回包都算）
+static void forestDrawLearnFromPacket(id packet) {
+    forestDrawInitState();
+    __block NSInteger budget = 4000;
+    forestDrawWalk(packet, 0, &budget, ^(NSDictionary *d) {
+        id uid = d[@"userId"] ?: d[@"loginUserId"];
+        if (!gForestDrawUserId && [uid isKindOfClass:NSString.class] && [(NSString *)uid length] >= 10) {
+            gForestDrawUserId = [(NSString *)uid copy];
+        }
+        NSDictionary *act = d;
+        if ([d[@"drawActivity"] isKindOfClass:NSDictionary.class]) act = d[@"drawActivity"];
+        NSString *sc = [act[@"sceneCode"] isKindOfClass:NSString.class] ? act[@"sceneCode"] : nil;
+        NSString *aid = nil;
+        id rawAid = act[@"activityId"];
+        if ([rawAid isKindOfClass:NSString.class] && [(NSString *)rawAid length]) aid = rawAid;
+        else if ([rawAid isKindOfClass:NSNumber.class]) aid = [NSString stringWithFormat:@"%@", rawAid];
+        if (sc.length && aid.length) {
+            gForestDrawActId[sc] = aid;
+            NSDate *endDate = manorDrawDateFromRaw(act[@"endTime"] ?: (act[@"activityEndTime"] ?: d[@"endTime"]));
+            if (endDate) gForestDrawEndAt[sc] = @([endDate timeIntervalSince1970] * 1000.0);
+            id nm = d[@"name"] ?: d[@"activityName"];
+            if ([nm isKindOfClass:NSString.class] && [(NSString *)nm length] && !gForestDrawActName[sc]) gForestDrawActName[sc] = nm;
+        }
+    });
+}
+
+// 机会数：drawAsset.blance（服务端拼写）
+static NSNumber *forestDrawFindBlance(id packet) {
+    __block NSNumber *found = nil;
+    __block NSInteger budget = 4000;
+    forestDrawWalk(packet, 0, &budget, ^(NSDictionary *d) {
+        if (found) return;
+        id v = d[@"blance"];
+        if (v != nil) found = @([v integerValue]);
+    });
+    return found;
+}
+
+// 奖品：drawResultList[].prizeVO.prizeName
+static NSArray<NSString *> *forestDrawCollectPrizeNames(id packet) {
+    __block NSMutableArray<NSString *> *names = [NSMutableArray array];
+    __block NSInteger budget = 4000;
+    forestDrawWalk(packet, 0, &budget, ^(NSDictionary *d) {
+        id list = d[@"drawResultList"];
+        if (![list isKindOfClass:NSArray.class]) return;
+        for (id it in (NSArray *)list) {
+            if (![it isKindOfClass:NSDictionary.class]) continue;
+            NSDictionary *pv = [((NSDictionary *)it)[@"prizeVO"] isKindOfClass:NSDictionary.class] ? ((NSDictionary *)it)[@"prizeVO"] : it;
+            NSString *nm = pv[@"prizeName"];
+            if ([nm isKindOfClass:NSString.class] && nm.length) [names addObject:nm];
+        }
+    });
+    return names.count ? names : nil;
+}
+
+// 服务端是否拒绝（不支持 / 非法 / 频率 / 无权限 / 失败）
+static BOOL forestDrawPacketRejected(NSDictionary *resData, NSDictionary *dict) {
+    NSDictionary *d = [resData isKindOfClass:NSDictionary.class] ? resData : dict;
+    if (![d isKindOfClass:NSDictionary.class]) return NO;
+    id succ = d[@"success"];
+    if (succ != nil && ![succ boolValue]) return YES;
+    NSString *desc = [NSString stringWithFormat:@"%@", d[@"desc"] ?: (d[@"memo"] ?: @"")];
+    for (NSString *kw in @[@"不支持", @"非法", @"无权限", @"频率", @"失败", @"过期"]) if ([desc containsString:kw]) return YES;
+    NSString *code = [NSString stringWithFormat:@"%@", d[@"code"] ?: (d[@"resultCode"] ?: @"")];
+    if ([code isEqualToString:@"3000"] || [code isEqualToString:@"B000000008"]) return YES;
+    return NO;
+}
+
+- (PSDJsBridge *)forestDrawBridge {
+    return self.lotteryBridge ?: self.rewardTaskBridge ?: self.jsBridge;
+}
+
+- (NSString *)forestDrawUrlForScene:(NSString *)scene bridge:(PSDJsBridge *)bridge {
+    NSString *taskScene = [scene hasSuffix:@"_DRAW"] ? [scene stringByAppendingString:@"_TASK"] : scene;
+    return self.lotteryH5Url ?: [self urlForSceneCode:taskScene bridge:bridge];
+}
+
+// 路 A 实测：不进寻宝页面，用现有桥（森林主页/奖励页）拉一次寻宝任务列表，再交给抽奖 sweep
+- (void)forestDrawBackgroundProbe {
+    if (!self.enableAutoRewardTasks) return;
+    PSDJsBridge *bridge = self.rewardTaskBridge ?: self.jsBridge;
+    if (!bridge) return;
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    if (now - gForestDrawLastProbe < kForestDrawProbeGap) return;
+    gForestDrawLastProbe = now;
+    forestDrawQuietLog(self, @"probe", @"森林寻宝：尝试后台拉取寻宝任务（不进寻宝页面）…");
+    [self queryLotteryTaskListWithForce:YES];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [self forestDrawSweepAfterTaskBatch:@"ANTFOREST_NORMAL_DRAW_TASK"];
+    });
+}
+
+// 任务批次收尾 / 后台探测后调用：两活动各自独立，谁有机会抽谁
+- (void)forestDrawSweepAfterTaskBatch:(NSString *)taskScene {
+    if (!self.enableAutoRewardTasks) return;
+    forestDrawInitState();
+    forestDrawResetIfNewDay();
+    if (![self forestDrawBridge]) return;
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    if (now - gForestDrawLastSweep < 5.0) return;
+    gForestDrawLastSweep = now;
+    NSMutableArray<NSString *> *queue = [NSMutableArray array];
+    for (NSString *scene in @[kForestDrawSceneNormal, kForestDrawSceneActivity]) {
+        if ([gForestDrawRejects[scene] integerValue] >= kForestDrawRejectLimit) continue;
+        if ([gForestDrawInFlight[scene] integerValue] > 0) continue;
+        if (now < [gForestDrawThrottleAt[scene] doubleValue]) continue;
+        [queue addObject:scene];
+    }
+    if (!queue.count) return;
+    gForestDrawQueue = queue;
+    gForestDrawQueueIndex = 0;
+    gForestDrawSeq++;
+    [self forestDrawStepNext];
+}
+
+- (void)forestDrawStepNext {
+    if (gForestDrawQueueIndex < 0 || gForestDrawQueueIndex >= (NSInteger)gForestDrawQueue.count) {
+        gForestDrawQueue = nil;
+        gForestDrawQueueIndex = -1;
+        gForestDrawPendingScene = nil;
+        gForestDrawPendingKind = nil;
+        return;
+    }
+    [self forestDrawQueryChancesForScene:gForestDrawQueue[(NSUInteger)gForestDrawQueueIndex] force:NO];
+}
+
+- (void)forestDrawAdvanceScene {
+    gForestDrawPendingScene = nil;
+    gForestDrawPendingKind = nil;
+    gForestDrawQueueIndex++;
+    [self forestDrawStepNext];
+}
+
+- (void)forestDrawArmTimeout {
+    NSUInteger seq = gForestDrawSeq;
+    NSString *scene = [gForestDrawPendingScene copy];
+    if (!scene.length) return;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((kForestDrawReplyWait + 3.0) * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (seq != gForestDrawSeq) return;
+        if (![gForestDrawPendingScene isEqualToString:scene]) return;
+        [self recordStage:[NSString stringWithFormat:@"森林寻宝 · %@：抽奖回包超时，本轮跳过", forestDrawSceneName(scene)]];
+        [self forestDrawAdvanceScene];
+    });
+}
+
+- (void)forestDrawQueryChancesForScene:(NSString *)scene force:(BOOL)force {
+    PSDJsBridge *bridge = [self forestDrawBridge];
+    if (!bridge) { [self forestDrawAdvanceScene]; return; }
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    if (!force && now < [gForestDrawThrottleAt[scene] doubleValue]) { [self forestDrawAdvanceScene]; return; }
+    gForestDrawThrottleAt[scene] = @(now + kForestDrawThrottle);
+    NSString *ts = [NSString stringWithFormat:@"%ld", (long)(now * 1000)];
+    NSString *rand = [AntForestManager getNumberRandom:15];
+    NSString *url = [self forestDrawUrlForScene:scene bridge:bridge];
+    NSString *aid = gForestDrawActId[scene] ?: @"";
+    NSString *arg = nil;
+    if (!aid.length) {
+        arg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antiepdrawprod.enterDrawGroupopengreen\",\"showError\":false,\"showLoading\":false,\"requestData\":[{\"drawGroup\":\"antforestDraw\",\"activityId\":\"\",\"source\":\"IPicon\",\"context\":{\"appMode\":\"normal\",\"layerTipDisplayInfos\":\"[]\"},\"requestType\":\"RPC\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", ts, rand];
+        gForestDrawPendingKind = @"group";
+    } else {
+        arg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antiepdrawprod.drawSyncopengreen\",\"showError\":false,\"showLoading\":false,\"requestData\":[{\"sceneCode\":\"%@\",\"source\":\"backend\",\"activityId\":\"%@\",\"context\":{\"appMode\":\"normal\"},\"requestType\":\"RPC\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", scene, aid, ts, rand];
+        gForestDrawPendingKind = @"sync";
+    }
+    gForestDrawPendingScene = scene;
+    gForestDrawPendingAt = now;
+    [bridge _doFlushMessageQueue:arg url:url];
+    [self forestDrawArmTimeout];
+}
+
+- (void)forestDrawSendBatchForScene:(NSString *)scene times:(NSInteger)times {
+    PSDJsBridge *bridge = [self forestDrawBridge];
+    NSString *aid = gForestDrawActId[scene] ?: @"";
+    if (!bridge || !aid.length || times <= 0) { [self forestDrawAdvanceScene]; return; }
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    NSString *ts = [NSString stringWithFormat:@"%ld", (long)(now * 1000)];
+    NSString *rand = [AntForestManager getNumberRandom:15];
+    NSString *uid = gForestDrawUserId ?: @"";
+    NSString *arg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antiepdrawprod.batchDrawopengreen\",\"showError\":false,\"showLoading\":false,\"requestData\":[{\"sceneCode\":\"%@\",\"times\":%ld,\"activityId\":\"%@\",\"userId\":\"%@\",\"source\":\"IPicon\",\"requestType\":\"RPC\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", scene, (long)times, aid, uid, ts, rand];
+    gForestDrawInFlight[scene] = @(times);
+    gForestDrawPendingScene = scene;
+    gForestDrawPendingKind = @"draw";
+    gForestDrawPendingAt = now;
+    [self recordStage:[NSString stringWithFormat:@"森林寻宝 · %@：%@，任务已完成 → 当天连抽 %ld 次…", forestDrawSceneName(scene), forestDrawDaysText(scene), (long)times]];
+    [bridge _doFlushMessageQueue:arg url:[self forestDrawUrlForScene:scene bridge:bridge]];
+    [self forestDrawArmTimeout];
+}
+
+- (void)forestDrawNoteReject:(NSString *)scene {
+    NSInteger n = [gForestDrawRejects[scene] integerValue] + 1;
+    gForestDrawRejects[scene] = @(n);
+    if (n >= kForestDrawRejectLimit) {
+        [self recordStage:[NSString stringWithFormat:@"⚠️ 森林寻宝 · %@：抽奖连续被拒 %ld 次，今日停止尝试（把面板日志发我）", forestDrawSceneName(scene), (long)n]];
+    } else {
+        [self recordStage:[NSString stringWithFormat:@"森林寻宝 · %@：抽奖被服务端拒绝（第 %ld 次），稍后重试", forestDrawSceneName(scene), (long)n]];
+    }
+}
+
+- (void)forestDrawHandleResponse:(NSString *)opType resData:(NSDictionary *)resData {
+    if (![resData isKindOfClass:NSDictionary.class]) return;
+    forestDrawInitState();
+    forestDrawResetIfNewDay();
+    forestDrawLearnFromPacket(resData);
+    NSString *scene = gForestDrawPendingScene;
+    if (!scene.length) return;
+    if ([[NSDate date] timeIntervalSince1970] - gForestDrawPendingAt > kForestDrawReplyWait + 5.0) return;
+    NSString *kind = gForestDrawPendingKind ?: @"";
+    NSNumber *blance = forestDrawFindBlance(resData);
+    if (blance) gForestDrawBalance[scene] = blance;
+    if ([kind isEqualToString:@"group"]) {
+        if (!(gForestDrawActId[scene] ?: @"").length) { [self forestDrawAdvanceScene]; return; }
+        [self forestDrawQueryChancesForScene:scene force:YES];
+        return;
+    }
+    if ([kind isEqualToString:@"sync"]) {
+        if (forestDrawPacketRejected(resData, nil)) {
+            [self forestDrawNoteReject:scene];
+            [self forestDrawAdvanceScene];
+            return;
+        }
+        NSInteger times = [gForestDrawBalance[scene] integerValue];
+        if (times > 0) { [self forestDrawSendBatchForScene:scene times:times]; return; }
+        forestDrawQuietLog(self, scene, [NSString stringWithFormat:@"森林寻宝 · %@：本轮无抽奖机会（%@）", forestDrawSceneName(scene), forestDrawDaysText(scene)]);
+        [self forestDrawAdvanceScene];
+        return;
+    }
+    if ([kind isEqualToString:@"draw"]) {
+        NSInteger times = [gForestDrawInFlight[scene] integerValue];
+        [gForestDrawInFlight removeObjectForKey:scene];
+        if (forestDrawPacketRejected(resData, nil)) {
+            [self forestDrawNoteReject:scene];
+            [self forestDrawAdvanceScene];
+            return;
+        }
+        NSArray<NSString *> *names = forestDrawCollectPrizeNames(resData);
+        [gForestDrawRejects removeObjectForKey:scene];
+        gForestDrawBalance[scene] = @0;
+        if (names.count) {
+            [self recordStage:[NSString stringWithFormat:@"✅ 森林寻宝 · %@：连抽完成 %ld 次，获得 %@ · %@", forestDrawSceneName(scene), (long)times, [names componentsJoinedByString:@"、"], forestDrawDaysText(scene)]];
+        } else {
+            [self recordStage:[NSString stringWithFormat:@"⚠️ 森林寻宝 · %@：连抽 %ld 次回包无 drawResultList（奖品名缺失），%@", forestDrawSceneName(scene), (long)times, forestDrawDaysText(scene)]];
+        }
+        [self forestDrawAdvanceScene];
+        return;
+    }
 }
 
 // ---- v3.2.7 新增：任务上下文按 scene|taskId 存（旧版五个全局被后一个任务覆盖 → 回执与熔断记错账） ----
