@@ -6,13 +6,13 @@ header_file="$(dirname "$0")/../antforest/AntForestManager.h"
 entry_file="$(dirname "$0")/../PortEntry.m"
 control_file="$(dirname "$0")/../antforest/Package/DEBIAN/control"
 
-echo "[1/17] Checking award unit splits by awardType (ALLPURPOSE=g / CUISINE=个)..."
+echo "[1/21] Checking award unit splits by awardType (ALLPURPOSE=g / CUISINE=个)..."
 grep -Fq 'NSString *awardType = [task[@"awardType"] isKindOfClass:NSString.class] ? task[@"awardType"] : @"";' "$source_file"
 grep -Fq 'BOOL isFoodAward = [awardType isEqualToString:@"ALLPURPOSE"];' "$source_file"
 grep -Fq 'NSString *awardUnit = isFoodAward ? @"g" : @"个";' "$source_file"
 grep -Fq 'if (award <= 0) {' "$source_file"
 
-echo "[2/17] Checking pending-feed total helper scans the whole list with the SAME claimability rule..."
+echo "[2/21] Checking pending-feed total helper scans the whole list with the SAME claimability rule..."
 grep -Fq 'static NSInteger manorPendingTaskFeedAward(NSArray *taskList, NSUInteger *outCount) {' "$source_file"
 grep -Fq 'if (!manorTaskClaimable(t)) continue;   // v3.3.6：与领奖判定同口径（原只认 FINISHED）' "$source_file"
 grep -Fq 'if (![t[@"awardType"] isEqualToString:@"ALLPURPOSE"]) continue;' "$source_file"
@@ -22,7 +22,7 @@ if grep -Fq 'if (![t[@"taskStatus"] isEqualToString:@"FINISHED"]) continue;' "$s
     exit 1
 fi
 
-echo "[3/17] Checking today's sign award is NOT counted into the pending total..."
+echo "[3/21] Checking today's sign award is NOT counted into the pending total..."
 grep -Fq 'NSUInteger pendingTaskCount = 0;' "$source_file"
 grep -Fq 'NSInteger pendingTaskAward = manorPendingTaskFeedAward(taskList, &pendingTaskCount);' "$source_file"
 if grep -Fq 'gManorTodaySignAward' "$source_file"; then
@@ -34,14 +34,14 @@ if grep -Fq 'pendingTotalAward' "$source_file"; then
     exit 1
 fi
 
-echo "[4/17] Checking the food-stock cap gate only applies to g-unit awards..."
+echo "[4/21] Checking the food-stock cap gate only applies to g-unit awards..."
 grep -Fq 'if (isFoodAward && limit > 0 && stock + award > limit) {' "$source_file"
 
-echo "[5/17] Checking panel log shows the task-only total with count..."
+echo "[5/21] Checking panel log shows the task-only total with count..."
 grep -Fq '待领合计 %ldg（%lu 个已完成任务）' "$source_file"
 grep -Fq '正在领取 %ld%@ 奖励（预估容量 %ldg/%ldg）...' "$source_file"
 
-echo "[6/17] Checking the old single-task / unit-blind writing does not come back..."
+echo "[6/21] Checking the old single-task / unit-blind writing does not come back..."
 if grep -Fq 'NSInteger award = [task[@"awardCount"] integerValue] ?: ([task[@"canReceiveAwardCount"] integerValue] ?: 90);' "$source_file"; then
     echo "❌ 旧的不分单位 award 计算复活了"
     exit 1
@@ -55,7 +55,7 @@ if grep -Fq 'if (limit > 0 && stock + award > limit) {' "$source_file"; then
     exit 1
 fi
 
-echo "[7/17] Checking 庄园 claimability covers FINISHED + CAN_RECEIVE/WAIT_AWARD/... + 「领取」按钮..."
+echo "[7/21] Checking 庄园 claimability covers FINISHED + CAN_RECEIVE/WAIT_AWARD/... + 「领取」按钮..."
 grep -Fq 'static BOOL manorTaskStatusClaimable(NSString *status) {' "$source_file"
 grep -Fq 'states = @[@"FINISHED", @"CAN_RECEIVE", @"WAIT_AWARD", @"WAIT_RECEIVE", @"TO_RECEIVE", @"SUCCESS"];' "$source_file"
 grep -Fq 'static BOOL manorTaskClaimable(NSDictionary *task) {' "$source_file"
@@ -63,14 +63,14 @@ grep -Fq 'static NSString *manorTaskButtonText(NSDictionary *task) {' "$source_f
 grep -Fq 'displayConfig[@"finishedBtn"] ?: (displayConfig[@"completeBtn"] ?: (displayConfig[@"todoBtn"]' "$source_file"
 grep -Fq 'return (btn.length && [btn containsString:@"领"] && ![btn containsString:@"去"]);' "$source_file"
 
-echo "[8/17] Checking the claim site no longer claims by FINISHED-only (regression guard)..."
+echo "[8/21] Checking the claim site no longer claims by FINISHED-only (regression guard)..."
 grep -Fq 'if (manorTaskClaimable(task)) {   // v3.3.6：不再只认 FINISHED（CAN_RECEIVE/WAIT_AWARD/… 与「领取」按钮一并认）' "$source_file"
 if grep -Fq 'if ([status isEqualToString:@"FINISHED"]) {' "$source_file"; then
     echo "❌ 领奖条件退回「只认 FINISHED」——UI 显示「领取」的任务会被静默跳过"
     exit 1
 fi
 
-echo "[9/17] Checking the 庄园 task-list diagnostic (对账用) is wired in..."
+echo "[9/21] Checking the 庄园 task-list diagnostic (对账用) is wired in..."
 grep -Fq 'static NSString *manorTaskListDiag(NSArray *taskList) {' "$source_file"
 grep -Fq '蚂蚁庄园 · 任务诊断：%lu 个 · 状态 %@ · 可领 %ld 个（饲料合计 %ldg）· 明细：%@' "$source_file"
 grep -Fq 'if (claimableInList > 0) [self recordStage:manorDiag];' "$source_file"
@@ -78,14 +78,14 @@ grep -Fq 'manorDiag = [NSString stringWithFormat:@"%@ · 背包 %ldg/%ldg%@", ma
 grep -Fq '（已近上限，领奖会挂起等腾空后补领）' "$source_file"
 grep -Fq 'else recordEggDiagOnce(self, @"manor_task_diag", manorDiag);' "$source_file"
 
-echo "[10/17] Checking the claim-receipt fallback retry (记账后无回执 → 允许再试，封顶 2 次)..."
+echo "[10/21] Checking the claim-receipt fallback retry (记账后无回执 → 允许再试，封顶 2 次)..."
 grep -Fq 'static const NSInteger kManorClaimMaxTries = 2;' "$source_file"
 grep -Fq 'static const NSTimeInterval kManorClaimReceiptWait = 90.0;' "$source_file"
 grep -Fq 'manorClaimMarkSent(taskId);' "$source_file"
 grep -Fq 'if (now - sent > kManorClaimReceiptWait && tries < kManorClaimMaxTries) {' "$source_file"
 grep -Fq '领奖未收到回执（已试 %ld 次、%ld 秒前提交），重试领取…' "$source_file"
 
-echo "[11/17] Checking the reward-bridge waiting log is throttled (不再每轮刷屏)..."
+echo "[11/21] Checking the reward-bridge waiting log is throttled (不再每轮刷屏)..."
 grep -Fq 'static NSTimeInterval gRewardWaitLogAt = 0;' "$source_file"
 grep -Fq 'if (gRewardWaitLogAt == 0 || nowWait - gRewardWaitLogAt > 1800) {' "$source_file"
 grep -Fq '首页后台：暂无领奖励任务桥接（进一次蚂蚁森林首页即可绑定 H5 会话，绑定后自动接管领奖励与森林寻宝）' "$source_file"
@@ -95,7 +95,7 @@ if grep -Fq 'if (self.enableAutoRewardTasks) [self recordStage:@"首页后台：
     exit 1
 fi
 
-echo "[11b/17] Checking 睡觉/喂鸡修复没有把任务查询(领奖)链截断..."
+echo "[11b/21] Checking 睡觉/喂鸡修复没有把任务查询(领奖)链截断..."
 claim_body=$(awk '/^- \(void\)queryManorFarmTasks \{/{f=1} f{print} f&&/^\}$/{exit}' "$source_file")
 if printf '%s' "$claim_body" | grep -q 'manorChickenSleeping\|manorServerSleeping'; then
     echo "❌ 任务查询/领奖链被睡觉闸门截断——夜间将不再自动领取饲料奖励"
@@ -106,7 +106,7 @@ if ! printf '%s' "$claim_body" | grep -q 'com.alipay.antfarm.listFarmTask'; then
     exit 1
 fi
 
-echo "[12/17] Checking version sync (informational) + no new independent switch..."
+echo "[12/21] Checking version sync (informational) + no new independent switch..."
 control_ver=$(sed -n 's/^Version:[[:space:]]*//p' "$control_file" 2>/dev/null | head -1)
 entry_ver=$(sed -n 's/.*当前版本：\(v[0-9][0-9.]*\).*/\1/p' "$entry_file" 2>/dev/null | head -1)
 echo "   版本对照：control=${control_ver:-（读不到）} 面板=${entry_ver:-（读不到）}"
@@ -118,7 +118,7 @@ if grep -Fq 'antforest_pending' "$source_file" "$entry_file"; then
     exit 1
 fi
 
-echo "[13/17] Checking claim accounting is persisted (must survive app restart)..."
+echo "[13/21] Checking claim accounting is persisted (must survive app restart)..."
 grep -Fq 'ANTFARM_CLAIM_SENT:' "$source_file"
 grep -Fq 'static void manorClaimMarkSent(NSString *taskId) {' "$source_file"
 if grep -Fq 'gManorClaimSentAt' "$source_file"; then
@@ -126,15 +126,15 @@ if grep -Fq 'gManorClaimSentAt' "$source_file"; then
     exit 1
 fi
 
-echo "[14/17] Checking a billed-but-never-sent claim is re-claimed instead of silently skipped..."
+echo "[14/21] Checking a billed-but-never-sent claim is re-claimed instead of silently skipped..."
 grep -Fq 'if (sent <= 0) {' "$source_file"
 grep -Fq '今日有领奖记账但查不到发送记录，按未领取补领一次' "$source_file"
 
-echo "[15/17] Checking waiting / retry-limit claims always leave a log line (no silent skip)..."
+echo "[15/21] Checking waiting / retry-limit claims always leave a log line (no silent skip)..."
 grep -Fq '今日已记账领奖（%@），本轮跳过' "$source_file"
 grep -Fq '"manor_claim_wait:%@"' "$source_file"
 
-echo "[16/17] Checking receipt wait is bounded (<=120s, else a whole day can pass without a retry)..."
+echo "[16/21] Checking receipt wait is bounded (<=120s, else a whole day can pass without a retry)..."
 wait_val=$(sed -n 's/.*kManorClaimReceiptWait = \([0-9][0-9.]*\).*/\1/p' "$source_file" | head -1)
 echo "   kManorClaimReceiptWait=${wait_val:-（读不到）}"
 if [ -z "$wait_val" ]; then
@@ -146,8 +146,23 @@ if awk "BEGIN{exit !(${wait_val} > 120)}"; then
     exit 1
 fi
 
-echo "[17/17] Checking server-state receipt (RECEIVED) confirms delivery once and clears the wait record..."
+echo "[17/21] Checking server-state receipt (RECEIVED) confirms delivery once and clears the wait record..."
 grep -Fq '奖励已到账（服务端状态 RECEIVED）' "$source_file"
 grep -Fq '"manor_claim_ok:%@"' "$source_file"
+
+echo "[18/21] Checking the claim reply is traced (was silently dropped by the status-packet router)..."
+grep -Fq '蚂蚁庄园 · 领取回包（taskId=%@）' "$source_file"
+grep -Fq 'isClaimReply' "$source_file"
+
+echo "[19/21] Checking a 20s no-reply watchdog exists for the claim request..."
+grep -Fq '领取请求已发出 20 秒仍未见回包' "$source_file"
+
+echo "[20/21] Checking a reply marks the receipt (no blind retry, no legacy re-claim loop)..."
+grep -Fq 'ANTFARM_CLAIM_REPLY:' "$source_file"
+grep -Fq 'manorClaimHasReply(taskId)' "$source_file"
+grep -Fq '今日已收到领取回包，不再重复领取' "$source_file"
+
+echo "[21/21] Checking the claim submit log carries taskId + op (so the reply can be matched)..."
+grep -Fq '（taskId=%@, op=receiveFarmTaskAward）' "$source_file"
 
 echo "✅ All pending-feed award (待领饲料合计) + 庄园领奖全状态 checks passed successfully!"
