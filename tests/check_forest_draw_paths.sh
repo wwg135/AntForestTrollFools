@@ -79,11 +79,14 @@ chk "连抽完成日志含天数"         "$M" '连抽完成 %ld 次，获得 %@
 chk "连抽开始日志含天数"         "$M" '任务已完成 → 当天连抽 %ld 次…'
 chk "无机会不刷屏（每天每场一次）" "$M" 'forestDrawQuietLog'
 chk "无机会日志带机会数=0"       "$M" '本轮无抽奖机会（机会数=0，'
+# v3.4.4：诊断行已删，改为负向断言（确保不再刷屏）
+if ! grep -q '后台拉取成功（不进寻宝页面也拿到任务）' "$M"; then echo "  ✓ 排查用诊断行已删除（不再输出）"; else echo "  ✗ 诊断行仍在：后台拉取成功…"; exit 1; fi
+if ! grep -q '尝试后台拉取寻宝任务（不进寻宝页面）…' "$M"; then echo "  ✓ 过程噪音行已删除"; else echo "  ✗ 过程噪音行仍在"; exit 1; fi
 chk "缺字段≠0（缺 blance 不当无机会）" "$M" '机会数未取到（回包无 blance 键）'
 chk "缺字段留顶层键诊断"         "$M" 'forestDrawTopKeys'
-chk "后台拉取结果自证行"         "$M" '后台拉取成功（不进寻宝页面也拿到任务）'
+
 chk "任务扫描覆盖 subTaskList"   "$M" 'g[@"taskInfoList"] ?: (g[@"taskList"] ?: g[@"subTaskList"])'
-chk "自证行按场景输出"           "$M" '森林寻宝：后台拉取成功（不进寻宝页面也拿到任务）· 场景 %@'
+
 chk "诊断口径=解析器 allTaskList" "$M" 'static NSArray<NSDictionary *> *forestDrawAllTasks(id packet)'
 chk "分组键与解析器逐字一致"      "$M" '@"accumulateTasks", @"ladderTasks", @"taskGroupList", @"forestTasks", @"taskList"]'
 chk "诊断含状态分布"             "$M" '任务 %lu 个 · 状态 %@'
