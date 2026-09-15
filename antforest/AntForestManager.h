@@ -9,7 +9,9 @@
 #import <WebKit/WebKit.h>
 #import "PSDJsBridge.h"
 
+#ifndef ENABLE_PROBE_LOGS
 #define ENABLE_PROBE_LOGS 0
+#endif
 
 NS_ASSUME_NONNULL_BEGIN
 

@@ -2122,6 +2122,9 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
     return bridgeUrl ?: [self effectiveUrlForSceneCode:scene];
 }
 
+// v3.3.6：领奖励桥接「等待」日志节流（原来每轮一条，用户反馈一直刷屏）
+static NSTimeInterval gRewardWaitLogAt = 0;
+
 -(void)queryVitalityTaskList {
     [self queryVitalityTaskListWithForce:NO];
 }
@@ -2132,9 +2135,17 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
     }
     PSDJsBridge *bridge = self.rewardTaskBridge;
     if (!self.enableAutoRewardTasks || !bridge) {
-        if (self.enableAutoRewardTasks) [self recordStage:@"首页后台：等待领奖励任务桥接"];
+        if (self.enableAutoRewardTasks && !bridge) {
+            // 进等待态只报一次，之后最多 30 分钟一条；桥接可用即复位（下次失去桥接立刻再报）
+            NSTimeInterval nowWait = [[NSDate date] timeIntervalSince1970];
+            if (gRewardWaitLogAt == 0 || nowWait - gRewardWaitLogAt > 1800) {
+                gRewardWaitLogAt = nowWait;
+                [self recordStage:@"首页后台：暂无领奖励任务桥接（进一次蚂蚁森林首页即可绑定 H5 会话，绑定后自动接管领奖励与森林寻宝）"];
+            }
+        }
         return;
     }
+    gRewardWaitLogAt = 0;
     initDailyTaskCache();
     
     static NSTimeInterval lastQueryVitalityTaskListTime = 0;
@@ -5000,6 +5011,81 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
     [self receiveManorFarmTaskAwardWithTaskId:taskType title:title];
 }
 
+// ---------------- v3.3.6 庄园任务「可领」判定 + 诊断 ----------------
+// 实测（9/15 用户截图）：UI 显示「领取」的任务，服务端状态不一定是 FINISHED，
+// 旧代码只认 FINISHED（handleManorTaskList）→ 静默漏领、无任何日志（用户：没有自动领取做完任务的饲料了）
+static BOOL manorTaskStatusClaimable(NSString *status) {
+    if (!status.length) return NO;
+    static NSArray<NSString *> *states = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ states = @[@"FINISHED", @"CAN_RECEIVE", @"WAIT_AWARD", @"WAIT_RECEIVE", @"TO_RECEIVE", @"SUCCESS"]; });
+    return [states containsObject:status.uppercaseString];
+}
+
+// 按钮文案回退链（与 9000 行领奖励链同口径）：taskDisplayConfig.finishedBtn/completeBtn/todoBtn → bizInfo.taskJumpBtn → btnText/buttonText/actionText
+static NSString *manorTaskButtonText(NSDictionary *task) {
+    if (![task isKindOfClass:NSDictionary.class]) return @"";
+    NSDictionary *displayConfig = [task[@"taskDisplayConfig"] isKindOfClass:NSDictionary.class] ? task[@"taskDisplayConfig"] : nil;
+    NSDictionary *bizInfo = [task[@"bizInfo"] isKindOfClass:NSDictionary.class] ? task[@"bizInfo"] : nil;
+    id raw = displayConfig[@"finishedBtn"] ?: (displayConfig[@"completeBtn"] ?: (displayConfig[@"todoBtn"] ?: (bizInfo[@"taskJumpBtn"] ?: (task[@"btnText"] ?: (task[@"buttonText"] ?: task[@"actionText"])))));
+    if ([raw isKindOfClass:NSString.class]) return (NSString *)raw;
+    if ([raw respondsToSelector:@selector(stringValue)]) return [raw stringValue];
+    return @"";
+}
+
+// 可领 = 状态明确可领；或状态非 TODO 且按钮是「领…」（不含「去」）
+static BOOL manorTaskClaimable(NSDictionary *task) {
+    if (![task isKindOfClass:NSDictionary.class]) return NO;
+    NSString *status = [task[@"taskStatus"] isKindOfClass:NSString.class] ? task[@"taskStatus"] : @"";
+    if (manorTaskStatusClaimable(status)) return YES;
+    if ([status.uppercaseString isEqualToString:@"TODO"]) return NO;
+    NSString *btn = manorTaskButtonText(task);
+    return (btn.length && [btn containsString:@"领"] && ![btn containsString:@"去"]);
+}
+
+// 任务诊断（可对账）：数量 / 状态分布 / 可领数与饲料合计 / 逐条明细
+static NSString *manorTaskListDiag(NSArray *taskList) {
+    if (!taskList.count) return @"蚂蚁庄园 · 任务诊断：回包无任务项";
+    NSMutableDictionary<NSString *, NSNumber *> *st = [NSMutableDictionary dictionary];
+    NSMutableArray<NSString *> *detail = [NSMutableArray array];
+    NSInteger claimable = 0, claimableFeed = 0;
+    for (id item in taskList) {
+        if (![item isKindOfClass:NSDictionary.class]) continue;
+        NSDictionary *t = (NSDictionary *)item;
+        NSString *title = t[@"title"] ?: (t[@"bizKey"] ?: (t[@"taskId"] ?: @"任务"));
+        if (![title isKindOfClass:NSString.class]) title = @"任务";
+        NSInteger award = [t[@"awardCount"] respondsToSelector:@selector(integerValue)] ? [t[@"awardCount"] integerValue] : 0;
+        if (award <= 0) award = [t[@"canReceiveAwardCount"] respondsToSelector:@selector(integerValue)] ? [t[@"canReceiveAwardCount"] integerValue] : 0;
+        NSString *status = [t[@"taskStatus"] isKindOfClass:NSString.class] ? t[@"taskStatus"] : @"(空)";
+        NSString *btn = manorTaskButtonText(t);
+        st[status] = @([st[status] integerValue] + 1);
+        if ([status isEqualToString:@"RECEIVED"]) continue;
+        if (manorTaskClaimable(t)) {
+            claimable++;
+            if ([t[@"awardType"] isEqualToString:@"ALLPURPOSE"]) claimableFeed += award;
+        }
+        if (detail.count < 12) {
+            NSString *label = title.length > 14 ? [title substringToIndex:14] : title;
+            NSString *shortBtn = btn.length > 6 ? [btn substringToIndex:6] : btn;
+            [detail addObject:[NSString stringWithFormat:@"%@=%@%@", label, status, shortBtn.length ? [NSString stringWithFormat:@"(%@)", shortBtn] : @""]];
+        }
+    }
+    NSMutableArray<NSString *> *hist = [NSMutableArray array];
+    for (NSString *k in [st.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+        [hist addObject:[NSString stringWithFormat:@"%@×%@", k, st[k]]];
+    }
+    return [NSString stringWithFormat:@"蚂蚁庄园 · 任务诊断：%lu 个 · 状态 %@ · 可领 %ld 个（饲料合计 %ldg）· 明细：%@",
+            (unsigned long)taskList.count, [hist componentsJoinedByString:@" "], (long)claimable, (long)claimableFeed, [detail componentsJoinedByString:@" "]];
+}
+
+static void recordEggDiagOnce(AntForestManager *mgr, NSString *key, NSString *message);
+
+// 领奖回执兜底：记账后 5 分钟仍无回执 → 允许再试（每任务每天最多 2 次）
+static const NSInteger kManorClaimMaxTries = 2;
+static const NSTimeInterval kManorClaimReceiptWait = 300.0;
+static NSMutableDictionary<NSString *, NSNumber *> *gManorClaimSentAt = nil;
+static NSMutableDictionary<NSString *, NSNumber *> *gManorClaimTryCount = nil;
+
 - (void)queryManorFarmTasks {
     if (!self.enableAutoManor) return;
     PSDJsBridge *bridge = (self.manorBridge && self.manorBridge != self.jsBridge) ? self.manorBridge : nil;
@@ -5034,6 +5120,11 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
     NSString *url = self.manorH5Url ?: @"https://66666674.h5app.alipay.com/www/index.html";
     NSString *claimArg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antfarm.receiveFarmTaskAward\",\"showError\":false,\"showLoading\":false,\"requestData\":[{\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"H5\",\"taskId\":\"%@\",\"version\":\"1.8.2302070202.46\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", taskId, timeStamp, randNum];
     [bridge _doFlushMessageQueue:claimArg url:url];
+    // v3.3.6：记账时刻 + 次数（用于回执兜底重试）
+    if (!gManorClaimSentAt) gManorClaimSentAt = [NSMutableDictionary dictionary];
+    if (!gManorClaimTryCount) gManorClaimTryCount = [NSMutableDictionary dictionary];
+    gManorClaimSentAt[taskId] = @(now);
+    gManorClaimTryCount[taskId] = @([gManorClaimTryCount[taskId] integerValue] + 1);
     [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：已提交领取“%@”（饲料奖励）...", title ?: taskId]];
 }
 
@@ -5052,7 +5143,23 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
     NSInteger pendingTaskAward = manorPendingTaskFeedAward(taskList, &pendingTaskCount);
     
     NSInteger taskDelayIndex = 0;
-    
+
+    // v3.3.6 任务诊断：有可领任务时每轮都报（可对账），否则每天一条
+    NSString *manorDiag = manorTaskListDiag(taskList);
+    if (manorDiag.length) {
+        // v3.3.6：诊断行带上背包存量/上限——一眼对账「是不是仓位满了导致不领」
+        NSInteger diagStock = self.lastManorFoodStock;
+        NSInteger diagLimit = self.lastManorFoodStockLimit > 0 ? self.lastManorFoodStockLimit : 1800;
+        manorDiag = [NSString stringWithFormat:@"%@ · 背包 %ldg/%ldg%@", manorDiag, (long)diagStock, (long)diagLimit,
+                     (diagStock + 180 > diagLimit) ? @"（已近上限，领奖会挂起等腾空后补领）" : @""];
+        NSUInteger claimableInList = 0;
+        for (id it in taskList) {
+            if ([it isKindOfClass:NSDictionary.class] && manorTaskClaimable((NSDictionary *)it) && ![[(NSDictionary *)it objectForKey:@"taskStatus"] isEqual:@"RECEIVED"]) claimableInList++;
+        }
+        if (claimableInList > 0) [self recordStage:manorDiag];
+        else recordEggDiagOnce(self, @"manor_task_diag", manorDiag);
+    }
+
     for (NSDictionary *task in taskList) {
         if (![task isKindOfClass:NSDictionary.class]) continue;
         NSString *bizKey = task[@"bizKey"] ?: @"";
@@ -5078,7 +5185,7 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
             continue;
         }
         
-        if ([status isEqualToString:@"FINISHED"]) {
+        if (manorTaskClaimable(task)) {   // v3.3.6：不再只认 FINISHED（CAN_RECEIVE/WAIT_AWARD/… 与「领取」按钮一并认）
             if (taskId.length) {
                 NSInteger stock = self.lastManorFoodStock;
                 NSInteger limit = self.lastManorFoodStockLimit > 0 ? self.lastManorFoodStockLimit : 1800;
@@ -5099,6 +5206,16 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
                     continue;
                 }
                 NSString *claimKey = [NSString stringWithFormat:@"ANTFARM_CLAIM_TASK:%@", taskId];
+                if ([gDailyCompletedTasks containsObject:claimKey]) {
+                    // v3.3.6 兜底：上次领奖未收到回执（500 毫秒记账后就没下文）→ 允许重试，最多 2 次/任务/天
+                    NSTimeInterval sent = [gManorClaimSentAt[taskId] doubleValue];
+                    NSInteger tries = [gManorClaimTryCount[taskId] integerValue];
+                    if (sent > 0 && now - sent > kManorClaimReceiptWait && tries < kManorClaimMaxTries) {
+                        [gDailyCompletedTasks removeObject:claimKey];
+                        saveDailyTaskCache();
+                        [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：“%@”领奖未收到回执（已试 %ld 次），重试领取…", title, (long)tries]];
+                    }
+                }
                 if (![gDailyCompletedTasks containsObject:claimKey]) {
                     [gDailyCompletedTasks addObject:claimKey];
                     saveDailyTaskCache();
@@ -8196,7 +8313,7 @@ static NSInteger manorPendingTaskFeedAward(NSArray *taskList, NSUInteger *outCou
     for (id item in taskList) {
         if (![item isKindOfClass:NSDictionary.class]) continue;
         NSDictionary *t = item;
-        if (![t[@"taskStatus"] isEqualToString:@"FINISHED"]) continue;
+        if (!manorTaskClaimable(t)) continue;   // v3.3.6：与领奖判定同口径（原只认 FINISHED）
         if (![t[@"awardType"] isEqualToString:@"ALLPURPOSE"]) continue;
         id n = t[@"awardCount"];
         if (![n respondsToSelector:@selector(integerValue)]) continue;
@@ -8265,6 +8382,42 @@ static void manorScheduleFeedWake(AntForestManager *mgr, NSInteger countdown) {
     });
 }
 
+// v3.3.6-probe：庄园任务回包全量留痕（面板导出「全量抓包探针数据」区）
+// 目的：定位「已完成任务未自动领奖」（用户 9/15 截图：高德评价 180g 显示「领取」，插件无任何动作）
+// 任务列表按内容签名去重（防刷屏）；领奖回执每次都记（低频）
+- (void)probeManorTaskResponse:(NSDictionary *)dict resData:(NSDictionary *)resData {
+    NSString *opType = [NSString stringWithFormat:@"%@", (dict[@"operationType"] ?: resData[@"operationType"]) ?: @""];
+    if (!([opType containsString:@"FarmTask"] || [opType containsString:@"farmTask"])) return;
+
+    NSData *raw = [NSJSONSerialization isValidJSONObject:dict] ? [NSJSONSerialization dataWithJSONObject:dict options:0 error:nil] : nil;
+    NSString *rawStr = raw ? [[NSString alloc] initWithData:raw encoding:NSUTF8StringEncoding] : [dict description];
+    if (rawStr.length > 4000) rawStr = [[rawStr substringToIndex:4000] stringByAppendingString:@"…(已截断)"];
+
+    if ([opType containsString:@"receiveFarmTaskAward"]) {
+        NSString *code = [NSString stringWithFormat:@"%@", resData[@"code"] ?: resData[@"resultCode"] ?: @""];
+        NSString *memo = [NSString stringWithFormat:@"%@", resData[@"memo"] ?: resData[@"resultMsg"] ?: @""];
+        NSString *addFood = [NSString stringWithFormat:@"%@", resData[@"haveAddFoodStock"] ?: @""];
+        [self recordProbeLog:[NSString stringWithFormat:@"【庄园领奖回执】op=%@ code=%@ memo=%@ haveAddFoodStock=%@\n%@", opType, code, memo, addFood, rawStr]];
+        return;
+    }
+
+    NSArray *taskList = [resData[@"farmTaskList"] isKindOfClass:NSArray.class] ? resData[@"farmTaskList"] : ([dict[@"farmTaskList"] isKindOfClass:NSArray.class] ? dict[@"farmTaskList"] : nil);
+    if (!taskList.count) return;
+    NSMutableArray<NSString *> *sig = [NSMutableArray array];
+    NSUInteger claimable = 0;
+    for (id it in taskList) {
+        if (![it isKindOfClass:NSDictionary.class]) continue;
+        NSDictionary *t = (NSDictionary *)it;
+        if (![[t[@"taskStatus"] description] isEqualToString:@"RECEIVED"] && manorTaskClaimable(t)) claimable++;
+        [sig addObject:[NSString stringWithFormat:@"%@|%@|%@|%@|%@", t[@"taskId"] ?: @"", t[@"taskStatus"] ?: @"", manorTaskButtonText(t), t[@"awardType"] ?: @"", t[@"awardCount"] ?: @""]];
+    }
+    static NSString *lastSig = nil;
+    NSString *sigStr = [sig componentsJoinedByString:@" || "];
+    if ([sigStr isEqualToString:lastSig]) return;
+    lastSig = sigStr;
+    [self recordProbeLog:[NSString stringWithFormat:@"【庄园任务列表原文】op=%@ · 任务 %lu 个 · 可领 %lu\n%@", opType, (unsigned long)taskList.count, (unsigned long)claimable, rawStr]];
+}
+
 - (void)handleManorResponse:(NSDictionary *)dict {
     if (!self.enableAutoManor) return;
     // 收蛋/抽抽乐监控：强持有庄园 Bridge（页面关闭后监控链仍可发请求）
@@ -8278,6 +8431,7 @@ static void manorScheduleFeedWake(AntForestManager *mgr, NSInteger countdown) {
     @try {
         NSDictionary *resData = [dict[@"resData"] isKindOfClass:NSDictionary.class] ? dict[@"resData"] : dict;
         // 菜谱识别：任何庄园回包里出现成对的 cookbookId + cuisineId，就记下来当真实可喂菜谱
+        [self probeManorTaskResponse:dict resData:resData];   // v3.3.6-probe：任务列表/领奖回包全量留痕
         [self learnManorCuisinesFromObject:dict];
         // 库存识别：菜谱条目（cuisineList）+ 零食包（foodInfos）同时学
         [self learnManorCuisineStockFromObject:dict];
