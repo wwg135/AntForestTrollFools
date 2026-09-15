@@ -3,6 +3,7 @@
 # 口径来源：manor_probe 抓包 2026-09-11 首发 + 2026-09-12 手动做满两活动全流程
 # 用户口径：平时不抽，积满 10 次才连抽；活动当天结束则剩余全抽；当天没做满就一直执行
 # 9/12 定案：回包任务项不含 taskSceneCode（只在请求里），分流改按白名单 taskId/bizKey 认；FINISHED=只领奖，TODO=动作+领奖
+# 9/15 定案（v3.2.7）：日志带活动剩余天数（0 天=今天结束）；删补抽 cap+5 轮硬顶改时长兜底+自推进；在途/降级/任务上下文按活动隔离
 # 9/13 定案（v3.3.2）：补抽只在「活动最后一天」启用；队列按活动分开存（旧版单全局变量被后查的活动覆盖 → IP 场剩余 3 次被提前抽干）
 set -u
 cd "$(dirname "$0")/.."
@@ -73,7 +74,7 @@ chk "已抽标记 PULL"                    "$M" 'manorDrawDailyMark(@"PULL"'
 chkno "旧版发起即封盘 ROUND 已移除"    "$M" 'manorDrawDailyMark(@"ROUND"'
 chk "动作/领奖回执入面板"              "$M" '领奖" : @"动作"'
 chk "动作失败短路跳过领奖"             "$M" '动作未成功，跳过本次领奖'
-chk "动作失败标记来自回包"             "$M" 'gManorDrawActFailed = !ok'
+chk "动作失败标记来自回包（按上下文）" "$M" 'manorDrawActContextMark(actScene, actTaskId, !ok)'
 chk "动作回执 op 已并入抽抽乐分支"      "$M" 'isManorDrawActOperation'
 chk "逛杂货铺浏览停留 15s（任务项 desc）" "$M" 'kManorDrawShopBrowseWait = 15.0'
 chk "targetUrl 内嵌真实页解析"          "$M" 'manorDrawInnerPageURL'
@@ -116,17 +117,17 @@ chk "抽不完剩余入补抽队列"            "$M" 'NSInteger left = drawTimes
 chk "补抽方法存在"                    "$M" '- (void)drainManorDrawPending {'
 chk "心跳最前面先补抽"                "$M" '[self drainManorDrawPending];'
 chk "补抽轮间隔 25s"                  "$M" 'kManorDrawPendInterval = 25.0'
-chk "补抽轮数封顶（防风控）"          "$M" 'kManorDrawPendMaxRounds'
+chk "补抽改时长兜底（删 5 轮硬顶）"   "$M" 'kManorDrawPendTimeout'
 
 echo "=== 8. v3.3.2：补抽只在活动最后一天 / 两活动互不覆盖 / 到期清空剩余 ==="
 chk   "剩余次数排队加最后一天门"      "$M" 'if (left > 0 && isLastDay) {'
 chk   "非最后一天剩余只记不抽"        "$M" '留着不抽（只在活动最后一天才清空）'
-chk   "补抽队列按活动分开存"          "$M" 'gManorDrawPend[scene] = [@{@"remain": @(queued)'
+chk   "补抽队列按活动分开存（删 cap）" "$M" 'gManorDrawPend[scene] = [@{@"remain": @(left)'
 chk   "补抽按场景逐个遍历"            "$M" 'for (NSString *scene in [gManorDrawPend.allKeys copy]) {'
 chk   "每日一批门到期当天放开"        "$M" 'if (!isLastDay && [gDailyCompletedTasks containsObject:manorDrawDailyMark(@"PULL", scene)]) return;'
 chk   "到期且已封盘仍查一轮清空"      "$M" 'if (!(lastDayScene && leftTimes > 0)) continue;'
-chk   "endTime 兼容秒级时间戳"        "$M" 'else if (raw > 1000000000LL)'
-chk   "到期日志带 endTime 原值"       "$M" '活动今日结束（endTime=%@）'
+chk   "结束时间原值统一解析"          "$M" 'manorDrawDateFromRaw'
+chk   "到期日志带剩余天数"            "$M" '活动今天结束（剩余 0 天'
 chk   "日期状态按活动缓存"            "$M" 'gManorDrawEndToday[scene] = @(isLastDay);'
 chk   "可抽次数按活动缓存"            "$M" 'gManorDrawLastDrawTimes[scene] = @(drawTimes);'
 chkno "旧全局队列活动变量已清"        "$M" 'gManorDrawPendScene'
@@ -180,6 +181,53 @@ chk "回包归属认 BBNC_GYG"               "$M" 'rangeOfString:@"BBNC_GYG"'
 chkno "派单不写死单个 taskId"           "$M" '[taskId isEqualToString:@"IP_BBNC_GYG26"]'
 r=$(awk '/^- *\(/ {fn = ($0 ~ /handleManorDrawTaskList/) ? "in" : "out"} /manorDrawTaskGroupForTask\(task\)/ {print fn; exit}' "$M")
 if [ "$r" = "in" ]; then echo "  ok   任务级判定落在两活动共用函数内"; else echo "  FAIL 任务级判定不在 handleManorDrawTaskList 内（$r）"; fail=1; fi
+
+echo "=== 12. v3.2.7：活动剩余天数入日志 / 最后一天抽得完 / 并发按活动隔离 ==="
+chk "剩余天数口径函数（自然日差）"      "$M" 'static NSInteger manorDrawRemainingDays(NSDate *endDate) {'
+chk "口径按 startOfDay 自然日差"        "$M" '[cal startOfDayForDate:endDate]'
+chk "最后一天文案=今天结束+剩余0天"     "$M" '活动今天结束（剩余 0 天%@）'
+chk "天数未知不写成 0 天"               "$M" 'return @"剩余天数未知";'
+chk "正数天数文案"                      "$M" '活动剩余 %ld 天%@'
+chk "结束时间兜底=毫秒倒计时"           "$M" 'drawMachineCountDownVO'
+chk "倒计时字段 expirationDuration"     "$M" 'expirationDuration'
+chk "activity 兼容数组形态"             "$M" '[resData[@"drawMachineActivity"] isKindOfClass:NSArray.class]'
+chk "剩余天数按活动缓存"                "$M" 'gManorDrawRemainDays[scene] = @(remainDays);'
+chk "结束时刻按活动缓存"                "$M" 'gManorDrawEndAt[scene] = @([endDate timeIntervalSince1970]);'
+chk "满次连抽日志带天数"                "$M" '已积满 %ld 次（%@）'
+chk "未满不抽日志带天数"                "$M" '未满不抽（满 %ld 自动连抽）'
+chk "到期全抽日志带天数"                "$M" '：%@，剩余 %ld 次全部抽掉…'
+chk "连抽完成日志带剩余天数"            "$M" '｜%@", manorDrawDaysText(sceneDays, sceneEndAt)'
+chk "0 次机会日志也带天数"              "$M" '当前 0 次机会，今日不抽（%@）'
+chk "在途批次按活动登记"                "$M" 'gManorDrawInFlight[scene] = @{@"times": @(times)'
+chk "回包按唯一在途认领"                "$M" 'drawScene = inFlightKeys.firstObject;'
+chk "在途过期窗口"                      "$M" 'kManorDrawInFlightWindow'
+chk "降级单抽计数按活动隔离"            "$M" 'gManorDrawRetryRemain[drawScene] = @(retryRemain);'
+chk "降级预算=被拒批次数（不写死10）"   "$M" 'retryRemain = drawBatchTimes;'
+chk "只有连抽被拒才降级（断自续杯）"   "$M" 'if (retryRemain <= 0 && drawBatchTimes > 1) {'
+chk "单抽被拒不自我续杯（终态日志）"    "$M" '单次抽奖未被接受（当日第 %ld 次），本轮不重试'
+chk "被拒到顶当日停抽（熔断）"          "$M" '当日已被拒 %ld 次，今日停止抽奖'
+chk "被拒上限常量"                      "$M" 'kManorDrawRejectLimit'
+chk "被拒计数按日清零"                  "$M" 'gManorDrawRejectCount removeAllObjects'
+chk "预算跑完有收尾日志"                "$M" '逐次单抽已跑完本轮预算'
+chk "抽奖归属不明时不碰按活动状态"      "$M" '无法归属活动，本轮跳过'
+chk "任务上下文按 scene|taskId 存"      "$M" 'static void manorDrawActContextSet(NSString *scene, NSString *taskId, NSString *group) {'
+chk "领奖前短路只读本任务上下文"        "$M" 'manorDrawActContextFailedRecently(scene, taskId, 12.0)'
+chk "回执按回包反查上下文"              "$M" 'manorDrawActContextResolve(resData, dict)'
+chk "上下文过期闸门"                    "$M" 'manorDrawActContextLive'
+chk "补抽自推进方法"                    "$M" '- (void)scheduleManorDrawPendingDrain {'
+chk "自推进代次防叠加"                  "$M" 'if (seq != gManorDrawPendDrainSeq) return;'
+chk "补抽时长兜底常量"                  "$M" 'kManorDrawPendTimeout'
+chkno "旧 cap 截断已删（抽不完根因）"   "$M" 'NSInteger cap = maxDraw * kManorDrawPendMaxRounds'
+chkno "旧 5 轮硬顶常量已删"             "$M" 'kManorDrawPendMaxRounds'
+chkno "旧单全局在途归属已删"            "$M" 'gManorDrawLastDrawScene'
+chkno "旧单全局降级活动已删"            "$M" 'gManorDrawRetryScene'
+chkno "旧单全局降级计数已删"            "$M" 'NSInteger gManorDrawRetryRemain = 0'
+chkno "旧任务上下文全局已删"            "$M" 'gManorDrawActTaskId ='
+chkno "旧 millis 直判已删"              "$M" 'else if (raw > 1000000000LL)'
+chkno "旧毫秒串日志已删"                "$M" '活动今日结束（endTime='
+echo "  ---- 版本号（信息型，不作为门）----"
+grep -o 'v3\.2\.[0-9]*' PortEntry.m | head -1 | sed 's/^/    PortEntry 版本串: /'
+grep -m1 '^Version:' antforest/Package/DEBIAN/control | sed 's/^/    control: /'
 
 echo
 if [ "$fail" -eq 0 ]; then echo "全部通过"; else echo "存在失败项"; fi
