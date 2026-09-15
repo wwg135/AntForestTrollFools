@@ -7381,6 +7381,36 @@ static NSString *manorChickenFeedStatus(NSDictionary *ownAnimal, NSDictionary *s
     return [st isKindOfClass:NSString.class] ? st : nil;
 }
 
+// 「吃完立即补喂」的单次定时（照 AntManor v15 的单次定时范式：非轮询、无发热风险）
+// 用「代次 + 绝对时间」代替 NSTimer：重复预约自然作废旧预约，不必持有 runloop
+static NSInteger gManorFeedWakeSeq = 0;
+static NSTimeInterval gManorFeedWakeAt = 0;
+static const NSTimeInterval kManorFeedWakeGrace = 1.0;
+
+static void manorCancelFeedWake(void) {
+    gManorFeedWakeSeq++;
+    gManorFeedWakeAt = 0;
+}
+
+static void manorScheduleFeedWake(AntForestManager *mgr, NSInteger countdown) {
+    if (!mgr || countdown <= 0) return;
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    NSTimeInterval fireAt = now + (NSTimeInterval)countdown + kManorFeedWakeGrace;
+    NSTimeInterval diff = gManorFeedWakeAt - fireAt;
+    if (gManorFeedWakeAt > 0 && diff < 5.0 && diff > -5.0) return;   // 同一轮的重复回包不重排
+    gManorFeedWakeAt = fireAt;
+    NSInteger seq = ++gManorFeedWakeSeq;
+    NSTimeInterval delay = (NSTimeInterval)countdown + kManorFeedWakeGrace;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (seq != gManorFeedWakeSeq) return;   // 已被更新的预约取代（小鸡又吃上了 / 睡觉已取消）
+        gManorFeedWakeAt = 0;
+        [mgr recordStage:@"蚂蚁庄园：小鸡进食倒计时结束，正在刷新状态并补喂..."];
+        // 到点先拉权威状态（enterFarm 回包自带 farmVO.subFarmVO.foodInTrough / countdown），
+        // 投喂由状态驱动——不在到点这一瞬盲喂（缺字段读成 0 的历史坑）
+        [mgr enterManorFarm];
+    });
+}
+
 - (void)handleManorResponse:(NSDictionary *)dict {
     if (!self.enableAutoManor) return;
     // 收蛋/抽抽乐监控：强持有庄园 Bridge（页面关闭后监控链仍可发请求）
@@ -7488,6 +7518,15 @@ static NSString *manorChickenFeedStatus(NSDictionary *ownAnimal, NSDictionary *s
             NSInteger foodLimit = [troughLimitRaw respondsToSelector:@selector(integerValue)] ? [troughLimitRaw integerValue] : 180;
             id troughCountRaw = subFarm[@"countdown"] ?: innerSub[@"countdown"];
             NSInteger countdown = [troughCountRaw respondsToSelector:@selector(integerValue)] ? [troughCountRaw integerValue] : 0;
+            
+            // 吃完立即补喂：只认「真的带回倒计时字段」的状态包——缺字段的包不能拿来取消已有预约
+            if (troughCountRaw != nil) {
+                if (countdown > 0 && !manorChickenSleeping()) {
+                    manorScheduleFeedWake(self, countdown);
+                } else {
+                    manorCancelFeedWake();
+                }
+            }
             
             // 真实判定：服务端进食状态权威优先；其次食盆余粮满了，或倒计时大于0且盆内有粮
             NSString *feedStatus = manorChickenFeedStatus(ownAnimal, subFarm, innerSub);
