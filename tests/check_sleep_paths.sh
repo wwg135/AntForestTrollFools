@@ -94,4 +94,15 @@ control_ver=$(sed -n 's/^Version:[[:space:]]*//p' "$control_file" 2>/dev/null | 
 entry_ver=$(sed -n 's/.*当前版本：\(v[0-9][0-9.]*\).*/\1/p' "$entry_file" 2>/dev/null | head -1)
 echo "   版本对照：control=${control_ver:-（读不到）} 面板=${entry_ver:-（读不到）}"
 
+# v3.3.5：睡觉「权威回执」——不再依赖 antfarm.sleep 回包归属
+grep -Fq '蚂蚁庄园：小鸡已睡着（服务端状态已确认），今夜不再重复送睡' "$source_file"
+grep -Fq 'gManorSleepSentAt' "$source_file"
+grep -Fq '睡觉回包：op=%@ memo=%@ code=%@' "$source_file"
+grep -Fq '送睡已发出，冷却期内不重复（等状态回执确认）' "$source_file"
+if grep -Fq '睡觉重试冷却中，稍后自动重试' "$source_file"; then
+    echo "❌ 旧歧义冷却文案未更新（读起来像失败）"
+    exit 1
+fi
+echo "✅ v3.3.5 睡觉回执权威化检查通过"
+
 echo "✅ All sleep (family villa) checks passed successfully!"
