@@ -2037,10 +2037,6 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
 - (void)registerBridge:(id)bridge withUrl:(NSString *)url {
     if (!bridge) return;
     self.jsBridge = bridge;
-    // v3.2.8：桥一就绪就尝试后台拉一次寻宝任务与抽奖（不进寻宝页面的「路 A」实测；10 分钟节流）
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [self forestDrawBackgroundProbe];
-    });
     
     NSString *effectiveUrl = url.length ? url : [self effectiveUrlForBridge:bridge];
     NSString *lowerUrl = effectiveUrl.lowercaseString;
@@ -6859,6 +6855,8 @@ static NSString *gForestDrawPendingKind = nil;
 static NSTimeInterval gForestDrawPendingAt = 0;
 static NSTimeInterval gForestDrawLastSweep = 0;
 static NSTimeInterval gForestDrawLastProbe = 0;
+static NSTimeInterval gForestDrawProbeAwaitUntil = 0;   // 后台探测已发出、等回包判定窗口（15s）
+static NSString *gForestDrawProbeDeniedDay = nil;       // 后台拉取被拒的日期（当日不再后台尝试）
 static NSInteger gForestDrawQueueIndex = -1;
 static NSUInteger gForestDrawSeq = 0;
 
@@ -7005,11 +7003,15 @@ static BOOL forestDrawPacketRejected(NSDictionary *resData, NSDictionary *dict) 
 // 路 A 实测：不进寻宝页面，用现有桥（森林主页/奖励页）拉一次寻宝任务列表，再交给抽奖 sweep
 - (void)forestDrawBackgroundProbe {
     if (!self.enableAutoRewardTasks) return;
+    forestDrawInitState();
+    forestDrawResetIfNewDay();
+    if ([gForestDrawProbeDeniedDay isEqualToString:getCurrentDateString()]) return;   // 当日被拒过 → 不再后台尝试
     PSDJsBridge *bridge = self.rewardTaskBridge ?: self.jsBridge;
     if (!bridge) return;
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     if (now - gForestDrawLastProbe < kForestDrawProbeGap) return;
     gForestDrawLastProbe = now;
+    gForestDrawProbeAwaitUntil = now + 15.0;
     forestDrawQuietLog(self, @"probe", @"森林寻宝：尝试后台拉取寻宝任务（不进寻宝页面）…");
     [self queryLotteryTaskListWithForce:YES];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -7127,6 +7129,14 @@ static BOOL forestDrawPacketRejected(NSDictionary *resData, NSDictionary *dict) 
     forestDrawInitState();
     forestDrawResetIfNewDay();
     forestDrawLearnFromPacket(resData);
+    // 后台探测被服务端拒绝 → 当日不再后台尝试（进寻宝页面仍正常做任务与抽奖）；须在「无在途即返回」之前判定
+    if (gForestDrawProbeAwaitUntil > 0 && [[NSDate date] timeIntervalSince1970] < gForestDrawProbeAwaitUntil) {
+        if (forestDrawPacketRejected(resData, resData)) {
+            gForestDrawProbeAwaitUntil = 0;
+            gForestDrawProbeDeniedDay = [getCurrentDateString() copy];
+            [self recordStage:@"森林寻宝：后台拉取被服务端拒绝，今日不再后台尝试（进寻宝页面仍正常做任务与抽奖）"];
+        }
+    }
     NSString *scene = gForestDrawPendingScene;
     if (!scene.length) return;
     if ([[NSDate date] timeIntervalSince1970] - gForestDrawPendingAt > kForestDrawReplyWait + 5.0) return;
@@ -9262,6 +9272,10 @@ static BOOL oceanPlanLoggedThisRound = NO;
             return;
         }
         self.isScanRunning = YES;
+        // v3.2.9：后台循环每轮也试一次森林寻宝后台拉取（内部 10 分钟节流 + 被拒即停当日）
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self forestDrawBackgroundProbe];
+        });
         oceanCleanedInCurrentRound = 0;
         oceanPlanLoggedThisRound = NO;
         lastCollectStartedAt = NSDate.date;
