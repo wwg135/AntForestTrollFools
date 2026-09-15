@@ -23,6 +23,7 @@ test:
 	sh tests/check_family_sign_paths.sh
 	sh tests/check_harvest_egg_paths.sh
 	sh tests/check_cuisine_feed_paths.sh
+	sh tests/check_feed_wake_paths.sh
 	sh tests/check_pending_award_paths.sh
 	sh tests/check_trough_state_paths.sh
 	sh tests/check_panel_log_paths.sh
