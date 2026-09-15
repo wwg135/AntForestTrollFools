@@ -59,8 +59,16 @@ chk "同场景重查节流"             "$M" 'kForestDrawThrottle'
 
 echo "=== 6. 触发点（批次收尾 / 桥就绪后台 / 寻宝页兜底） ==="
 chk "任务批次收尾触发抽奖"       "$M" '[self forestDrawSweepAfterTaskBatch:@"ANTFOREST_NORMAL_DRAW_TASK"]'
-chk "桥一就绪后台探测"           "$M" '[self forestDrawBackgroundProbe];'
 chk "后台探测有明确日志"         "$M" '不进寻宝页面'
+# v3.2.9：真实桥路径 = PortEntry finishForestHomeStart（registerBridge 是零调用死方法，曾挂错在此导致探测从不触发）
+awk '/^static void finishForestHomeStart/,/^}/' "$E" > /tmp/forest_home_start.txt
+awk '/^-[( ]*void[)]autoCollectBubbles \{/,/^}/' "$M" > /tmp/forest_collect_tick.txt
+chk "首页桥就绪路径挂探测"       "/tmp/forest_home_start.txt" '[manager forestDrawBackgroundProbe];'
+chk "后台循环每轮也试探测"       "/tmp/forest_collect_tick.txt" '[self forestDrawBackgroundProbe];'
+awk '/^- \(void\)registerBridge:/,/^}/' "$M" > /tmp/forest_regbridge.txt
+chkno "探测不再挂在零调用死方法上" "/tmp/forest_regbridge.txt" 'forestDrawBackgroundProbe'
+chk "后台被拒当日停"             "$M" 'gForestDrawProbeDeniedDay'
+chk "被拒判定在早返回之前"       "$M" '后台拉取被服务端拒绝，今日不再后台尝试'
 chk "寻宝页进来兜底扫一轮"       "$E" '[manager forestDrawSweepAfterTaskBatch:@"ANTFOREST_NORMAL_DRAW_TASK"]'
 chk "头文件公开两个入口"         "$H" '- (void)forestDrawBackgroundProbe;'
 
