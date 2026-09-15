@@ -78,6 +78,11 @@ chk "复用庄园天数口径"           "$M" 'manorDrawDaysText(manorDrawRemain
 chk "连抽完成日志含天数"         "$M" '连抽完成 %ld 次，获得 %@ · %@'
 chk "连抽开始日志含天数"         "$M" '任务已完成 → 当天连抽 %ld 次…'
 chk "无机会不刷屏（每天每场一次）" "$M" 'forestDrawQuietLog'
+chk "无机会日志带机会数=0"       "$M" '本轮无抽奖机会（机会数=0，'
+chk "缺字段≠0（缺 blance 不当无机会）" "$M" '机会数未取到（回包无 blance 键）'
+chk "缺字段留顶层键诊断"         "$M" 'forestDrawTopKeys'
+chk "后台拉取结果自证行"         "$M" '后台拉取成功（不进寻宝页面也拿到任务）'
+chk "探测间隔 30 分钟"           "$M" 'kForestDrawProbeGap  = 1800.0'
 
 echo "=== 8. 负向断言（历史坑） ==="
 chkno "不靠猜域前缀 antiep/antforest 找 op" "$M" 'com.alipay.antiep.batchDraw'
@@ -89,7 +94,7 @@ chk   "模块内机会数只认 drawAsset/blance"      "/tmp/forest_draw_module.
 chkno "抽奖不掺庄园喂食链"                   "$M" 'forestDrawFeedAnimal'
 chkno "不按阈值攒次数（用户口径无阈值）"     "$M" 'gForestDrawMinTimes'
 echo "  ---- 版本号（信息型，不作为门）----"
-grep -o 'v3\.2\.[0-9]*' PortEntry.m | head -1 | sed 's/^/    PortEntry 版本串: /'
+grep -m1 'versionLabel.text' PortEntry.m | sed 's/.*当前版本：//; s/";.*//' | sed 's/^/    PortEntry 面板版本串: /'
 grep -m1 '^Version:' antforest/Package/DEBIAN/control | sed 's/^/    control: /'
 
 echo
