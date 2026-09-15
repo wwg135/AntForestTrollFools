@@ -5080,11 +5080,42 @@ static NSString *manorTaskListDiag(NSArray *taskList) {
 
 static void recordEggDiagOnce(AntForestManager *mgr, NSString *key, NSString *message);
 
-// 领奖回执兜底：记账后 5 分钟仍无回执 → 允许再试（每任务每天最多 2 次）
+// 领奖回执兜底：记账后 90 秒仍无回执 → 允许再试（每任务每天最多 2 次）
 static const NSInteger kManorClaimMaxTries = 2;
-static const NSTimeInterval kManorClaimReceiptWait = 300.0;
-static NSMutableDictionary<NSString *, NSNumber *> *gManorClaimSentAt = nil;
-static NSMutableDictionary<NSString *, NSNumber *> *gManorClaimTryCount = nil;
+static const NSTimeInterval kManorClaimReceiptWait = 90.0;
+
+// v3.3.7：领奖记账的「发送时刻/次数」改存日缓存（原为内存字典，App 一重启即丢 → sent 读成 0 →
+// 既不重试也不领取、且无任何日志。用户实测：诊断报「可领 1 个」却零动作零日志）。
+// 每次提交追加一条 ANTFARM_CLAIM_SENT:<taskId>:<epoch>：次数=当日条数，时刻=其中最大值，随日缓存按天清零。
+static NSString *manorClaimSentPrefix(NSString *taskId) {
+    return [NSString stringWithFormat:@"ANTFARM_CLAIM_SENT:%@:", taskId];
+}
+
+static NSInteger manorClaimTries(NSString *taskId) {
+    NSString *prefix = manorClaimSentPrefix(taskId);
+    NSInteger tries = 0;
+    for (NSString *entry in gDailyCompletedTasks) {
+        if ([entry hasPrefix:prefix]) tries++;
+    }
+    return tries;
+}
+
+static NSTimeInterval manorClaimLastSent(NSString *taskId) {
+    NSString *prefix = manorClaimSentPrefix(taskId);
+    NSTimeInterval last = 0;
+    for (NSString *entry in gDailyCompletedTasks) {
+        if (![entry hasPrefix:prefix]) continue;
+        NSTimeInterval t = [[entry substringFromIndex:prefix.length] doubleValue];
+        if (t > last) last = t;
+    }
+    return last;
+}
+
+static void manorClaimMarkSent(NSString *taskId) {
+    initDailyTaskCache();
+    [gDailyCompletedTasks addObject:[NSString stringWithFormat:@"%@%ld", manorClaimSentPrefix(taskId), (long)[[NSDate date] timeIntervalSince1970]]];
+    saveDailyTaskCache();
+}
 
 - (void)queryManorFarmTasks {
     if (!self.enableAutoManor) return;
@@ -5120,11 +5151,8 @@ static NSMutableDictionary<NSString *, NSNumber *> *gManorClaimTryCount = nil;
     NSString *url = self.manorH5Url ?: @"https://66666674.h5app.alipay.com/www/index.html";
     NSString *claimArg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antfarm.receiveFarmTaskAward\",\"showError\":false,\"showLoading\":false,\"requestData\":[{\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"H5\",\"taskId\":\"%@\",\"version\":\"1.8.2302070202.46\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", taskId, timeStamp, randNum];
     [bridge _doFlushMessageQueue:claimArg url:url];
-    // v3.3.6：记账时刻 + 次数（用于回执兜底重试）
-    if (!gManorClaimSentAt) gManorClaimSentAt = [NSMutableDictionary dictionary];
-    if (!gManorClaimTryCount) gManorClaimTryCount = [NSMutableDictionary dictionary];
-    gManorClaimSentAt[taskId] = @(now);
-    gManorClaimTryCount[taskId] = @([gManorClaimTryCount[taskId] integerValue] + 1);
+    // v3.3.7：记账时刻 + 次数（用于回执兜底重试），改存日缓存，App 重启不丢
+    manorClaimMarkSent(taskId);
     [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：已提交领取“%@”（饲料奖励）...", title ?: taskId]];
 }
 
@@ -5182,6 +5210,21 @@ static NSMutableDictionary<NSString *, NSNumber *> *gManorClaimTryCount = nil;
                 NSString *today = getCurrentDateString();
                 [[NSUserDefaults standardUserDefaults] setObject:today forKey:@"lastManorAnswerDate"];
             }
+            // v3.3.7：状态即回执——服务端 RECEIVED = 奖励确已到账。每任务每天只记一行（RECEIVED 每轮都会命中，不去重会刷屏），
+            // 同时清掉该任务的等待态记账（已到账就不该再挂着重试）。
+            if (taskId.length && manorClaimLastSent(taskId) > 0) {
+                recordEggDiagOnce(self, [NSString stringWithFormat:@"manor_claim_ok:%@", taskId],
+                                  [NSString stringWithFormat:@"蚂蚁庄园：“%@”奖励已到账（服务端状态 RECEIVED）", title]);
+                NSString *sentPrefix = manorClaimSentPrefix(taskId);
+                NSMutableSet<NSString *> *delivered = [NSMutableSet set];
+                for (NSString *entry in gDailyCompletedTasks) {
+                    if ([entry hasPrefix:sentPrefix]) [delivered addObject:entry];
+                }
+                if (delivered.count) {
+                    [gDailyCompletedTasks minusSet:delivered];   // 已到账 → 清掉等待态记账（集合类型，用 minusSet:）
+                    saveDailyTaskCache();
+                }
+            }
             continue;
         }
         
@@ -5207,13 +5250,25 @@ static NSMutableDictionary<NSString *, NSNumber *> *gManorClaimTryCount = nil;
                 }
                 NSString *claimKey = [NSString stringWithFormat:@"ANTFARM_CLAIM_TASK:%@", taskId];
                 if ([gDailyCompletedTasks containsObject:claimKey]) {
-                    // v3.3.6 兜底：上次领奖未收到回执（500 毫秒记账后就没下文）→ 允许重试，最多 2 次/任务/天
-                    NSTimeInterval sent = [gManorClaimSentAt[taskId] doubleValue];
-                    NSInteger tries = [gManorClaimTryCount[taskId] integerValue];
-                    if (sent > 0 && now - sent > kManorClaimReceiptWait && tries < kManorClaimMaxTries) {
+                    NSTimeInterval sent = manorClaimLastSent(taskId);
+                    NSInteger tries = manorClaimTries(taskId);
+                    if (sent <= 0) {
+                        // v3.3.7：有记账却查不到发送记录（v3.3.6 及以前只写内存，App 重启即丢）→ 按「从未提交」补领
+                        [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：“%@”今日有领奖记账但查不到发送记录，按未领取补领一次", title]];
                         [gDailyCompletedTasks removeObject:claimKey];
                         saveDailyTaskCache();
-                        [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：“%@”领奖未收到回执（已试 %ld 次），重试领取…", title, (long)tries]];
+                    } else if (now - sent > kManorClaimReceiptWait && tries < kManorClaimMaxTries) {
+                        // 上次领奖未收到回执 → 允许重试，最多 2 次/任务/天
+                        [gDailyCompletedTasks removeObject:claimKey];
+                        saveDailyTaskCache();
+                        [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：“%@”领奖未收到回执（已试 %ld 次、%ld 秒前提交），重试领取…", title, (long)tries, (long)(now - sent)]];
+                    } else {
+                        // v3.3.7：不再静默——等待回执 / 已达重试上限都要留下可对账的一行（每任务每天一条）
+                        NSString *why = (tries >= kManorClaimMaxTries)
+                            ? [NSString stringWithFormat:@"已达今日重试上限 %ld 次", (long)tries]
+                            : [NSString stringWithFormat:@"%ld 秒前已提交，等待回执", (long)(now - sent)];
+                        recordEggDiagOnce(self, [NSString stringWithFormat:@"manor_claim_wait:%@", taskId],
+                                          [NSString stringWithFormat:@"蚂蚁庄园：“%@”今日已记账领奖（%@），本轮跳过", title, why]);
                     }
                 }
                 if (![gDailyCompletedTasks containsObject:claimKey]) {
