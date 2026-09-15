@@ -5117,6 +5117,31 @@ static void manorClaimMarkSent(NSString *taskId) {
     saveDailyTaskCache();
 }
 
+// v3.3.8：领奖「等回包」态 + 回包标记。用户实测：日志停在「已提交领取…」之后再无任何痕迹
+//（庄园回包入口按状态包结构分发，领奖回包 {code,memo} 不匹配任何分支，被静默丢弃）。
+static NSString *gManorClaimAwaitTaskId = nil;      // 仅在「已提交、未回包」期间非空
+static NSTimeInterval gManorClaimLastReplyAt = 0;   // 最近一次领奖回包时刻
+
+static NSString *manorClaimReplyPrefix(NSString *taskId) {
+    return [NSString stringWithFormat:@"ANTFARM_CLAIM_REPLY:%@:", taskId];
+}
+
+// 是否已收到该任务的领取回包（收到即不再盲重试，避免「清掉发送记录→又走补领」死循环）
+static BOOL manorClaimHasReply(NSString *taskId) {
+    NSString *prefix = manorClaimReplyPrefix(taskId);
+    for (NSString *entry in gDailyCompletedTasks) {
+        if ([entry hasPrefix:prefix]) return YES;
+    }
+    return NO;
+}
+
+static void manorClaimMarkReply(NSString *taskId) {
+    if (!taskId.length) return;
+    initDailyTaskCache();
+    [gDailyCompletedTasks addObject:[NSString stringWithFormat:@"%@%ld", manorClaimReplyPrefix(taskId), (long)[[NSDate date] timeIntervalSince1970]]];
+    saveDailyTaskCache();
+}
+
 - (void)queryManorFarmTasks {
     if (!self.enableAutoManor) return;
     PSDJsBridge *bridge = (self.manorBridge && self.manorBridge != self.jsBridge) ? self.manorBridge : nil;
@@ -5153,7 +5178,18 @@ static void manorClaimMarkSent(NSString *taskId) {
     [bridge _doFlushMessageQueue:claimArg url:url];
     // v3.3.7：记账时刻 + 次数（用于回执兜底重试），改存日缓存，App 重启不丢
     manorClaimMarkSent(taskId);
-    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：已提交领取“%@”（饲料奖励）...", title ?: taskId]];
+    // v3.3.8：进入「等回包」态，并挂 20 秒看门狗——回包不来时主动报出来（原来只打一行「已提交」就断线）
+    gManorClaimAwaitTaskId = [taskId copy];
+    gManorClaimLastReplyAt = 0;
+    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：已提交领取“%@”（taskId=%@, op=receiveFarmTaskAward）...", title ?: taskId, taskId]];
+    NSTimeInterval sentAt = now;
+    NSString *watchTaskId = [taskId copy];
+    NSString *watchTitle = title ?: taskId;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (gManorClaimAwaitTaskId.length && [gManorClaimAwaitTaskId isEqualToString:watchTaskId] && gManorClaimLastReplyAt < sentAt) {
+            [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园 · “%@”领取请求已发出 20 秒仍未见回包（H5 未 flush / 请求被拦截 / 服务端未应答），本轮按无回执处理", watchTitle]];
+        }
+    });
 }
 
 - (void)handleManorTaskList:(NSArray *)taskList {
@@ -5252,7 +5288,11 @@ static void manorClaimMarkSent(NSString *taskId) {
                 if ([gDailyCompletedTasks containsObject:claimKey]) {
                     NSTimeInterval sent = manorClaimLastSent(taskId);
                     NSInteger tries = manorClaimTries(taskId);
-                    if (sent <= 0) {
+                    if (manorClaimHasReply(taskId)) {
+                        // v3.3.8：服务端已就此任务回过包（见「领取回包」行）→ 今日不再重复领取
+                        recordEggDiagOnce(self, [NSString stringWithFormat:@"manor_claim_replied:%@", taskId],
+                                          [NSString stringWithFormat:@"蚂蚁庄园：“%@”今日已收到领取回包，不再重复领取（回包详情见上一条「领取回包」日志）", title]);
+                    } else if (sent <= 0) {
                         // v3.3.7：有记账却查不到发送记录（v3.3.6 及以前只写内存，App 重启即丢）→ 按「从未提交」补领
                         [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：“%@”今日有领奖记账但查不到发送记录，按未领取补领一次", title]];
                         [gDailyCompletedTasks removeObject:claimKey];
@@ -8487,6 +8527,28 @@ static void manorScheduleFeedWake(AntForestManager *mgr, NSInteger countdown) {
         NSDictionary *resData = [dict[@"resData"] isKindOfClass:NSDictionary.class] ? dict[@"resData"] : dict;
         // 菜谱识别：任何庄园回包里出现成对的 cookbookId + cuisineId，就记下来当真实可喂菜谱
         [self probeManorTaskResponse:dict resData:resData];   // v3.3.6-probe：任务列表/领奖回包全量留痕
+        // v3.3.8：领奖回包留痕 + 回执确认（收到回包就不再算「无回执」，杜绝盲重试）
+        {
+            NSString *respOp = [NSString stringWithFormat:@"%@", (dict[@"operationType"] ?: resData[@"operationType"]) ?: @""];
+            NSString *respMemo = [NSString stringWithFormat:@"%@", (resData[@"memo"] ?: dict[@"memo"] ?: resData[@"desc"] ?: dict[@"desc"]) ?: @""];
+            NSString *respCode = [NSString stringWithFormat:@"%@", (resData[@"code"] ?: dict[@"code"] ?: resData[@"resultCode"] ?: dict[@"resultCode"]) ?: @""];
+            BOOL looksLikeStatusPacket = (resData[@"subFarmVO"] || dict[@"subFarmVO"] || resData[@"signList"] || dict[@"signList"] ||
+                                          resData[@"farmTaskList"] || dict[@"farmTaskList"] || resData[@"bubbleConfig"] || dict[@"bubbleConfig"]);
+            BOOL isClaimReply = ([respOp containsString:@"receiveFarmTaskAward"] ||
+                                 (gManorClaimAwaitTaskId.length > 0 && !looksLikeStatusPacket));
+            if (isClaimReply) {
+                NSString *awaitId = gManorClaimAwaitTaskId ?: @"";
+                gManorClaimLastReplyAt = [[NSDate date] timeIntervalSince1970];
+                gManorClaimAwaitTaskId = nil;
+                [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园 · 领取回包（taskId=%@）：op=%@ code=%@ memo=%@ · 顶层键=%@",
+                                   awaitId.length ? awaitId : @"（未记录）",
+                                   respOp.length ? respOp : @"（无）",
+                                   respCode.length ? respCode : @"（无）",
+                                   respMemo.length ? respMemo : @"（无）",
+                                   [[dict allKeys] componentsJoinedByString:@","]]];
+                manorClaimMarkReply(awaitId);
+            }
+        }
         [self learnManorCuisinesFromObject:dict];
         // 库存识别：菜谱条目（cuisineList）+ 零食包（foodInfos）同时学
         [self learnManorCuisineStockFromObject:dict];
