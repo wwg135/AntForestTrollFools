@@ -85,6 +85,7 @@ chk "失败判据 verdict 独立"             "$M" 'BOOL verdict = (resData[@"su
 chk "无显式判据不下失败结论"            "$M" 'isManorDrawActOperation(opType) && verdict'
 chk "计划项携带 targetUrl"              "$M" '@"targetUrl": (task[@"targetUrl"] ?: @"")'
 chkno "旧版当天一次 HANDLED 已移除"    "$M" 'manorDrawDailyMark(@"HANDLED"'
+
 chk "回包先查做满标记"                 "$M" 'if ([gDailyCompletedTasks containsObject:manorDrawDailyMark(@"DONE", scene)]) return;'
 chk "桥断不消费本轮"                   "$M" 'if (![self activeManorBridge]) return;'
 chk "中途离开庄园有日志并留待补做"     "$M" '本轮中断，下次心跳补做'
