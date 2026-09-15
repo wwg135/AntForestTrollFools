@@ -1045,6 +1045,13 @@ NSString* getCurrentDateString() {
     return [formatter stringFromDate:currentDate];
 }
 
+// v3.1.5：HH:mm 字符串（零点窗口判定用）
+NSString* getCurrentHHMMString(void) {
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    [formatter setDateFormat:@"HH:mm"];
+    return [formatter stringFromDate:[NSDate date]];
+}
+
 NSString* getCurrentDateTimeString() {
     // 获取当前日期
     NSDate *currentDate = [NSDate date];
@@ -5036,12 +5043,19 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
             if (taskId.length) {
                 NSInteger stock = self.lastManorFoodStock;
                 NSInteger limit = self.lastManorFoodStockLimit > 0 ? self.lastManorFoodStockLimit : 1800;
-                if (stock >= limit && limit > 0) {
+                // v3.1.5 防吞（对齐官方 3.2 beta）：当前存量 + 本次可领 > 上限 即挂起，杜绝领出溢出被系统作废
+                if (limit > 0 && stock + award > limit) {
                     static NSTimeInterval lastFullLogTime = 0;
                     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
                     if (now - lastFullLogTime > 60) {
                         lastFullLogTime = now;
-                        [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：饲料背包已满（%ldg/%ldg），暂不领取“%@”，待小鸡进食后再领", (long)stock, (long)limit, title]];
+                        [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：饲料背包已满或将溢出（当前 %ldg/%ldg，待领 %ldg），暂不领取“%@”，待小鸡进食后再领", (long)stock, (long)limit, (long)award, title]];
+                    }
+                    // 挂起记账：本轮不领，小鸡进食消耗后自然回落，下轮再领（幂等，防重复记账）
+                    NSString *suspendKey = [NSString stringWithFormat:@"ANTFARM_SUSPEND_TASK:%@", taskId];
+                    if (![gDailyCompletedTasks containsObject:suspendKey]) {
+                        [gDailyCompletedTasks addObject:suspendKey];
+                        saveDailyTaskCache();
                     }
                     continue;
                 }
@@ -5049,7 +5063,7 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
                 if (![gDailyCompletedTasks containsObject:claimKey]) {
                     [gDailyCompletedTasks addObject:claimKey];
                     saveDailyTaskCache();
-                    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：发现已完成任务“%@”，正在领取 %ldg 饲料...", title, (long)award]];
+                    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：发现已完成任务“%@”，正在领取 %ldg 饲料（预估容量 %ldg/%ldg）...", title, (long)award, (long)stock, (long)limit]];
                     [self receiveManorFarmTaskAwardWithTaskId:taskId title:title];
                 }
             }
@@ -6065,6 +6079,18 @@ static void markManorSleepDone(void) {
     [[NSUserDefaults standardUserDefaults] setObject:getCurrentDateString() forKey:kManorSleepDoneDateKey];
 }
 
+// v3.1.5：零点窗口补跑当日去重（对齐官方 3.2 beta lastManorSignDate 思路，跨启动有效）
+static NSString * const kManorMidnightSweepDateKey = @"antforest_manor_midnight_sweep_date";
+
+static BOOL isManorMidnightSweepDoneToday(void) {
+    NSString *last = [[NSUserDefaults standardUserDefaults] stringForKey:kManorMidnightSweepDateKey];
+    return [last isEqualToString:getCurrentDateString()];
+}
+
+static void markManorMidnightSweepDoneToday(void) {
+    [[NSUserDefaults standardUserDefaults] setObject:getCurrentDateString() forKey:kManorMidnightSweepDateKey];
+}
+
 - (void)sleepManorChicken {
     if (!self.enableAutoManor) return;
     if (!isManorSleepTime()) {
@@ -6273,6 +6299,18 @@ static NSTimeInterval gLastManorCheckTime = 0;
     
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     if (gLastManorCheckTime > 0 && now - gLastManorCheckTime < 15.0) return;
+    
+    // 零点窗口补跑（v3.1.5，对齐官方 3.2 beta）：每天 00:00-00:10 之间补一轮完整自动化体检，
+    // 解决「跨零点挂后台时签到/领奖励任务不做」——签到/领奖各自有当日去重，补跑不会重复请求。
+    if (!isManorMidnightSweepDoneToday()) {
+        NSString *hhmm = getCurrentHHMMString();
+        if ([hhmm compare:@"00:00"] == NSOrderedDescending && [hhmm compare:@"00:10"] == NSOrderedAscending) {
+            [self recordStage:@"蚂蚁庄园：进入零点窗口，补跑每日签到与领奖励体检..."];
+            markManorMidnightSweepDoneToday();
+            [self checkAndRunManorAutomations];
+            return;
+        }
+    }
     
     if (isManorSleepTime() && !isManorSleepDoneToday()) {
         [self sleepManorChicken];
