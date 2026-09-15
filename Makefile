@@ -27,6 +27,7 @@ test:
 	sh tests/check_pending_award_paths.sh
 	sh tests/check_trough_state_paths.sh
 	sh tests/check_draw_machine_paths.sh
+	sh tests/check_forest_draw_paths.sh
 	sh tests/check_panel_log_paths.sh
 
 $(TARGET): $(SOURCES)

@@ -1331,7 +1331,7 @@ static void installEarnEnergyCollector(id controller) {
     UISwitch *oceanSwitch = [[UISwitch alloc] init]; oceanSwitch.on = AntForestManager.sharedInstance.enableCleanOcean; oceanSwitch.translatesAutoresizingMaskIntoConstraints = NO; [oceanSwitch addTarget:self action:@selector(toggleCleanOcean:) forControlEvents:UIControlEventValueChanged]; [ocean addSubview:oceanSwitch];
     UIButton *oceanTasks = [self settingsButtonWithTitle:@"神奇海洋（自动任务）" detail:@"自动完成海洋日常任务与拼图领奖" icon:@"sparkles.rectangle.stack.fill" action:nil];
     UISwitch *oceanTasksSwitch = [[UISwitch alloc] init]; oceanTasksSwitch.on = AntForestManager.sharedInstance.enableAutoOceanTasks; oceanTasksSwitch.translatesAutoresizingMaskIntoConstraints = NO; [oceanTasksSwitch addTarget:self action:@selector(toggleAutoOceanTasks:) forControlEvents:UIControlEventValueChanged]; [oceanTasks addSubview:oceanTasksSwitch];
-    UIButton *reward = [self settingsButtonWithTitle:@"领奖励 & 森林寻宝" detail:@"自动浏览任务、奖励领取、森林寻宝需手动进入才能触发自动浏览任务。" icon:@"gift.fill" action:nil];
+    UIButton *reward = [self settingsButtonWithTitle:@"领奖励 & 森林寻宝" detail:@"自动浏览任务、奖励领取；森林寻宝自动做任务并把当天机会一次性连抽（后台尝试，失败自动熔断）" icon:@"gift.fill" action:nil];
     UISwitch *rewardSwitch = [[UISwitch alloc] init]; rewardSwitch.on = AntForestManager.sharedInstance.enableAutoRewardTasks; rewardSwitch.translatesAutoresizingMaskIntoConstraints = NO; [rewardSwitch addTarget:self action:@selector(toggleAutoRewardTasks:) forControlEvents:UIControlEventValueChanged]; [reward addSubview:rewardSwitch];
     
     UIButton *aiFish = [self settingsButtonWithTitle:@"AI摸鱼（任务与机会）" detail:@"手动进入AI摸鱼自动完成奖励任务并领取" icon:@"fish.fill" action:nil];
@@ -1599,7 +1599,7 @@ static void installEarnEnergyCollector(id controller) {
 
     [self.view addSubview:grabber];
     UILabel *versionLabel = [[UILabel alloc] init];
-    versionLabel.text = @"当前版本：v3.2.7";
+    versionLabel.text = @"当前版本：v3.2.8";
     versionLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightRegular];
     versionLabel.textColor = [UIColor systemGray2Color];
     versionLabel.textAlignment = NSTextAlignmentCenter;
@@ -2277,6 +2277,10 @@ static void portViewDidAppear(id self, SEL _cmd, BOOL animated) {
         }
         NSLog(@"[AntForestPort] 🎰 进入森林寻宝，已就绪 Bridge: %@", bridge);
         [manager recordStage:@"森林寻宝：进入寻宝界面，已就绪 Bridge，开始拉取寻宝任务与抽奖机会..."];
+        // v3.2.8：页面进来 35 秒后兜底扫一轮抽奖（任务批次收尾也会触发，此处防漏）
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(35.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [manager forestDrawSweepAfterTaskBatch:@"ANTFOREST_NORMAL_DRAW_TASK"];
+        });
         NSArray<NSNumber *> *delays = @[@400, @1200, @2500];
         for (NSNumber *d in delays) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)([d integerValue] * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
