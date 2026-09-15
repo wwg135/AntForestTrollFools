@@ -6979,7 +6979,7 @@ static void forestDrawCountTasks(id packet, NSInteger *total, NSInteger *pending
     __block NSInteger t = 0, p = 0;
     __block NSInteger budget = 4000;
     forestDrawWalk(packet, 0, &budget, ^(NSDictionary *d) {
-        for (NSString *k in @[@"taskInfoList", @"taskList", @"farmTaskList", @"vitalityTaskList"]) {
+        for (NSString *k in @[@"taskInfoList", @"taskList", @"subTaskList", @"farmTaskList", @"vitalityTaskList"]) {
             id arr = d[k];
             if (![arr isKindOfClass:NSArray.class]) continue;
             NSArray *a = (NSArray *)arr;
@@ -7170,7 +7170,7 @@ static BOOL forestDrawPacketRejected(NSDictionary *resData, NSDictionary *dict) 
         NSInteger probeTotal = 0, probePending = 0;
         forestDrawCountTasks(resData, &probeTotal, &probePending);
         if (probeTotal > 0) {
-            forestDrawQuietLog(self, @"probeok", [NSString stringWithFormat:@"森林寻宝：后台拉取成功（不进寻宝页面也拿到任务），本轮任务 %ld 个、待做 %ld 个", (long)probeTotal, (long)probePending]);
+            forestDrawQuietLog(self, @"probeok", [NSString stringWithFormat:@"森林寻宝：后台拉取成功（不进寻宝页面也拿到任务），本轮任务 %ld 个（待做 %ld、其余已处理 %ld）", (long)probeTotal, (long)probePending, (long)(probeTotal - probePending)]);
         }
         if (forestDrawPacketRejected(resData, resData)) {
             gForestDrawProbeAwaitUntil = 0;
