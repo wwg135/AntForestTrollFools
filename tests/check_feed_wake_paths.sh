@@ -75,11 +75,11 @@ echo "[8/8] Checking version bump (informational) + no new independent switch...
 control_ver=$(sed -n 's/^Version:[[:space:]]*//p' "$control_file" 2>/dev/null | head -1)
 entry_ver=$(sed -n 's/.*当前版本：\(v[0-9][0-9.]*\).*/\1/p' "$entry_file" 2>/dev/null | head -1)
 echo "   版本对照：control=${control_ver:-（读不到）} 面板=${entry_ver:-（读不到）}"
-if [ "$control_ver" != "3.2.3" ]; then
+if [ "$control_ver" != "3.2.4" ]; then
     echo "⚠️ control 版本不是 3.2.3（实际：${control_ver:-空}）—— 请把 antforest/Package/DEBIAN/control 一并覆盖"
 fi
-if [ "$entry_ver" != "v3.2.3" ]; then
-    echo "⚠️ 面板版本号不是 v3.2.3（实际：${entry_ver:-空}）—— 请把 PortEntry.m 一并覆盖"
+if [ "$entry_ver" != "v3.2.4" ]; then
+    echo "⚠️ 面板版本号不是 v3.2.4（实际：${entry_ver:-空}）—— 请把 PortEntry.m 一并覆盖"
 fi
 if grep -Fq 'antforest_feedwake' "$source_file" "$entry_file"; then
     echo "❌ 不得为本次修复新增独立开关"
