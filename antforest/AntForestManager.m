@@ -5498,6 +5498,44 @@ static void manorNoteCuisineFail(NSString *cuisineId, NSString *reason) {
         ? [NSString stringWithFormat:@"%@、%@", gManorCuisineRoundFailNote, item] : item;
 }
 
+
+// 零食包投喂（useFarmFood + foodType 口径，抓包实证）：有库存就一个一个喂，喂完/没库存自动收工
+- (void)feedManorChickenWithSnack {
+    if (!self.enableAutoManor) return;
+    if (manorChickenSleeping()) return;
+    if (gManorSnackInFlight) return;   // 有请求在飞：等回包
+    if (!gManorSnackStock.count) {
+        [self recordStage:@"蚂蚁庄园：暂无可投喂的零食包，转普通饲料投喂"];
+        [self feedManorChicken];
+        return;
+    }
+    PSDJsBridge *bridge = [self activeManorBridge];
+    if (!bridge) { [self feedManorChicken]; return; }
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    NSString *timeStamp = [NSString stringWithFormat:@"%ld", (long)(now * 1000)];
+    NSString *randNum = [AntForestManager getNumberRandom:15];
+    NSString *url = [self manorRPCUrlString];
+    // 取第一个有库存的零食包
+    NSString *foodType = nil;
+    NSInteger remain = 0;
+    for (NSString *ft in gManorSnackStock) {
+        NSInteger cnt = [gManorSnackStock[ft] integerValue];
+        if (cnt > 0) { foodType = ft; remain = cnt; break; }
+    }
+    if (!foodType) { gManorSnackStock = [NSMutableDictionary dictionary]; [self feedManorChicken]; return; }
+    NSString *snackArg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antfarm.useFarmFood\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"chInfo_ch_appcenter__chsub_9patch\"},\"requestType\":\"NORMAL\",\"requestData\":{\"requestType\":\"NORMAL\",\"version\":\"1.8.2302070202.46\",\"foodType\":\"%@\",\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"sceneCode\":\"ANTFARM\"},\"version\":\"1.8.2302070202.46\"}}]", foodType];
+    manorSendRPC(bridge, snackArg, url);
+    gManorSnackInFlight = foodType;
+    gManorSnackRunning = YES;
+    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：正在投喂零食包（%@，剩余 %ld 个）...", foodType, (long)remain]];
+    // 4 秒无回包：按失败处理，取下一种
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4000 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+        if (!gManorSnackInFlight) return;
+        gManorSnackInFlight = nil;
+        [self feedManorChickenWithSnack];
+    });
+}
+
 - (void)feedManorChickenWithAdvancedFood {
     if (!self.enableAutoManor) return;
     if (manorChickenSleeping()) return;   // 小鸡在睡觉：饲料投不进去，等静默期过再试
@@ -5602,9 +5640,15 @@ static void manorNoteCuisineFail(NSString *cuisineId, NSString *reason) {
     }
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     if (silent) {
-        gManorCuisineStopUntil = now + 600;   // 没有可喂的高级饲料：静默收工，10 分钟后再看一次库存
+        // 菜谱喂完/没有可喂的高级饲料 → 先试零食包（9/15 新增：零食包 foodInfos 体系），再转普通饲料
+        if (gManorSnackStock.count) {
+            gManorCuisineStopUntil = 0;
+            [self feedManorChickenWithSnack];
+            return;
+        }
+        gManorCuisineStopUntil = now + 600;   // 零食包也没有：静默收工，10 分钟后再看一次库存
         if (!roundRan) {
-            recordEggDiagOnce(self, @"cuisine_none", @"蚂蚁庄园：当前没有可投喂的高级饲料（已按库存跳过），下一轮自动重查");
+            recordEggDiagOnce(self, @"cuisine_none", @"蚂蚁庄园：当前没有可投喂的高级饲料/零食包（已按库存跳过），下一轮自动重查");
         }
         return;
     }
@@ -7159,11 +7203,52 @@ static NSString *manorDrawTracerGroupId(NSDictionary *task) {
 }
 
 // 识别到库存就投喂（除小鸡睡觉外任何时候都能喂，含正在吃普通饲料时）
+
+// ============ 零食包体系（foodInfos）============
+// 抓包 9/15 实证（ManorProbe v0.2.5）：用户口中的「高级饲料」= 零食包（foodInfos[].foodType/foodCount/foodName）
+// 与菜谱体系（cuisineList 厨房/抽抽乐产出）完全独立。投喂 op 同为 useFarmFood，但请求体只带 foodType，
+// 回包用 preFoodCount→foodCount 递减判定成功。库存来源：enterFarm/syncAnimalStatus 回包 foodInfos 字段。
+static NSMutableDictionary *gManorSnackStock = nil;      // foodType -> NSNumber 剩余数（回包实时识别）
+static NSTimeInterval gManorSnackStockAt = 0;            // 最近一次识别到零食库存的时间
+static NSString *gManorSnackInFlight = nil;              // 在飞的零食包 foodType
+static NSUInteger gManorSnackFedCount = 0;               // 本轮已投喂零食个数
+static BOOL gManorSnackRunning = NO;                     // 本轮零食投喂进行中
+
+- (void)learnManorSnackStockFromObject:(id)obj {
+    if (!self.enableAutoManor || !obj) return;
+    // 只认 foodInfos 数组里的 foodType + foodCount（stock 类字段），与菜谱互不干扰
+    static NSTimeInterval lastScan = 0;
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    if (now - lastScan < 0.5) return;
+    lastScan = now;
+    if (![obj isKindOfClass:NSDictionary.class]) return;
+    NSDictionary *dict = (NSDictionary *)obj;
+    NSDictionary *resData = [dict[@"resData"] isKindOfClass:NSDictionary.class] ? dict[@"resData"] : dict;
+    NSArray *infos = [resData[@"foodInfos"] isKindOfClass:NSArray.class] ? resData[@"foodInfos"] : ([dict[@"foodInfos"] isKindOfClass:NSArray.class] ? dict[@"foodInfos"] : nil);
+    if (!infos.count) return;
+    if (!gManorSnackStock) gManorSnackStock = [NSMutableDictionary dictionary];
+    NSUInteger owned = 0;
+    for (id item in infos) {
+        if (![item isKindOfClass:NSDictionary.class]) continue;
+        NSString *foodType = [item[@"foodType"] isKindOfClass:NSString.class] ? item[@"foodType"] : nil;
+        NSInteger count = [item[@"foodCount"] respondsToSelector:@selector(integerValue)] ? [item[@"foodCount"] integerValue] : 0;
+        if (!foodType.length || count <= 0) continue;
+        gManorSnackStock[foodType] = @(count);
+        owned++;
+    }
+    if (owned) {
+        gManorSnackStockAt = now;
+        recordEggDiagOnce(self, @"snack_stock",
+                          [NSString stringWithFormat:@"蚂蚁庄园 · 零食包库存识别：持有 %lu 种（含脆甜苹果等）", (unsigned long)owned]);
+    }
+}
+
 - (void)learnManorCuisineStockFromObject:(id)obj {
     if (!self.enableAutoManor || !obj) return;
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     if (now - gManorCuisineStockScanAt < 0.5) return;
     gManorCuisineStockScanAt = now;
+    [self learnManorSnackStockFromObject:obj];   // 零食包库存同步（foodInfos/foodCount）
     NSMutableDictionary *found = [NSMutableDictionary dictionary];
     NSUInteger budget = 600;
     manorScanCuisineStock(obj, found, &budget);
@@ -7226,8 +7311,9 @@ static NSString *manorDrawTracerGroupId(NSDictionary *task) {
         NSDictionary *resData = [dict[@"resData"] isKindOfClass:NSDictionary.class] ? dict[@"resData"] : dict;
         // 菜谱识别：任何庄园回包里出现成对的 cookbookId + cuisineId，就记下来当真实可喂菜谱
         [self learnManorCuisinesFromObject:dict];
-        // 库存识别：回包里的菜谱条目带持有数，学到就按库存投喂
+        // 库存识别：菜谱条目（cuisineList）+ 零食包（foodInfos）同时学
         [self learnManorCuisineStockFromObject:dict];
+        [self learnManorSnackStockFromObject:dict];
         
         
         // A. 小鸡与饭盆状态检测 (subFarmVO / ownAnimal)
@@ -7604,6 +7690,51 @@ static NSString *manorDrawTracerGroupId(NSDictionary *task) {
                     }
                 }
             }
+
+            // 零食包 in-flight 分支（9/15 新增）：useFarmFood 回包 foodCount 递减判定
+            if (gManorSnackInFlight) {
+                NSString *snackFt = gManorSnackInFlight;   // 先留底（后面会清掉）
+                gManorSnackInFlight = nil;
+                NSString *snackMemo = [resData[@"memo"] isKindOfClass:NSString.class] ? resData[@"memo"] : ([dict[@"memo"] isKindOfClass:NSString.class] ? dict[@"memo"] : @"");
+                BOOL snackOk = [resData[@"success"] boolValue] || [dict[@"success"] boolValue] ||
+                               [resData[@"resultCode"] isEqualToString:@"100"] || [dict[@"resultCode"] isEqualToString:@"100"] ||
+                               [snackMemo containsString:@"SUCCESS"];
+                if (snackOk) {
+                    // preFoodCount→foodCount 递减：喂前剩余减喂后剩余=本次消耗
+                    NSInteger pre = [resData[@"preFoodCount"] respondsToSelector:@selector(integerValue)] ? [resData[@"preFoodCount"] integerValue] : 0;
+                    NSInteger post = [resData[@"foodCount"] respondsToSelector:@selector(integerValue)] ? [resData[@"foodCount"] integerValue] : 0;
+                    gManorSnackFedCount++;
+                    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：零食包投喂成功（第 %lu 个，%@ 剩余 %ld 个）", (unsigned long)gManorSnackFedCount, snackFt, (long)post]];
+                    // 更新本地库存：foodCount 归 0 就从清单移除
+                    if (post <= 0) {
+                        [gManorSnackStock removeObjectForKey:snackFt];
+                    } else {
+                        gManorSnackStock[snackFt] = @(post);
+                    }
+                    if (gManorSnackStock.count) {
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1200 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+                            [self feedManorChickenWithSnack];
+                        });
+                    } else {
+                        [self recordStage:@"蚂蚁庄园：零食包已全部投喂完毕，转普通饲料投喂"];
+                        gManorSnackRunning = NO;
+                        [self feedManorChicken];
+                    }
+                } else {
+                    // 服务端拒绝：从清单移除这一个，换下一个或转普通饲料
+                    [gManorSnackStock removeObjectForKey:snackFt];
+                    if (gManorSnackStock.count) {
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1200 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+                            [self feedManorChickenWithSnack];
+                        });
+                    } else {
+                        [self recordStage:@"蚂蚁庄园：零食包投喂暂停，转普通饲料投喂"];
+                        gManorSnackRunning = NO;
+                        [self feedManorChicken];
+                    }
+                }
+            }
+
         }
     } @catch (NSException *e) {
         NSLog(@"[AntForestPort] Exception in handleManorResponse: %@", e);
