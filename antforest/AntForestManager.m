@@ -5525,6 +5525,22 @@ static void manorNoteCuisineFail(NSString *cuisineId, NSString *reason) {
 }
 
 
+// 饭盆空闲发起的投喂意图（15 秒窗口）：高级饲料/零食包都没有可投时必须转普通 180g 兜底，
+// 否则「小鸡在等吃」却因为账上没有高级饲料就永远喂不上（9/15 用户实测：盆内 0g / 背包 1800g 却不投喂）
+static NSTimeInterval gManorBowlEmptyFeedWantedAt = 0;
+static const NSTimeInterval kManorBowlEmptyFeedWindow = 15.0;
+static NSTimeInterval gLastManorPlainFeedFallbackAt = 0;
+
+// 消费「该转普通饲料了」的意图：YES 表示这次由普通 180g 接手（60 秒内只兜底一次，防请求风暴）
+static BOOL manorConsumeBowlEmptyFeedWanted(void) {
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    if (!(gManorBowlEmptyFeedWantedAt > 0 && now - gManorBowlEmptyFeedWantedAt < kManorBowlEmptyFeedWindow)) return NO;
+    if (gLastManorPlainFeedFallbackAt > 0 && now - gLastManorPlainFeedFallbackAt < 60.0) return NO;
+    gManorBowlEmptyFeedWantedAt = 0;
+    gLastManorPlainFeedFallbackAt = now;
+    return YES;
+}
+
 // 零食包投喂（useFarmFood + foodType 口径，抓包实证）：有库存就一个一个喂，喂完/没库存自动收工
 - (void)feedManorChickenWithSnack {
     if (!self.enableAutoManor) return;
@@ -5569,7 +5585,14 @@ static void manorNoteCuisineFail(NSString *cuisineId, NSString *reason) {
     // 小鸡正在进食中照喂：高级饲料除睡觉外任何时候都能投（9/11 用户口径）
     
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-    if (gManorCuisineStopUntil > 0 && now < gManorCuisineStopUntil) return;
+    if (gManorCuisineStopUntil > 0 && now < gManorCuisineStopUntil) {
+        // 高级饲料还在冷却：小鸡饭盆空着就不能一直等 → 普通 180g 接手
+        if (manorConsumeBowlEmptyFeedWanted()) {
+            [self recordStage:@"蚂蚁庄园：高级饲料冷却中且没有零食包，转普通 180g 饲料投喂"];
+            [self feedManorChicken];
+        }
+        return;
+    }
     
     PSDJsBridge *bridge = [self activeManorBridge];
     if (!bridge) {
@@ -5591,6 +5614,7 @@ static void manorNoteCuisineFail(NSString *cuisineId, NSString *reason) {
             return;
         }
         gManorCuisineRunning = YES;
+        gManorBowlEmptyFeedWantedAt = 0;   // 高级饲料已在投，不需要普通饲料兜底
         gManorCuisineFedCount = 0;
         gManorCuisineCursor = 0;
         gManorCuisineRoundOwned = manorOwnedCuisineList().count;
@@ -5672,7 +5696,14 @@ static void manorNoteCuisineFail(NSString *cuisineId, NSString *reason) {
             [self feedManorChickenWithSnack];
             return;
         }
-        gManorCuisineStopUntil = now + 600;   // 零食包也没有：静默收工，10 分钟后再看一次库存
+        // 饭盆空闲发起的投喂：高级饲料/零食包都没有可投 → 普通 180g 接手（别让"没有高级饲料"变成不喂）
+        if (manorConsumeBowlEmptyFeedWanted()) {
+            gManorCuisineStopUntil = 0;
+            [self recordStage:@"蚂蚁庄园：没有可投喂的高级饲料/零食包，转普通 180g 饲料投喂"];
+            [self feedManorChicken];
+            return;
+        }
+        gManorCuisineStopUntil = now + 600;   // 非饭盆空闲发起（体检/学习链）：静默收工，10 分钟后再看一次库存
         if (!roundRan) {
             recordEggDiagOnce(self, @"cuisine_none", @"蚂蚁庄园：当前没有可投喂的高级饲料/零食包（已按库存跳过），下一轮自动重查");
         }
@@ -7606,9 +7637,11 @@ static void manorScheduleFeedWake(AntForestManager *mgr, NSInteger countdown) {
                     recordEggDiagOnce(self, @"stock_unknown", @"蚂蚁庄园：背包存量还没同步到，本轮暂缓投喂（不盲喂）");
                 } else if (foodStock >= 180) {
                     [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：检测到小鸡饭盆空闲（盆内 %ldg / 背包存量 %ldg），正在自动投喂（优先高级饲料）...", (long)foodInTrough, (long)foodStock]];
+                    gManorBowlEmptyFeedWantedAt = [[NSDate date] timeIntervalSince1970];
                     [self feedManorChickenWithAdvancedFood];
                 } else if (foodStock > 0) {
                     [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：检测到小鸡饭盆空闲，背包存量不足 180g（当前 %ldg），尝试投喂（优先高级饲料）...", (long)foodStock]];
+                    gManorBowlEmptyFeedWantedAt = [[NSDate date] timeIntervalSince1970];
                     [self feedManorChickenWithAdvancedFood];
                 } else {
                     [self recordStage:@"蚂蚁庄园：小鸡饭盆空闲，但背包饲料存量为 0g，需先做任务赚饲料"];
