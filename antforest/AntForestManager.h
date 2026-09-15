@@ -35,6 +35,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, copy) NSString *lastCleanedOceanUserId;
 @property (nonatomic, strong) NSTimer *scheduledCollectTimer;
 @property (nonatomic, strong) NSTimer *scheduledWaterTimer;
+@property (nonatomic, strong) NSTimer *manorEggWatchTimer; // 收蛋监控定时器（60 秒一轮常驻探测）
+@property (nonatomic, assign) NSInteger lastManorEggPercent; // 蛋巢产蛋进度 0-100（benevolenceScore×100）
+@property (nonatomic, assign) BOOL lastManorEggPercentKnown; // 蛋巢进度是否已从服务端回包取到
 
 @property (assign, nonatomic) BOOL enableAutoCollect; //允许自动收集则自动开启后台模式
 @property (assign, nonatomic) BOOL enableSelfCollect;
@@ -145,6 +148,8 @@ NS_ASSUME_NONNULL_BEGIN
 -(void)stopManorAdvancedFoodFeed:(NSString *)reason;
 -(void)collectManorChickenManure;
 -(void)collectManorChickenManurePot:(NSString *)potNo;
+-(void)startManorEggWatchTimer;
+-(void)manorEggWatchTick;
 -(void)harvestManorEgg;
 -(void)expelManorVisitors:(NSArray *)animals;
 -(void)sendBackManorAnimal:(NSString *)animalId masterFarmId:(NSString *)masterFarmId;

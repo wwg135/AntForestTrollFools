@@ -5458,6 +5458,67 @@ static void recordEggDiagOnce(AntForestManager *mgr, NSString *key, NSString *me
     [mgr recordStage:message];
 }
 
+// 收蛋监控心跳（秒）：照 AntManor「实时监听」口径，最短 1 分钟一轮
+static NSTimeInterval const kManorEggWatchInterval = 60.0;
+// 喂鸡静默探针间隔（秒）：照 AntManor quietWatchTick 口径，5 分钟一轮盲探，服务端裁决、失败静默
+static NSTimeInterval const kManorFeedProbeInterval = 300.0;
+
+// 监控计数：面板只保留最近 100 条日志，心跳逐条记会刷屏，按「每小时一条汇总」输出；成功类逐次记录、不封顶
+static NSString *gLastWatchSummaryHour = nil;
+static NSUInteger gWatchEggSent = 0;    // 本小时发出的收蛋请求次数
+static NSUInteger gWatchEggOk = 0;      // 本小时成功收到蛋的次数
+static NSUInteger gWatchFeedProbe = 0;  // 本小时喂鸡探针次数
+static NSUInteger gWatchFeedOk = 0;     // 本小时投喂成功次数
+
+static NSString *getCurrentHourString(void) {
+    NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
+    fmt.dateFormat = @"yyyy-MM-dd HH";
+    return [fmt stringFromDate:[NSDate date]];
+}
+
+// 每小时一条监控汇总：让「收蛋/喂鸡每天不止一次」在面板上按次数可见（成功类仍逐次记录）
+- (void)flushManorWatchSummaryIfNeeded {
+    NSString *hour = getCurrentHourString();
+    if (!gLastWatchSummaryHour.length) {
+        gLastWatchSummaryHour = hour;
+        return;
+    }
+    if ([hour isEqualToString:gLastWatchSummaryHour]) return;
+    gLastWatchSummaryHour = hour;
+    if (!(gWatchEggSent || gWatchEggOk || gWatchFeedProbe || gWatchFeedOk)) return;
+    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园 · 监控汇总（近 1 小时）：收蛋探测 %lu 次 / 成功 %lu 次，喂鸡探测 %lu 次 / 成功 %lu 次",
+                      (unsigned long)gWatchEggSent, (unsigned long)gWatchEggOk,
+                      (unsigned long)gWatchFeedProbe, (unsigned long)gWatchFeedOk]];
+    gWatchEggSent = 0;
+    gWatchEggOk = 0;
+    gWatchFeedProbe = 0;
+    gWatchFeedOk = 0;
+}
+
+
+- (void)startManorEggWatchTimer {
+    if (self.manorEggWatchTimer.isValid) return;
+    id bridge = self.manorBridge ?: gManorHeldBridge;
+    if (!bridge || bridge == self.jsBridge) return;
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self startManorEggWatchTimer];
+        });
+        return;
+    }
+    self.manorEggWatchTimer = [NSTimer scheduledTimerWithTimeInterval:kManorEggWatchInterval target:self selector:@selector(manorEggWatchTick) userInfo:nil repeats:YES];
+    [self recordStage:@"蚂蚁庄园 · 收蛋监控已启动（60 秒一轮，进度满 100% 才发收蛋请求）"];
+}
+
+// 每一轮心跳：补跑睡觉/家庭签到/收蛋/抽抽乐（各自「当天一次 + 冷却」规则，重复调用不刷请求）
+- (void)manorEggWatchTick {
+    if (!self.enableAutoManor) return;
+    id bridge = self.manorBridge ?: gManorHeldBridge;
+    if (!bridge || bridge == self.jsBridge) return;
+    [self flushManorWatchSummaryIfNeeded];
+    [self retryManorPendingAutomations];
+}
+
 - (void)harvestManorEgg {
     if (!self.enableAutoManor) return;
     
@@ -5476,6 +5537,16 @@ static void recordEggDiagOnce(AntForestManager *mgr, NSString *key, NSString *me
     static NSTimeInterval lastEggHarvestTime = 0;
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     if (now - lastEggHarvestTime < 60) return;
+    
+    // 蛋巢进度门：进度未知先同步状态不盲收；未满 100% 不发收蛋请求（服务端会回绝）
+    if (!self.lastManorEggPercentKnown) {
+        recordEggDiagOnce(self, @"egg_unknown", @"蚂蚁庄园：暂未识别到蛋巢产蛋进度，先同步状态，不发送收蛋请求");
+        return;
+    }
+    if (self.lastManorEggPercent < 100) {
+        recordEggDiagOnce(self, @"egg_notfull", [NSString stringWithFormat:@"蚂蚁庄园：蛋巢当前 %ld%%，未满 100%%，不发送收蛋请求", (long)self.lastManorEggPercent]);
+        return;
+    }
     lastEggHarvestTime = now;
     
     NSString *timeStamp = [NSString stringWithFormat:@"%ld", (long)(now * 1000)];
@@ -5483,6 +5554,7 @@ static void recordEggDiagOnce(AntForestManager *mgr, NSString *key, NSString *me
     NSString *url = self.manorH5Url ?: @"https://66666674.h5app.alipay.com/www/index.html";
     NSString *eggArg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antfarm.harvestProduce\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"%@\",\"ags-source\":\"%@\"},\"requestData\":[{\"farmId\":\"%@\",\"harvestType\":\"NORMALEGG\",\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"antfarm\",\"version\":\"%@\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", kManorEggRPCSource, kManorEggRPCSource, farmId, kManorEggRPCVersion, timeStamp, randNum];
     [bridge _doFlushMessageQueue:eggArg url:url];
+    gWatchEggSent++;
 }
 
 // 赶走访客：记录最近一次请求的访客尾号，供回包确认时输出面板日志
@@ -5807,6 +5879,7 @@ static NSTimeInterval gLastManorCheckTime = 0;
 
 - (void)retryManorPendingAutomations {
     if (!self.enableAutoManor) return;
+    [self flushManorWatchSummaryIfNeeded];
     
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     if (gLastManorCheckTime > 0 && now - gLastManorCheckTime < 15.0) return;
@@ -6668,6 +6741,7 @@ static NSString *manorDrawTracerGroupId(NSDictionary *task) {
         manorClearPendingOps();   // 换页 / WebView 重建：旧请求的回包不会再来，清空 FIFO 防错位
         gManorHeldBridge = self.manorBridge;
     }
+    [self startManorEggWatchTimer];
     if (![dict isKindOfClass:NSDictionary.class]) return;
     
     @try {
@@ -6705,6 +6779,20 @@ static NSString *manorDrawTracerGroupId(NSDictionary *task) {
                 }
             } else if (ownAnimal[@"animalId"]) {
                 self.lastManorAnimalId = [NSString stringWithFormat:@"%@", ownAnimal[@"animalId"]];
+            }
+            
+            // 蛋巢产蛋进度：farmVO.subFarmVO.farmProduce.benevolenceScore（探针实测 0~1 小数，满格=1.0）
+            NSDictionary *farmVO = [resData[@"farmVO"] isKindOfClass:NSDictionary.class] ? resData[@"farmVO"] : ([dict[@"farmVO"] isKindOfClass:NSDictionary.class] ? dict[@"farmVO"] : nil);
+            NSDictionary *innerSub = [farmVO[@"subFarmVO"] isKindOfClass:NSDictionary.class] ? farmVO[@"subFarmVO"] : subFarm;
+            NSDictionary *farmProduce = [innerSub[@"farmProduce"] isKindOfClass:NSDictionary.class] ? innerSub[@"farmProduce"] : nil;
+            id scoreRaw = farmProduce[@"benevolenceScore"];
+            if (scoreRaw) {
+                double score = [scoreRaw isKindOfClass:NSNumber.class] ? [(NSNumber *)scoreRaw doubleValue] : [(NSString *)scoreRaw doubleValue];
+                if (score > 0 || [scoreRaw isKindOfClass:NSNumber.class]) {
+                    self.lastManorEggPercent = (NSInteger)(score * 100.0 + 0.5);
+                    if (self.lastManorEggPercent > 100) self.lastManorEggPercent = 100;
+                    self.lastManorEggPercentKnown = YES;
+                }
             }
             
             // 访客小鸡检查：院子里 masterFarmId 不是自己农场的，就是来偷吃饲料的访客，逐个赶走
@@ -6957,6 +7045,7 @@ static NSString *manorDrawTracerGroupId(NSDictionary *task) {
                          [resData[@"memo"] isEqualToString:@"SUCCESS"] || [dict[@"memo"] isEqualToString:@"SUCCESS"] ||
                          [resData[@"resultCode"] isEqualToString:@"100"] || [dict[@"resultCode"] isEqualToString:@"100"];
             if (eggOk) {
+                gWatchEggOk++;   // 收到蛋逐次记录（不封顶）
                 [self recordStage:@"蚂蚁庄园：已收取小鸡下的鸡蛋（蛋巢已刷新）"];
                 NSString *eggFarmId = self.lastManorFarmId ?: @"";
                 if (eggFarmId.length) {
