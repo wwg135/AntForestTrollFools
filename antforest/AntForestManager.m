@@ -6974,6 +6974,49 @@ static NSString *forestDrawTopKeys(id packet) {
     return NSStringFromClass([root class]) ?: @"?";
 }
 
+// 任务诊断（v3.3.2）：不只报数量，还要报「为什么没执行」——
+//   解析器对每个任务有四道闸门（3515 今日已完成缓存 / 3520 今日失败缓存 / 3526 熔断 / 3567 安全白名单），
+//   前两道是静默 continue（无日志），日志里看不到 → 这里直接把状态分布、安全可做、缓存命中数报出来。
+static NSString *forestDrawTaskDiag(id packet) {
+    __block NSArray *best = nil;
+    __block NSInteger budget = 4000;
+    forestDrawWalk(packet, 0, &budget, ^(NSDictionary *d) {
+        for (NSString *k in @[@"taskInfoList", @"taskList", @"subTaskList", @"farmTaskList", @"vitalityTaskList"]) {
+            id arr = d[k];
+            if (![arr isKindOfClass:NSArray.class]) continue;
+            if (!best || ((NSArray *)arr).count > best.count) best = (NSArray *)arr;
+        }
+    });
+    if (!best.count) return @"回包无任务数组";
+    NSMutableDictionary<NSString *, NSNumber *> *statuses = [NSMutableDictionary dictionary];
+    NSInteger safe = 0, todo = 0, cached = 0, failed = 0;
+    for (id it in best) {
+        if (![it isKindOfClass:NSDictionary.class]) continue;
+        NSDictionary *t = (NSDictionary *)it;
+        NSDictionary *base = [t[@"taskBaseInfo"] isKindOfClass:NSDictionary.class] ? t[@"taskBaseInfo"] : t;
+        NSString *tt = base[@"taskType"] ?: (t[@"taskType"] ?: (t[@"bizKey"] ?: (base[@"bizKey"] ?: @"")));
+        NSString *title = t[@"taskTitle"] ?: (base[@"taskTitle"] ?: (t[@"title"] ?: @""));
+        id stRaw = t[@"taskStatus"] ?: base[@"taskStatus"];
+        NSString *st = stRaw ? [NSString stringWithFormat:@"%@", stRaw] : @"未知";
+        statuses[st] = @([statuses[st] integerValue] + 1);
+        if (isSafeRewardTask(tt, title)) safe++;
+        if ([st.uppercaseString isEqualToString:@"TODO"]) {
+            todo++;
+            NSString *suffix = [NSString stringWithFormat:@":%@", tt];
+            @synchronized ([AntForestManager class]) {
+                for (NSString *key in gDailyCompletedTasks) { if ([key hasSuffix:suffix]) { cached++; break; } }
+                for (NSString *key in gDailyFailedTasks) { if ([key hasSuffix:suffix]) { failed++; break; } }
+            }
+        }
+    }
+    NSMutableArray<NSString *> *parts = [NSMutableArray array];
+    for (NSString *k in [statuses.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+        [parts addObject:[NSString stringWithFormat:@"%@×%@", k, statuses[k]]];
+    }
+    return [NSString stringWithFormat:@"任务 %lu 个 · 状态 %@ · 安全可做 %ld · 待做(TODO) %ld（其中今日已处理缓存 %ld、今日熔断缓存 %ld）",
+            (unsigned long)best.count, [parts componentsJoinedByString:@" "], (long)safe, (long)todo, (long)cached, (long)failed];
+}
+
 // 任务计数：找回包里最大的任务数组，统计总数与「未完成」数（用于判定后台拉取是否真拿到任务）
 static void forestDrawCountTasks(id packet, NSInteger *total, NSInteger *pending) {
     __block NSInteger t = 0, p = 0;
@@ -7167,10 +7210,9 @@ static BOOL forestDrawPacketRejected(NSDictionary *resData, NSDictionary *dict) 
     forestDrawLearnFromPacket(resData);
     // 后台探测被服务端拒绝 → 当日不再后台尝试（进寻宝页面仍正常做任务与抽奖）；须在「无在途即返回」之前判定
     if (gForestDrawProbeAwaitUntil > 0 && [[NSDate date] timeIntervalSince1970] < gForestDrawProbeAwaitUntil) {
-        NSInteger probeTotal = 0, probePending = 0;
-        forestDrawCountTasks(resData, &probeTotal, &probePending);
-        if (probeTotal > 0) {
-            forestDrawQuietLog(self, @"probeok", [NSString stringWithFormat:@"森林寻宝：后台拉取成功（不进寻宝页面也拿到任务），本轮任务 %ld 个（待做 %ld、其余已处理 %ld）", (long)probeTotal, (long)probePending, (long)(probeTotal - probePending)]);
+        NSString *probeDiag = forestDrawTaskDiag(resData);
+        if (![probeDiag isEqualToString:@"回包无任务数组"]) {
+            forestDrawQuietLog(self, @"probeok", [NSString stringWithFormat:@"森林寻宝：后台拉取成功（不进寻宝页面也拿到任务）· %@", probeDiag]);
         }
         if (forestDrawPacketRejected(resData, resData)) {
             gForestDrawProbeAwaitUntil = 0;
