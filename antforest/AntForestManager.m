@@ -7345,6 +7345,9 @@ static BOOL gManorSnackRunning = NO;                     // 本轮零食投喂�
 // 拉权威状态的节流（盆内余粮未知时用 enterFarm 回包补齐，避免瞎喂）
 static NSTimeInterval gLastManorTroughPullAt = 0;
 
+// 会话内是否已从回包见过「真实背包存量」——没见过就不许把 0 当存量用（9/15 二度踩坑）
+static BOOL gManorFoodStockKnown = NO;
+
 // 待领饲料合计（g）= 扫全表求和的「已完成待领」任务；不写死任务名单，新任务/新活动自动计入。
 // 口径（用户 9/15 拍定）：①只算 taskStatus=FINISHED（TODO 是「还没做」）②只算 awardType=ALLPURPOSE
 // （CUISINE 单位是「个」）③签到不计入（签到当日即时到账，重复计入会虚高）
@@ -7509,15 +7512,20 @@ static void manorScheduleFeedWake(AntForestManager *mgr, NSInteger countdown) {
                 [self expelManorVisitors:animals];
             }
             
-            // 背包存量：实测 enterFarm 大包把它放在 farmVO.foodStock（顶层与子结构都没有），漏读会误报 0g，
-            // 而 0g 会让饭盆空闲分支走「需先做任务赚饲料」不再投喂——取值链必须带上 farmVO
-            id stockRaw = subFarm[@"foodStock"] ?: resData[@"foodStock"] ?: dict[@"foodStock"] ?: farmVO[@"foodStock"];
+            // 背包存量：取值链覆盖 subFarm / resData / 顶层 / farmVO / farmVO.subFarmVO 五处（实测 enterFarm 大包在 farmVO.foodStock）
+            // 铁律（9/15 二度踩到）：**字段缺失 ≠ 值为 0**——本包没带就沿用上次同步值，
+            // 当 0 会让饭盆空闲分支走「需先做任务赚饲料」直接放弃投喂
+            id stockRaw = subFarm[@"foodStock"] ?: resData[@"foodStock"] ?: dict[@"foodStock"] ?: farmVO[@"foodStock"] ?: innerSub[@"foodStock"];
+            BOOL stockFromPacket = (stockRaw != nil);
             NSInteger foodStock = [stockRaw respondsToSelector:@selector(integerValue)] ? [stockRaw integerValue] : 0;
-            id stockLimitRaw = subFarm[@"foodStockLimit"] ?: resData[@"foodStockLimit"] ?: farmVO[@"foodStockLimit"];
-            NSInteger foodStockLimit = [stockLimitRaw respondsToSelector:@selector(integerValue)] ? [stockLimitRaw integerValue] : 1800;
-            if (stockRaw != nil) {
+            if (stockFromPacket) {
                 self.lastManorFoodStock = foodStock;
+                gManorFoodStockKnown = YES;
+            } else if (gManorFoodStockKnown) {
+                foodStock = self.lastManorFoodStock;
             }
+            id stockLimitRaw = subFarm[@"foodStockLimit"] ?: resData[@"foodStockLimit"] ?: farmVO[@"foodStockLimit"] ?: innerSub[@"foodStockLimit"];
+            NSInteger foodStockLimit = [stockLimitRaw respondsToSelector:@selector(integerValue)] ? [stockLimitRaw integerValue] : 1800;
             if (foodStockLimit > 0) {
                 self.lastManorFoodStockLimit = foodStockLimit;
             }
@@ -7590,7 +7598,13 @@ static void manorScheduleFeedWake(AntForestManager *mgr, NSInteger countdown) {
                 }
             } else {
                 NSLog(@"🐔 [蚂蚁庄园·小鸡状态] 饭盆空闲 | 盆内:%ld/%ldg | 饲料存量:%ldg", (long)foodInTrough, (long)foodLimit, (long)foodStock);
-                if (foodStock >= 180) {
+                if (!stockFromPacket) {
+                    recordEggDiagOnce(self, @"stock_packet_missing",
+                                      [NSString stringWithFormat:@"诊断 · 本状态包未带背包存量（沿用上次同步值 %ldg）｜顶层键=%@", (long)foodStock, [[dict allKeys] componentsJoinedByString:@","]]);
+                }
+                if (!gManorFoodStockKnown) {
+                    recordEggDiagOnce(self, @"stock_unknown", @"蚂蚁庄园：背包存量还没同步到，本轮暂缓投喂（不盲喂）");
+                } else if (foodStock >= 180) {
                     [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：检测到小鸡饭盆空闲（盆内 %ldg / 背包存量 %ldg），正在自动投喂（优先高级饲料）...", (long)foodInTrough, (long)foodStock]];
                     [self feedManorChickenWithAdvancedFood];
                 } else if (foodStock > 0) {
