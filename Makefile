@@ -5,6 +5,7 @@ TARGET := build/AntForestPort-Ocean.dylib
 IOS14_TARGET := build/AntForestPort-Ocean-iOS14.dylib
 ARM64_TARGET := build/AntForestPort-arm64.dylib
 ARM64E_TARGET := build/AntForestPort-arm64e.dylib
+ENABLE_PROBE_LOGS ?= 1
 SOURCES := PortEntry.m antforest/AntForestManager.m antforest/StepSimulator.m antforest/DebugTool/Tool.m antforest/DebugTool/UIView+Toast.m compiler_rt_shim.m
 
 .PHONY: all clean test ios14
@@ -32,16 +33,16 @@ test:
 
 $(TARGET): $(SOURCES)
 	@mkdir -p build
-	$(CLANG) -target arm64-apple-ios15.0 -isysroot $(SDK) -fobjc-arc -dynamiclib $(SOURCES) -Iantforest -Iantforest/Headers/PSDJsBridge -Iantforest/Headers/PSDJsBridge/Protocol -Iantforest/DebugTool -framework Foundation -framework UIKit -framework QuartzCore -framework CoreGraphics -framework WebKit -install_name @rpath/antforest.dylib -o build/AntForestPort-arm64-ios15.dylib
-	$(CLANG) -target arm64e-apple-ios15.0 -isysroot $(SDK) -fobjc-arc -dynamiclib $(SOURCES) -Iantforest -Iantforest/Headers/PSDJsBridge -Iantforest/Headers/PSDJsBridge/Protocol -Iantforest/DebugTool -framework Foundation -framework UIKit -framework QuartzCore -framework CoreGraphics -framework WebKit -install_name @rpath/antforest.dylib -o build/AntForestPort-arm64e-ios15.dylib
+	$(CLANG) -target arm64-apple-ios15.0 -isysroot $(SDK) -fobjc-arc -DENABLE_PROBE_LOGS=$(ENABLE_PROBE_LOGS) -dynamiclib $(SOURCES) -Iantforest -Iantforest/Headers/PSDJsBridge -Iantforest/Headers/PSDJsBridge/Protocol -Iantforest/DebugTool -framework Foundation -framework UIKit -framework QuartzCore -framework CoreGraphics -framework WebKit -install_name @rpath/antforest.dylib -o build/AntForestPort-arm64-ios15.dylib
+	$(CLANG) -target arm64e-apple-ios15.0 -isysroot $(SDK) -fobjc-arc -DENABLE_PROBE_LOGS=$(ENABLE_PROBE_LOGS) -dynamiclib $(SOURCES) -Iantforest -Iantforest/Headers/PSDJsBridge -Iantforest/Headers/PSDJsBridge/Protocol -Iantforest/DebugTool -framework Foundation -framework UIKit -framework QuartzCore -framework CoreGraphics -framework WebKit -install_name @rpath/antforest.dylib -o build/AntForestPort-arm64e-ios15.dylib
 	$(LIPO) -create build/AntForestPort-arm64-ios15.dylib build/AntForestPort-arm64e-ios15.dylib -output $@
 	ldid -S $@
 	rm -f build/AntForestPort-arm64-ios15.dylib build/AntForestPort-arm64e-ios15.dylib
 
 $(IOS14_TARGET): $(SOURCES)
 	@mkdir -p build
-	$(CLANG) -target arm64-apple-ios14.0 -isysroot $(SDK) -fobjc-arc -dynamiclib $(SOURCES) -Iantforest -Iantforest/Headers/PSDJsBridge -Iantforest/Headers/PSDJsBridge/Protocol -Iantforest/DebugTool -framework Foundation -framework UIKit -framework QuartzCore -framework CoreGraphics -framework WebKit -install_name @rpath/antforest.dylib -o build/AntForestPort-arm64-ios14.dylib
-	$(CLANG) -target arm64e-apple-ios14.0 -isysroot $(SDK) -fobjc-arc -dynamiclib $(SOURCES) -Iantforest -Iantforest/Headers/PSDJsBridge -Iantforest/Headers/PSDJsBridge/Protocol -Iantforest/DebugTool -framework Foundation -framework UIKit -framework QuartzCore -framework CoreGraphics -framework WebKit -install_name @rpath/antforest.dylib -o build/AntForestPort-arm64e-ios14.dylib
+	$(CLANG) -target arm64-apple-ios14.0 -isysroot $(SDK) -fobjc-arc -DENABLE_PROBE_LOGS=$(ENABLE_PROBE_LOGS) -dynamiclib $(SOURCES) -Iantforest -Iantforest/Headers/PSDJsBridge -Iantforest/Headers/PSDJsBridge/Protocol -Iantforest/DebugTool -framework Foundation -framework UIKit -framework QuartzCore -framework CoreGraphics -framework WebKit -install_name @rpath/antforest.dylib -o build/AntForestPort-arm64-ios14.dylib
+	$(CLANG) -target arm64e-apple-ios14.0 -isysroot $(SDK) -fobjc-arc -DENABLE_PROBE_LOGS=$(ENABLE_PROBE_LOGS) -dynamiclib $(SOURCES) -Iantforest -Iantforest/Headers/PSDJsBridge -Iantforest/Headers/PSDJsBridge/Protocol -Iantforest/DebugTool -framework Foundation -framework UIKit -framework QuartzCore -framework CoreGraphics -framework WebKit -install_name @rpath/antforest.dylib -o build/AntForestPort-arm64e-ios14.dylib
 	$(LIPO) -create build/AntForestPort-arm64-ios14.dylib build/AntForestPort-arm64e-ios14.dylib -output $@
 	ldid -S $@
 	rm -f build/AntForestPort-arm64-ios14.dylib build/AntForestPort-arm64e-ios14.dylib
