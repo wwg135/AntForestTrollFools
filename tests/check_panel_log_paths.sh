@@ -20,9 +20,13 @@ grep -Fq 'gLastExpelledTail' "$source_file"
 echo "[3/5] Checking sleep panel logs (start / already-slept / cooling / skip)..."
 grep -Fq '天黑了，正在送小鸡回家庭别墅睡觉' "$source_file"
 grep -Fq '小鸡已在家庭别墅睡着' "$source_file"
-grep -Fq '当日已睡，静默跳过' "$source_file"
+grep -Fq '今夜已睡，静默跳过' "$source_file"
 grep -Fq '睡觉重试冷却中' "$source_file"
 grep -Fq '睡觉跳过（庄园桥接未就绪）' "$source_file"
+if grep -Fq '[self recordStage:@"蚂蚁庄园：睡觉跳过（庄园桥接未就绪）"];' "$source_file"; then
+    echo "❌ 「未就绪」类日志应走 recordEggDiagOnce（每天一条），不得用 recordStage 刷屏"
+    exit 1
+fi
 
 echo "[4/5] Checking family-sign panel logs (start / success / already / timeout / sync)..."
 grep -Fq '正在执行家庭签到' "$source_file"
