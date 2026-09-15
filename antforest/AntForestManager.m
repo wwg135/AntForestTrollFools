@@ -5686,6 +5686,7 @@ static void manorNoteCuisineFail(NSString *cuisineId, NSString *reason) {
 
 - (void)feedManorChicken {
     if (!self.enableAutoManor) return;
+    if (manorChickenSleeping()) return;   // 小鸡在睡觉：普通饲料同样喂不进，省一次无效请求
     if (self.isManorChickenEating) {
         [self recordStage:@"蚂蚁庄园：小鸡当前正在进食中，暂无需投喂"];
         return;
@@ -7366,19 +7367,29 @@ static NSInteger manorPendingTaskFeedAward(NSArray *taskList, NSUInteger *outCou
 
 // 小鸡进食状态（服务端权威字段）：ownAnimal.animalStatusVO 或 animals[].animalStatusVO
 // 9/15 探针实测：syncAnimalStatus 回包常带 ownAnimal.animalStatusVO.animalFeedStatus=EATING
-static NSString *manorChickenFeedStatus(NSDictionary *ownAnimal, NSDictionary *subFarm, NSDictionary *innerSub) {
+static NSDictionary *manorChickenStatusVO(NSDictionary *ownAnimal, NSDictionary *subFarm, NSDictionary *innerSub) {
     NSDictionary *vo = [ownAnimal[@"animalStatusVO"] isKindOfClass:NSDictionary.class] ? ownAnimal[@"animalStatusVO"] : nil;
-    if (!vo) {
-        NSArray *animals = [subFarm[@"animals"] isKindOfClass:NSArray.class] ? subFarm[@"animals"] : ([innerSub[@"animals"] isKindOfClass:NSArray.class] ? innerSub[@"animals"] : nil);
-        for (id a in animals) {
-            if ([a isKindOfClass:NSDictionary.class] && [((NSDictionary *)a)[@"animalStatusVO"] isKindOfClass:NSDictionary.class]) {
-                vo = ((NSDictionary *)a)[@"animalStatusVO"];
-                break;
-            }
+    if (vo) return vo;
+    NSArray *animals = [subFarm[@"animals"] isKindOfClass:NSArray.class] ? subFarm[@"animals"] : ([innerSub[@"animals"] isKindOfClass:NSArray.class] ? innerSub[@"animals"] : nil);
+    for (id a in animals) {
+        if ([a isKindOfClass:NSDictionary.class] && [((NSDictionary *)a)[@"animalStatusVO"] isKindOfClass:NSDictionary.class]) {
+            return ((NSDictionary *)a)[@"animalStatusVO"];
         }
     }
-    id st = vo[@"animalFeedStatus"];
+    return nil;
+}
+
+static NSString *manorChickenFeedStatus(NSDictionary *ownAnimal, NSDictionary *subFarm, NSDictionary *innerSub) {
+    id st = manorChickenStatusVO(ownAnimal, subFarm, innerSub)[@"animalFeedStatus"];
     return [st isKindOfClass:NSString.class] ? st : nil;
+}
+
+// 服务端「小鸡在睡」判据：animalFeedStatus 含 SLEEP（SLEEPING=真睡；SLEEPY=困了，对投喂同样是闸门），
+// 或 animalInteractStatus == SLEEPING。睡觉一律不投喂（用户口径 9/15）
+static BOOL manorServerSleeping(NSString *feedStatus, NSDictionary *ownAnimal, NSDictionary *subFarm, NSDictionary *innerSub) {
+    if ([feedStatus isKindOfClass:NSString.class] && [feedStatus rangeOfString:@"SLEEP"].location != NSNotFound) return YES;
+    id interact = manorChickenStatusVO(ownAnimal, subFarm, innerSub)[@"animalInteractStatus"];
+    return ([interact isKindOfClass:NSString.class] && [interact isEqualToString:@"SLEEPING"]);
 }
 
 // 「吃完立即补喂」的单次定时（照 AntManor v15 的单次定时范式：非轮询、无发热风险）
@@ -7386,6 +7397,7 @@ static NSString *manorChickenFeedStatus(NSDictionary *ownAnimal, NSDictionary *s
 static NSInteger gManorFeedWakeSeq = 0;
 static NSTimeInterval gManorFeedWakeAt = 0;
 static const NSTimeInterval kManorFeedWakeGrace = 1.0;
+static const NSTimeInterval kManorFeedWakeStale = 60.0;   // 预约过期超过这个秒数 = 中间挂起/被杀过，需要立即补拉状态
 
 static void manorCancelFeedWake(void) {
     gManorFeedWakeSeq++;
@@ -7519,6 +7531,16 @@ static void manorScheduleFeedWake(AntForestManager *mgr, NSInteger countdown) {
             id troughCountRaw = subFarm[@"countdown"] ?: innerSub[@"countdown"];
             NSInteger countdown = [troughCountRaw respondsToSelector:@selector(integerValue)] ? [troughCountRaw integerValue] : 0;
             
+            // 久别回来：本地预约早已过期（挂后台 / 被系统杀掉过一轮，定时器没赶上）→ 立即补一次权威状态，别等下一轮心跳
+            NSTimeInterval wakeNow = [[NSDate date] timeIntervalSince1970];
+            if (gManorFeedWakeAt > 0 && wakeNow > gManorFeedWakeAt + kManorFeedWakeStale) {
+                NSInteger overdueMin = (NSInteger)((wakeNow - gManorFeedWakeAt) / 60.0);
+                gManorFeedWakeAt = 0;
+                gManorFeedWakeSeq++;
+                [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：小鸡进食倒计时早已结束（本地预约已过 %ld 分钟），立即刷新状态并补喂...", (long)overdueMin]];
+                [self enterManorFarm];
+            }
+            
             // 吃完立即补喂：只认「真的带回倒计时字段」的状态包——缺字段的包不能拿来取消已有预约
             if (troughCountRaw != nil) {
                 if (countdown > 0 && !manorChickenSleeping()) {
@@ -7531,6 +7553,12 @@ static void manorScheduleFeedWake(AntForestManager *mgr, NSInteger countdown) {
             // 真实判定：服务端进食状态权威优先；其次食盆余粮满了，或倒计时大于0且盆内有粮
             NSString *feedStatus = manorChickenFeedStatus(ownAnimal, subFarm, innerSub);
             BOOL serverEating = [feedStatus isEqualToString:@"EATING"];
+            // 服务端「在睡」：睡觉一律不投喂（用户口径），并撤掉唤醒预约 + 进静默期，免得到点还去拉状态折腾
+            BOOL serverSleeping = manorServerSleeping(feedStatus, ownAnimal, subFarm, innerSub);
+            if (serverSleeping) {
+                manorCancelFeedWake();
+                gManorChickenSleepUntil = [[NSDate date] timeIntervalSince1970] + kManorChickenSleepQuiet;
+            }
             BOOL isEating = serverEating || (foodInTrough >= foodLimit) || (countdown > 0 && foodInTrough > 0);
             self.isManorChickenEating = isEating;
             
@@ -7550,6 +7578,8 @@ static void manorScheduleFeedWake(AntForestManager *mgr, NSInteger countdown) {
                         [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：小鸡正在进食中（背包存量 %ldg），暂无需喂食", (long)foodStock]];
                     }
                 }
+            } else if (serverSleeping) {
+                NSLog(@"🐔 [蚂蚁庄园·小鸡状态] 小鸡在睡觉（%@）| 饲料存量:%ldg", feedStatus ?: @"SLEEP", (long)foodStock);
             } else if (!manorTroughKnown) {
                 NSLog(@"🐔 [蚂蚁庄园·小鸡状态] 盆内余粮未知（本回包未带 foodInTrough）| 饲料存量:%ldg", (long)foodStock);
                 recordEggDiagOnce(self, @"trough_unknown", @"蚂蚁庄园：回包未带盆内余粮，无法判定饭盆空否，本轮暂缓投喂（不盲喂）");
