@@ -7435,16 +7435,13 @@ static NSString *manorChickenFeedStatus(NSDictionary *ownAnimal, NSDictionary *s
                 [self expelManorVisitors:animals];
             }
             
-            NSInteger foodStock = 0;
-            if (subFarm[@"foodStock"]) {
-                foodStock = [subFarm[@"foodStock"] integerValue];
-            } else if (resData[@"foodStock"]) {
-                foodStock = [resData[@"foodStock"] integerValue];
-            } else if (dict[@"foodStock"]) {
-                foodStock = [dict[@"foodStock"] integerValue];
-            }
-            NSInteger foodStockLimit = [subFarm[@"foodStockLimit"] respondsToSelector:@selector(integerValue)] ? [subFarm[@"foodStockLimit"] integerValue] : ([resData[@"foodStockLimit"] respondsToSelector:@selector(integerValue)] ? [resData[@"foodStockLimit"] integerValue] : 1800);
-            if (foodStock > 0 || subFarm[@"foodStock"] != nil) {
+            // 背包存量：实测 enterFarm 大包把它放在 farmVO.foodStock（顶层与子结构都没有），漏读会误报 0g，
+            // 而 0g 会让饭盆空闲分支走「需先做任务赚饲料」不再投喂——取值链必须带上 farmVO
+            id stockRaw = subFarm[@"foodStock"] ?: resData[@"foodStock"] ?: dict[@"foodStock"] ?: farmVO[@"foodStock"];
+            NSInteger foodStock = [stockRaw respondsToSelector:@selector(integerValue)] ? [stockRaw integerValue] : 0;
+            id stockLimitRaw = subFarm[@"foodStockLimit"] ?: resData[@"foodStockLimit"] ?: farmVO[@"foodStockLimit"];
+            NSInteger foodStockLimit = [stockLimitRaw respondsToSelector:@selector(integerValue)] ? [stockLimitRaw integerValue] : 1800;
+            if (stockRaw != nil) {
                 self.lastManorFoodStock = foodStock;
             }
             if (foodStockLimit > 0) {
