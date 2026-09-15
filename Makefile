@@ -5,7 +5,7 @@ TARGET := build/AntForestPort-Ocean.dylib
 IOS14_TARGET := build/AntForestPort-Ocean-iOS14.dylib
 ARM64_TARGET := build/AntForestPort-arm64.dylib
 ARM64E_TARGET := build/AntForestPort-arm64e.dylib
-SOURCES := PortEntry.m antforest/AntForestManager.m antforest/StepSimulator.m antforest/DebugTool/Tool.m antforest/DebugTool/UIView+Toast.m
+SOURCES := PortEntry.m antforest/AntForestManager.m antforest/StepSimulator.m antforest/DebugTool/Tool.m antforest/DebugTool/UIView+Toast.m compiler_rt_shim.m
 
 .PHONY: all clean test ios14
 
