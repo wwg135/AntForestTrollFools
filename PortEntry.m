@@ -1344,6 +1344,9 @@ static void installEarnEnergyCollector(id controller) {
     UIButton *farmTasks = [self settingsButtonWithTitle:@"芭芭农场（做任务集肥料）" detail:@"手动进入芭芭农场后自动做部分浏览任务、游戏、连续签到和肥料领取。" icon:@"leaf.circle.fill" action:nil];
     UISwitch *farmTasksSwitch = [[UISwitch alloc] init]; farmTasksSwitch.on = AntForestManager.sharedInstance.enableAutoFarmTasks; farmTasksSwitch.translatesAutoresizingMaskIntoConstraints = NO; [farmTasksSwitch addTarget:self action:@selector(toggleAutoFarmTasks:) forControlEvents:UIControlEventValueChanged]; [farmTasks addSubview:farmTasksSwitch];
     
+    UIButton *cookAuto = [self settingsButtonWithTitle:@"做美食（小鸡厨房）" detail:@"进芭芭农场自动领每日/限时食材与收农场食材，做满当天可做次数，并清理厨房垃圾。每次消耗饲料60g+食材60。" icon:@"frying.pan.fill" action:nil];
+    UISwitch *cookAutoSwitch = [[UISwitch alloc] init]; cookAutoSwitch.on = AntForestManager.sharedInstance.enableAutoCook; cookAutoSwitch.translatesAutoresizingMaskIntoConstraints = NO; [cookAutoSwitch addTarget:self action:@selector(toggleAutoCook:) forControlEvents:UIControlEventValueChanged]; [cookAuto addSubview:cookAutoSwitch];
+    
     UIButton *manorTasks = [self settingsButtonWithTitle:@"蚂蚁庄园" detail:@"手动进入蚂蚁庄园后点击领饲料自动做部分任务、喂养与收饲料" icon:@"oval.portrait.fill" action:nil];
     UISwitch *manorTasksSwitch = [[UISwitch alloc] init]; manorTasksSwitch.on = AntForestManager.sharedInstance.enableAutoManor; manorTasksSwitch.translatesAutoresizingMaskIntoConstraints = NO; [manorTasksSwitch addTarget:self action:@selector(toggleAutoManor:) forControlEvents:UIControlEventValueChanged]; [manorTasks addSubview:manorTasksSwitch];
     
@@ -1353,7 +1356,7 @@ static void installEarnEnergyCollector(id controller) {
     UIButton *hideFinance = [self settingsButtonWithTitle:@"隐藏理财" detail:@"隐藏支付宝底栏理财" icon:@"eye.slash.fill" action:nil];
     UISwitch *hideFinanceSwitch = [[UISwitch alloc] init]; hideFinanceSwitch.on = hideFinanceEnabled(); hideFinanceSwitch.translatesAutoresizingMaskIntoConstraints = NO; [hideFinanceSwitch addTarget:self action:@selector(toggleHideFinance:) forControlEvents:UIControlEventValueChanged]; [hideFinance addSubview:hideFinanceSwitch];
     
-    [contentView addSubview:schedule]; [contentView addSubview:step]; [contentView addSubview:water]; [contentView addSubview:revive]; [contentView addSubview:earn]; [contentView addSubview:ocean]; [contentView addSubview:oceanTasks]; [contentView addSubview:reward]; [contentView addSubview:aiFish]; [contentView addSubview:farmTasks]; [contentView addSubview:manorTasks]; [contentView addSubview:patrolNew]; [contentView addSubview:hideFinance];
+    [contentView addSubview:schedule]; [contentView addSubview:step]; [contentView addSubview:water]; [contentView addSubview:revive]; [contentView addSubview:earn]; [contentView addSubview:ocean]; [contentView addSubview:oceanTasks]; [contentView addSubview:reward]; [contentView addSubview:aiFish]; [contentView addSubview:farmTasks]; [contentView addSubview:cookAuto]; [contentView addSubview:manorTasks]; [contentView addSubview:patrolNew]; [contentView addSubview:hideFinance];
     [NSLayoutConstraint activateConstraints:@[
         [contentView.topAnchor constraintEqualToAnchor:scrollView.contentLayoutGuide.topAnchor],
         [contentView.leadingAnchor constraintEqualToAnchor:scrollView.contentLayoutGuide.leadingAnchor],
@@ -1420,6 +1423,7 @@ static void installEarnEnergyCollector(id controller) {
 - (void)toggleAutoRewardTasks:(UISwitch *)sender { AntForestManager.sharedInstance.enableAutoRewardTasks = sender.on; [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"enableAutoRewardTasks"]; [AntForestManager.sharedInstance recordStage:[NSString stringWithFormat:@"领奖励与森林寻宝 · 自动处理已%@", sender.on ? @"开启" : @"关闭"]]; }
 - (void)toggleAutoAIFish:(UISwitch *)sender { AntForestManager.sharedInstance.enableAutoAIFish = sender.on; [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"enableAutoAIFish"]; [AntForestManager.sharedInstance recordStage:[NSString stringWithFormat:@"AI摸鱼 · 功能已%@", sender.on ? @"开启" : @"关闭"]]; }
 - (void)toggleAutoFarmTasks:(UISwitch *)sender { AntForestManager.sharedInstance.enableAutoFarmTasks = sender.on; [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"enableAutoFarmTasks"]; [AntForestManager.sharedInstance recordStage:[NSString stringWithFormat:@"芭芭农场 · 做任务集肥料已%@", sender.on ? @"开启" : @"关闭"]]; }
+- (void)toggleAutoCook:(UISwitch *)sender { AntForestManager.sharedInstance.enableAutoCook = sender.on; [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"enableAutoCook"]; [AntForestManager.sharedInstance recordStage:[NSString stringWithFormat:@"做美食（小鸡厨房） · 自动做美食已%@", sender.on ? @"开启" : @"关闭"]]; }
 - (void)toggleAutoManor:(UISwitch *)sender { AntForestManager.sharedInstance.enableAutoManor = sender.on; [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"enableAutoManor"]; [AntForestManager.sharedInstance recordStage:[NSString stringWithFormat:@"蚂蚁庄园 · 功能已%@", sender.on ? @"开启" : @"关闭"]]; }
 - (void)toggleAutoPatrolNew:(UISwitch *)sender { AntForestManager.sharedInstance.enableAutoPatrolNew = sender.on; [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:@"enableAutoPatrolNew"]; [AntForestManager.sharedInstance recordStage:[NSString stringWithFormat:@"新版保护地（大富翁） · 功能已%@", sender.on ? @"开启" : @"关闭"]]; }
 - (void)toggleHideFinance:(UISwitch *)sender { [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:AntForestHideFinanceKey]; refreshTabBarFinance(); }
@@ -1603,7 +1607,7 @@ static void installEarnEnergyCollector(id controller) {
 
     [self.view addSubview:grabber];
     UILabel *versionLabel = [[UILabel alloc] init];
-    versionLabel.text = @"当前版本：v3.4.9-probe";
+    versionLabel.text = @"当前版本：v3.5.0";
     versionLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightRegular];
     versionLabel.textColor = [UIColor systemGray2Color];
     versionLabel.textAlignment = NSTextAlignmentCenter;
@@ -2165,6 +2169,7 @@ static void initializeManager(void) {
     manager.enableAutoAIFish = [defaults objectForKey:@"enableAutoAIFish"] ? [defaults boolForKey:@"enableAutoAIFish"] : YES;
     manager.enableAutoFarmTasks = [defaults objectForKey:@"enableAutoFarmTasks"] ? [defaults boolForKey:@"enableAutoFarmTasks"] : YES;
     manager.enableAutoManor = [defaults objectForKey:@"enableAutoManor"] ? [defaults boolForKey:@"enableAutoManor"] : YES;
+    manager.enableAutoCook = [defaults objectForKey:@"enableAutoCook"] ? [defaults boolForKey:@"enableAutoCook"] : YES;
     manager.enableAutoPatrol = NO;
     manager.enableAutoPatrolNew = [defaults objectForKey:@"enableAutoPatrolNew"] ? [defaults boolForKey:@"enableAutoPatrolNew"] : YES;
     manager.enableBackgroundLoop = [defaults objectForKey:@"enableBackgroundLoop"] ? [defaults boolForKey:@"enableBackgroundLoop"] : YES;

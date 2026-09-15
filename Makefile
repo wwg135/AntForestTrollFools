@@ -30,6 +30,7 @@ test:
 	sh tests/check_draw_machine_paths.sh
 	sh tests/check_forest_draw_paths.sh
 	sh tests/check_panel_log_paths.sh
+	sh tests/check_cook_paths.sh
 
 $(TARGET): $(SOURCES)
 	@mkdir -p build
