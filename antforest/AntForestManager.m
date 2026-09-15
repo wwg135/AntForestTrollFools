@@ -2260,8 +2260,17 @@ static NSTimeInterval gProcStartAt = 0;
 
 -(void)queryMonopolyTaskListWithForce:(BOOL)force {
     if (!self.enableAutoPatrolNew) return;
-    PSDJsBridge *bridge = self.monopolyBridge;
-    if (!bridge) return;
+    PSDJsBridge *bridge = self.monopolyBridge ?: [self anyRewardTaskBridge];   // v3.4.2：通用网关链路，任一页面绑过的桥接皆可用
+    if (!bridge) {
+        // v3.4.2：不再静默返回——一个桥接都没有时说清楚为什么跳过（同页 30 分钟一条）
+        static NSTimeInterval lastMonopolyNoBridgeLogAt = 0;
+        NSTimeInterval nbMonopolyNow = [[NSDate date] timeIntervalSince1970];
+        if (nbMonopolyNow - lastMonopolyNoBridgeLogAt > 1800) {
+            lastMonopolyNoBridgeLogAt = nbMonopolyNow;
+            [self recordStage:@"新版保护地：暂无可用桥接，本轮跳过保护地任务（进一次任意 H5 页面即可绑定）"];
+        }
+        return;
+    }
     initDailyTaskCache();
     
     static NSTimeInterval lastQueryMonopolyTime = 0;
@@ -2347,8 +2356,17 @@ static NSString *sLastQueriedSceneCode = nil;
 
 -(void)queryFarmTaskListWithForce:(BOOL)force {
     if (!self.enableAutoFarmTasks) return;
-    PSDJsBridge *bridge = self.farmBridge;
-    if (!bridge) return;
+    PSDJsBridge *bridge = self.farmBridge ?: [self anyRewardTaskBridge];   // v3.4.2：通用网关链路，任一页面绑过的桥接皆可用
+    if (!bridge) {
+        // v3.4.2：不再静默返回——一个桥接都没有时说清楚为什么跳过（同页 30 分钟一条）
+        static NSTimeInterval lastFarmNoBridgeLogAt = 0;
+        NSTimeInterval nbFarmNow = [[NSDate date] timeIntervalSince1970];
+        if (nbFarmNow - lastFarmNoBridgeLogAt > 1800) {
+            lastFarmNoBridgeLogAt = nbFarmNow;
+            [self recordStage:@"芭芭农场：暂无可用桥接，本轮跳过农场任务（进一次任意 H5 页面即可绑定）"];
+        }
+        return;
+    }
     initDailyTaskCache();
     
     static NSTimeInterval lastQueryFarmTime = 0;
