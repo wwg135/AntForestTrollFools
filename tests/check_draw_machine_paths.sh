@@ -229,6 +229,12 @@ chkno "旧毫秒串日志已删"                "$M" '活动今日结束（endTi
 echo "  ---- 版本号（信息型，不作为门）----"
 grep -o 'v3\.2\.[0-9]*' PortEntry.m | head -1 | sed 's/^/    PortEntry 版本串: /'
 grep -m1 '^Version:' antforest/Package/DEBIAN/control | sed 's/^/    control: /'
+chk "回包按结构识别（不依赖 op 归属）" "$M" 'if (!isManorDrawOperation(opType) && !isManorDrawPacket(resData, dict)) return;'
+chk "带 drawMachineActivity 即按查机会处理" "$M" 'BOOL packetHasActivity = ('
+chk "活动归属优先回包自带 activityId" "$M" 'NSString *scene = manorDrawActivitySceneFromPacket(resData, dict);'
+chk "0 次/未满信息行降噪（轮询不刷屏）" "$M" 'manorDrawQuietLog(@"zero", scene, 1800)'
+chk "连抽门槛信息行同样降噪" "$M" 'manorDrawQuietLog(@"gate", scene, 1800)'
+
 
 echo
 if [ "$fail" -eq 0 ]; then echo "全部通过"; else echo "存在失败项"; fi
