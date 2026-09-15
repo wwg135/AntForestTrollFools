@@ -2122,6 +2122,21 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
     return bridgeUrl ?: [self effectiveUrlForSceneCode:scene];
 }
 
+// v3.3.9：通用网关链路（com.alipay.antieptask.*：领奖励/寻宝/保护地/农场/AI摸鱼）与页面 appId 无关，
+// 任一页面绑过的桥接都能复用 —— 进庄园/森林/芭农场/寻宝任一个，其余家的网关任务照样能跑。
+// （必须本页面的链路不在此列：庄园 com.alipay.antfarm.*、森林主线 alipay.antforest.forest.h5.*，见 queryVitalityTaskListWithForce 里的跨页护栏）
+-(PSDJsBridge *)anyRewardTaskBridge {
+    if (self.rewardTaskBridge) return self.rewardTaskBridge;
+    if (self.jsBridge) return self.jsBridge;
+    if (self.manorBridge) return (PSDJsBridge *)self.manorBridge;
+    if (self.farmBridge) return (PSDJsBridge *)self.farmBridge;
+    if (self.lotteryBridge) return (PSDJsBridge *)self.lotteryBridge;
+    if (self.monopolyBridge) return (PSDJsBridge *)self.monopolyBridge;
+    if (self.oceanBridge) return (PSDJsBridge *)self.oceanBridge;
+    if (self.aiFishBridge) return (PSDJsBridge *)self.aiFishBridge;
+    return nil;
+}
+
 // v3.3.6：领奖励桥接「等待」日志节流（原来每轮一条，用户反馈一直刷屏）
 static NSTimeInterval gRewardWaitLogAt = 0;
 
@@ -2130,8 +2145,8 @@ static NSTimeInterval gRewardWaitLogAt = 0;
 }
 
 -(void)queryVitalityTaskListWithForce:(BOOL)force {
-    if (!self.rewardTaskBridge && self.jsBridge) {
-        self.rewardTaskBridge = self.jsBridge;
+    if (!self.rewardTaskBridge) {
+        self.rewardTaskBridge = [self anyRewardTaskBridge];   // v3.3.9：任一页面绑过的桥接皆可复用
     }
     PSDJsBridge *bridge = self.rewardTaskBridge;
     if (!self.enableAutoRewardTasks || !bridge) {
@@ -2169,6 +2184,16 @@ static NSTimeInterval gRewardWaitLogAt = 0;
     
     if (isMonopolyPage || isFarmPage || isOceanPage || isAIFishPage) {
         // 当前桥接处于其他独立子页面，严禁向其发送森林主线日常任务与领奖励 RPC，避免 3000/跨 AppId 非法调用报错
+        // v3.3.9：不再静默 return —— 说明「当前在哪个页面、本轮跳过了什么」（同页 30 分钟一条，不刷屏）
+        NSString *skipPage = isMonopolyPage ? @"新版保护地" : (isFarmPage ? @"芭芭农场" : (isOceanPage ? @"神奇海洋" : @"AI摸鱼"));
+        static NSTimeInterval lastSkipLogAt = 0;
+        static NSString *lastSkipPage = nil;
+        NSTimeInterval skipNow = [[NSDate date] timeIntervalSince1970];
+        if (![lastSkipPage isEqualToString:skipPage] || skipNow - lastSkipLogAt > 1800) {
+            lastSkipPage = [skipPage copy];
+            lastSkipLogAt = skipNow;
+            [self recordStage:[NSString stringWithFormat:@"领奖励：当前桥接在「%@」页，本轮跳过森林主线/领奖励 RPC（跨 AppId 直发会报 3000/100000008），通用网关任务不受影响", skipPage]];
+        }
         return;
     }
     
@@ -2195,7 +2220,7 @@ static NSTimeInterval gRewardWaitLogAt = 0;
 
 -(void)queryLotteryTaskListWithForce:(BOOL)force {
     if (!self.enableAutoRewardTasks) return;
-    PSDJsBridge *bridge = self.lotteryBridge ?: self.rewardTaskBridge ?: self.jsBridge;
+    PSDJsBridge *bridge = self.lotteryBridge ?: [self anyRewardTaskBridge];
     if (!bridge) {
         [self recordStage:@"森林寻宝：等待寻宝界面桥接就绪..."];
         return;
@@ -2255,7 +2280,7 @@ static NSTimeInterval gRewardWaitLogAt = 0;
 
 -(void)queryOceanTaskListWithForce:(BOOL)force {
     if (!self.enableAutoOceanTasks) return;
-    PSDJsBridge *bridge = self.oceanBridge ?: self.rewardTaskBridge ?: self.jsBridge;
+    PSDJsBridge *bridge = self.oceanBridge ?: [self anyRewardTaskBridge];
     if (!bridge) return;
     initDailyTaskCache();
     
@@ -2288,7 +2313,7 @@ static NSString *sLastQueriedSceneCode = nil;
 
 -(void)queryAIFishTaskListWithForce:(BOOL)force {
     if (!self.enableAutoAIFish) return;
-    PSDJsBridge *bridge = self.aiFishBridge ?: self.rewardTaskBridge ?: self.jsBridge;
+    PSDJsBridge *bridge = self.aiFishBridge ?: [self anyRewardTaskBridge];
     if (!bridge) return;
     initDailyTaskCache();
     sLastQueriedSceneCode = @"ANTAIFISH";
@@ -2343,8 +2368,8 @@ static NSString *sLastQueriedSceneCode = nil;
 }
 
 -(void)signVitalityTask:(NSString *)signId {
-    if (!self.rewardTaskBridge && self.jsBridge) {
-        self.rewardTaskBridge = self.jsBridge;
+    if (!self.rewardTaskBridge) {
+        self.rewardTaskBridge = [self anyRewardTaskBridge];   // v3.3.9：任一页面绑过的桥接皆可复用
     }
     PSDJsBridge *bridge = self.rewardTaskBridge;
     if (!signId.length || !bridge) return;
@@ -2366,17 +2391,17 @@ static NSString *sLastQueriedSceneCode = nil;
     BOOL isOpenGreenScene = isFarmScene || isLotteryScene || isMonopolyScene || isOceanScene || isAIFishScene;
     PSDJsBridge *bridge = nil;
     if (isAIFishScene) {
-        bridge = self.aiFishBridge ?: self.oceanBridge ?: self.rewardTaskBridge ?: self.jsBridge;
+        bridge = self.aiFishBridge ?: self.oceanBridge ?: [self anyRewardTaskBridge];
     } else if (isOceanScene) {
-        bridge = self.oceanBridge ?: self.rewardTaskBridge ?: self.jsBridge;
+        bridge = self.oceanBridge ?: [self anyRewardTaskBridge];
     } else if (isFarmScene) {
         bridge = self.farmBridge;
     } else if (isMonopolyScene) {
         bridge = self.monopolyBridge;
     } else if (isLotteryScene) {
-        bridge = self.lotteryBridge ?: self.rewardTaskBridge ?: self.jsBridge;
+        bridge = self.lotteryBridge ?: [self anyRewardTaskBridge];
     } else {
-        bridge = self.rewardTaskBridge ?: self.jsBridge;
+        bridge = [self anyRewardTaskBridge];
     }
     if (!taskType.length || !bridge) return;
     NSString *timeStamp = [NSString stringWithFormat:@"%ld",(long)[[NSDate date] timeIntervalSince1970]*1000];
@@ -2411,8 +2436,8 @@ static NSString *sLastQueriedSceneCode = nil;
 }
 
 -(void)exchangeVitalityTaskAsset:(NSString *)taskType sceneCode:(NSString *)sceneCode taskTitle:(NSString *)title caQuotaId:(NSString *)caQuotaId {
-    if (!self.rewardTaskBridge && self.jsBridge) {
-        self.rewardTaskBridge = self.jsBridge;
+    if (!self.rewardTaskBridge) {
+        self.rewardTaskBridge = [self anyRewardTaskBridge];   // v3.3.9：任一页面绑过的桥接皆可复用
     }
     PSDJsBridge *bridge = self.rewardTaskBridge;
     if (!taskType.length || !bridge) return;
@@ -2439,17 +2464,17 @@ static NSString *sLastQueriedSceneCode = nil;
     if (isManorScene) {
         bridge = (self.manorBridge && self.manorBridge != self.jsBridge) ? self.manorBridge : nil;
     } else if (isAIFishScene) {
-        bridge = self.aiFishBridge ?: self.oceanBridge ?: self.rewardTaskBridge ?: self.jsBridge;
+        bridge = self.aiFishBridge ?: self.oceanBridge ?: [self anyRewardTaskBridge];
     } else if (isOceanScene) {
-        bridge = self.oceanBridge ?: self.rewardTaskBridge ?: self.jsBridge;
+        bridge = self.oceanBridge ?: [self anyRewardTaskBridge];
     } else if (isFarmScene) {
         bridge = self.farmBridge;
     } else if (isMonopolyScene) {
         bridge = self.monopolyBridge;
     } else if (isLotteryScene) {
-        bridge = self.lotteryBridge ?: self.rewardTaskBridge ?: self.jsBridge;
+        bridge = self.lotteryBridge ?: [self anyRewardTaskBridge];
     } else {
-        bridge = self.rewardTaskBridge ?: self.jsBridge;
+        bridge = [self anyRewardTaskBridge];
     }
     if (!taskType.length || !bridge) return;
     NSString *timeStamp = [NSString stringWithFormat:@"%ld",(long)[[NSDate date] timeIntervalSince1970]*1000];
@@ -2494,17 +2519,17 @@ static NSString *sLastQueriedSceneCode = nil;
     if (isManorScene) {
         bridge = (self.manorBridge && self.manorBridge != self.jsBridge) ? self.manorBridge : nil;
     } else if (isAIFishScene) {
-        bridge = self.aiFishBridge ?: self.oceanBridge ?: self.rewardTaskBridge ?: self.jsBridge;
+        bridge = self.aiFishBridge ?: self.oceanBridge ?: [self anyRewardTaskBridge];
     } else if (isOceanScene) {
-        bridge = self.oceanBridge ?: self.rewardTaskBridge ?: self.jsBridge;
+        bridge = self.oceanBridge ?: [self anyRewardTaskBridge];
     } else if (isFarmScene) {
         bridge = self.farmBridge;
     } else if (isMonopolyScene) {
         bridge = self.monopolyBridge;
     } else if (isLotteryScene) {
-        bridge = self.lotteryBridge ?: self.rewardTaskBridge ?: self.jsBridge;
+        bridge = self.lotteryBridge ?: [self anyRewardTaskBridge];
     } else {
-        bridge = self.rewardTaskBridge ?: self.jsBridge;
+        bridge = [self anyRewardTaskBridge];
     }
     if (!taskType.length || !bridge) return;
     NSString *timeStamp = [NSString stringWithFormat:@"%ld",(long)[[NSDate date] timeIntervalSince1970]*1000];
@@ -2582,7 +2607,7 @@ static NSInteger sVitalityAutoRefreshRounds = 0;
     dispatch_async(dispatch_get_main_queue(), ^{
         @try {
             if (!self.rewardTaskBridge && self.jsBridge) {
-                self.rewardTaskBridge = self.jsBridge;
+                self.rewardTaskBridge = [self anyRewardTaskBridge];
             }
             BOOL anyTaskEnabled = self.enableAutoRewardTasks || self.enableAutoOceanTasks || self.enableAutoAIFish || self.enableAutoFarmTasks || self.enableAutoPatrolNew;
             PSDJsBridge *anyBridge = self.rewardTaskBridge ?: self.oceanBridge ?: self.aiFishBridge ?: self.farmBridge ?: self.monopolyBridge ?: self.jsBridge;
@@ -2712,15 +2737,15 @@ static NSInteger sVitalityAutoRefreshRounds = 0;
             BOOL isLotteryScene = [sceneCode containsString:@"NORMAL_DRAW"] || [sceneCode containsString:@"ACTIVITY_DRAW"] || [sceneCode containsString:@"DRAW"] || [sceneCode containsString:@"LOTTERY"];
             BOOL isOceanScene = [itemPrefix isEqualToString:@"神奇海洋"] || [sceneCode containsString:@"RESCUE"] || [sceneCode containsString:@"OCEAN"];
             if (isOceanScene) {
-                bridge = self.oceanBridge ?: self.rewardTaskBridge ?: self.jsBridge;
+                bridge = self.oceanBridge ?: [self anyRewardTaskBridge];
             } else if ([sceneCode containsString:@"AIFISH"]) {
-                bridge = self.aiFishBridge ?: self.oceanBridge ?: self.rewardTaskBridge ?: self.jsBridge;
+                bridge = self.aiFishBridge ?: self.oceanBridge ?: [self anyRewardTaskBridge];
             } else if (isFarmScene) {
-                bridge = self.farmBridge ?: self.rewardTaskBridge ?: self.jsBridge;
+                bridge = self.farmBridge ?: [self anyRewardTaskBridge];
             } else if (isMonopolyScene) {
                 bridge = self.monopolyBridge;
             } else if (isLotteryScene) {
-                bridge = self.lotteryBridge ?: self.rewardTaskBridge ?: self.jsBridge;
+                bridge = self.lotteryBridge ?: [self anyRewardTaskBridge];
             }
             if (!bridge) {
                 NSString *modTag = isMonopolyScene ? @"新版保护地" : (isLotteryScene ? @"森林寻宝" : (isOceanScene ? @"神奇海洋" : (isFarmScene ? @"芭芭农场" : ([sceneCode containsString:@"AIFISH"] ? @"AI摸鱼" : @"领奖励"))));
@@ -5208,20 +5233,22 @@ static void manorClaimMarkReply(NSString *taskId) {
     
     NSInteger taskDelayIndex = 0;
 
-    // v3.3.6 任务诊断：有可领任务时每轮都报（可对账），否则每天一条
+    // v3.3.9 任务诊断：只在「内容变化」时输出（原来有可领任务时每轮都打同一条 39 任务明细 → 重复刷屏）
     NSString *manorDiag = manorTaskListDiag(taskList);
     if (manorDiag.length) {
-        // v3.3.6：诊断行带上背包存量/上限——一眼对账「是不是仓位满了导致不领」
+        // 带背包存量/上限——一眼对账「是不是仓位满了导致不领」
         NSInteger diagStock = self.lastManorFoodStock;
         NSInteger diagLimit = self.lastManorFoodStockLimit > 0 ? self.lastManorFoodStockLimit : 1800;
         manorDiag = [NSString stringWithFormat:@"%@ · 背包 %ldg/%ldg%@", manorDiag, (long)diagStock, (long)diagLimit,
                      (diagStock + 180 > diagLimit) ? @"（已近上限，领奖会挂起等腾空后补领）" : @""];
-        NSUInteger claimableInList = 0;
-        for (id it in taskList) {
-            if ([it isKindOfClass:NSDictionary.class] && manorTaskClaimable((NSDictionary *)it) && ![[(NSDictionary *)it objectForKey:@"taskStatus"] isEqual:@"RECEIVED"]) claimableInList++;
+        static NSString *lastManorDiagLine = nil;
+        static NSString *lastManorDiagDay = nil;
+        NSString *diagDay = getCurrentDateString();
+        if (![manorDiag isEqualToString:lastManorDiagLine] || ![diagDay isEqualToString:lastManorDiagDay]) {
+            lastManorDiagLine = [manorDiag copy];
+            lastManorDiagDay = [diagDay copy];
+            [self recordStage:manorDiag];
         }
-        if (claimableInList > 0) [self recordStage:manorDiag];
-        else recordEggDiagOnce(self, @"manor_task_diag", manorDiag);
     }
 
     for (NSDictionary *task in taskList) {
@@ -7297,7 +7324,7 @@ static BOOL forestDrawPacketRejected(NSDictionary *resData, NSDictionary *dict) 
 }
 
 - (PSDJsBridge *)forestDrawBridge {
-    return self.lotteryBridge ?: self.rewardTaskBridge ?: self.jsBridge;
+    return self.lotteryBridge ?: [self anyRewardTaskBridge];
 }
 
 - (NSString *)forestDrawUrlForScene:(NSString *)scene bridge:(PSDJsBridge *)bridge {
@@ -7311,7 +7338,7 @@ static BOOL forestDrawPacketRejected(NSDictionary *resData, NSDictionary *dict) 
     forestDrawInitState();
     forestDrawResetIfNewDay();
     if ([gForestDrawProbeDeniedDay isEqualToString:getCurrentDateString()]) return;   // 当日被拒过 → 不再后台尝试
-    PSDJsBridge *bridge = self.rewardTaskBridge ?: self.jsBridge;
+    PSDJsBridge *bridge = [self anyRewardTaskBridge];
     if (!bridge) return;
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     if (now - gForestDrawLastProbe < kForestDrawProbeGap) return;
