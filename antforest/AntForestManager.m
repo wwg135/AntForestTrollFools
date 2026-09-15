@@ -6837,7 +6837,7 @@ static NSString * const kForestDrawSceneActivity = @"ANTFOREST_ACTIVITY_DRAW";
 static NSInteger const kForestDrawRejectLimit    = 3;
 static NSTimeInterval const kForestDrawThrottle  = 90.0;
 static NSTimeInterval const kForestDrawReplyWait = 12.0;
-static NSTimeInterval const kForestDrawProbeGap  = 600.0;
+static NSTimeInterval const kForestDrawProbeGap  = 1800.0;   // 后台探测间隔（v3.3.0：600→1800，后台循环 5 分钟一轮下仍是每小时 2 次）
 
 static NSMutableDictionary<NSString *, NSString *> *gForestDrawActId = nil;
 static NSMutableDictionary<NSString *, NSString *> *gForestDrawActName = nil;
@@ -6962,6 +6962,42 @@ static NSNumber *forestDrawFindBlance(id packet) {
 }
 
 // 奖品：drawResultList[].prizeVO.prizeName
+// 顶层键诊断：回包形态变了的时候一眼看出（缺字段排查用）
+static NSString *forestDrawTopKeys(id packet) {
+    id root = packet;
+    if ([root isKindOfClass:NSDictionary.class]) {
+        NSDictionary *d = (NSDictionary *)root;
+        NSArray *keys = [d.allKeys sortedArrayUsingSelector:@selector(compare:)];
+        if (keys.count > 12) keys = [keys subarrayWithRange:NSMakeRange(0, 12)];
+        return [keys componentsJoinedByString:@","];
+    }
+    return NSStringFromClass([root class]) ?: @"?";
+}
+
+// 任务计数：找回包里最大的任务数组，统计总数与「未完成」数（用于判定后台拉取是否真拿到任务）
+static void forestDrawCountTasks(id packet, NSInteger *total, NSInteger *pending) {
+    __block NSInteger t = 0, p = 0;
+    __block NSInteger budget = 4000;
+    forestDrawWalk(packet, 0, &budget, ^(NSDictionary *d) {
+        for (NSString *k in @[@"taskInfoList", @"taskList", @"farmTaskList", @"vitalityTaskList"]) {
+            id arr = d[k];
+            if (![arr isKindOfClass:NSArray.class]) continue;
+            NSArray *a = (NSArray *)arr;
+            if ((NSInteger)a.count <= t) continue;
+            NSInteger pp = 0;
+            for (id it in a) {
+                if (![it isKindOfClass:NSDictionary.class]) continue;
+                NSString *st = [NSString stringWithFormat:@"%@", ((NSDictionary *)it)[@"taskStatus"] ?: @""];
+                if (!([st containsString:@"FINISHED"] || [st containsString:@"RECEIVED"] || [st containsString:@"COMPLETE"] || [st containsString:@"DONE"])) pp++;
+            }
+            t = (NSInteger)a.count;
+            p = pp;
+        }
+    });
+    if (total) *total = t;
+    if (pending) *pending = p;
+}
+
 static NSArray<NSString *> *forestDrawCollectPrizeNames(id packet) {
     __block NSMutableArray<NSString *> *names = [NSMutableArray array];
     __block NSInteger budget = 4000;
@@ -7131,6 +7167,11 @@ static BOOL forestDrawPacketRejected(NSDictionary *resData, NSDictionary *dict) 
     forestDrawLearnFromPacket(resData);
     // 后台探测被服务端拒绝 → 当日不再后台尝试（进寻宝页面仍正常做任务与抽奖）；须在「无在途即返回」之前判定
     if (gForestDrawProbeAwaitUntil > 0 && [[NSDate date] timeIntervalSince1970] < gForestDrawProbeAwaitUntil) {
+        NSInteger probeTotal = 0, probePending = 0;
+        forestDrawCountTasks(resData, &probeTotal, &probePending);
+        if (probeTotal > 0) {
+            forestDrawQuietLog(self, @"probeok", [NSString stringWithFormat:@"森林寻宝：后台拉取成功（不进寻宝页面也拿到任务），本轮任务 %ld 个、待做 %ld 个", (long)probeTotal, (long)probePending]);
+        }
         if (forestDrawPacketRejected(resData, resData)) {
             gForestDrawProbeAwaitUntil = 0;
             gForestDrawProbeDeniedDay = [getCurrentDateString() copy];
@@ -7154,9 +7195,16 @@ static BOOL forestDrawPacketRejected(NSDictionary *resData, NSDictionary *dict) 
             [self forestDrawAdvanceScene];
             return;
         }
-        NSInteger times = [gForestDrawBalance[scene] integerValue];
+        if (!blance) {
+            // 铁律：缺字段 ≠ 值为 0 —— 回包没带 blance 时不当「无机会」，留诊断行（每天每场一条）
+            forestDrawQuietLog(self, [scene stringByAppendingString:@"|noblance"], [NSString stringWithFormat:@"森林寻宝 · %@：机会数未取到（回包无 blance 键），本轮跳过 · 诊断顶层键：%@", forestDrawSceneName(scene), forestDrawTopKeys(resData)]);
+            [self forestDrawAdvanceScene];
+            return;
+        }
+        gForestDrawBalance[scene] = blance;
+        NSInteger times = [blance integerValue];
         if (times > 0) { [self forestDrawSendBatchForScene:scene times:times]; return; }
-        forestDrawQuietLog(self, scene, [NSString stringWithFormat:@"森林寻宝 · %@：本轮无抽奖机会（%@）", forestDrawSceneName(scene), forestDrawDaysText(scene)]);
+        forestDrawQuietLog(self, scene, [NSString stringWithFormat:@"森林寻宝 · %@：本轮无抽奖机会（机会数=0，%@）", forestDrawSceneName(scene), forestDrawDaysText(scene)]);
         [self forestDrawAdvanceScene];
         return;
     }
