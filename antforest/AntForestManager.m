@@ -7001,7 +7001,7 @@ static NSString *forestDrawTaskDiag(id packet, NSString **sceneOut) {
     if (!tasks.count) return @"回包无任务项";
     NSMutableDictionary<NSString *, NSNumber *> *statuses = [NSMutableDictionary dictionary];
     NSMutableArray<NSString *> *detail = [NSMutableArray array];
-    NSInteger safe = 0, cached = 0, limited = 0;
+    NSInteger safe = 0, cached = 0, limited = 0, failed = 0;
     NSString *scene = @"";
     for (NSDictionary *t in tasks) {
         NSDictionary *base = [t[@"taskBaseInfo"] isKindOfClass:NSDictionary.class] ? t[@"taskBaseInfo"] : t;
@@ -7021,15 +7021,20 @@ static NSString *forestDrawTaskDiag(id packet, NSString **sceneOut) {
         statuses[stKey] = @([statuses[stKey] integerValue] + 1);
         if (isSafeRewardTask(taskType, title)) safe++;
         NSString *taskKey = [NSString stringWithFormat:@"%@:%@", sceneCode, taskType];
-        BOOL inCache = NO;
-        @synchronized ([AntForestManager class]) { inCache = [gDailyCompletedTasks containsObject:taskKey]; }
+        BOOL inCache = NO, inFailed = NO;
+        @synchronized ([AntForestManager class]) {
+            inCache = [gDailyCompletedTasks containsObject:taskKey];
+            inFailed = [gDailyFailedTasks containsObject:taskKey];
+        }
         if (inCache) cached++;
+        if (inFailed) failed++;
         // 限时不可做：按钮/标题写明已结束/未开始/限时，或带时间窗但状态空
         if ([btn containsString:@"结束"] || [btn containsString:@"未开始"] || [title containsString:@"限时"] || [title containsString:@"已结束"]) limited++;
         if (detail.count < 14) {
-            NSString *shortType = taskType.length > 16 ? [taskType substringToIndex:16] : taskType;
-            NSString *shortBtn = btn.length > 8 ? [btn substringToIndex:8] : btn;
-            [detail addObject:[NSString stringWithFormat:@"%@=%@%@", shortType, stKey, shortBtn.length ? [NSString stringWithFormat:@"(%@)", shortBtn] : @""]];
+            NSString *label = title.length ? title : taskType;
+            NSString *shortLabel = label.length > 14 ? [label substringToIndex:14] : label;
+            NSString *shortBtn = btn.length > 6 ? [btn substringToIndex:6] : btn;
+            [detail addObject:[NSString stringWithFormat:@"%@=%@%@", shortLabel, stKey, shortBtn.length ? [NSString stringWithFormat:@"(%@)", shortBtn] : @""]];
         }
     }
     if (sceneOut) *sceneOut = scene;
@@ -7037,8 +7042,8 @@ static NSString *forestDrawTaskDiag(id packet, NSString **sceneOut) {
     for (NSString *k in [statuses.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
         [hist addObject:[NSString stringWithFormat:@"%@×%@", k, statuses[k]]];
     }
-    return [NSString stringWithFormat:@"任务 %lu 个 · 状态 %@ · 安全可做 %ld · 限时类 %ld · 今日缓存命中 %ld · 明细：%@",
-            (unsigned long)tasks.count, [hist componentsJoinedByString:@" "], (long)safe, (long)limited, (long)cached, [detail componentsJoinedByString:@" "]];
+    return [NSString stringWithFormat:@"任务 %lu 个 · 状态 %@ · 安全可做 %ld · 限时类 %ld · 今日已完成缓存 %ld · 今日失败缓存 %ld · 明细：%@",
+            (unsigned long)tasks.count, [hist componentsJoinedByString:@" "], (long)safe, (long)limited, (long)cached, (long)failed, [detail componentsJoinedByString:@" "]];
 }
 
 static NSArray<NSString *> *forestDrawCollectPrizeNames(id packet) {
