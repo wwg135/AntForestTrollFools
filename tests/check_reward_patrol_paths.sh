@@ -12,7 +12,8 @@ grep -Fq 'BOOL autoCompleteTask = [bizInfo[@"autoCompleteTask"] boolValue];' "$s
 if grep -Fq 'openURL:url options:@{}' "$source_file"; then exit 1; fi
 if grep -Fq 'resSuccess || data[@"incAwardCount"]' "$source_file"; then exit 1; fi
 grep -Fq '服务端仍为 TODO 时必须撤销旧版留下的误缓存' "$source_file"
-grep -Fq '首页后台：等待领奖励任务桥接' "$source_file"
+grep -Fq 'static NSTimeInterval gRewardWaitLogAt = 0;' "$source_file"
+grep -Fq '首页后台：暂无领奖励任务桥接' "$source_file"
 grep -Fq 'PSDJsBridge *bridge = self.rewardTaskBridge;' "$source_file"
 if grep -Fq 'window.__afRewardEntryRetry' "$source_file"; then exit 1; fi
 if grep -Fq '领奖励入口探针' "$source_file"; then exit 1; fi
