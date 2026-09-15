@@ -7384,7 +7384,6 @@ static BOOL forestDrawPacketRejected(NSDictionary *resData, NSDictionary *dict) 
     if (now - gForestDrawLastProbe < kForestDrawProbeGap) return;
     gForestDrawLastProbe = now;
     gForestDrawProbeAwaitUntil = now + 15.0;
-    forestDrawQuietLog(self, @"probe", @"森林寻宝：尝试后台拉取寻宝任务（不进寻宝页面）…");
     [self queryLotteryTaskListWithForce:YES];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [self forestDrawSweepAfterTaskBatch:@"ANTFOREST_NORMAL_DRAW_TASK"];
@@ -7503,11 +7502,6 @@ static BOOL forestDrawPacketRejected(NSDictionary *resData, NSDictionary *dict) 
     forestDrawLearnFromPacket(resData);
     // 后台探测被服务端拒绝 → 当日不再后台尝试（进寻宝页面仍正常做任务与抽奖）；须在「无在途即返回」之前判定
     if (gForestDrawProbeAwaitUntil > 0 && [[NSDate date] timeIntervalSince1970] < gForestDrawProbeAwaitUntil) {
-        NSString *diagScene = nil;
-        NSString *probeDiag = forestDrawTaskDiag(resData, &diagScene);
-        if (![probeDiag hasPrefix:@"回包无任务"]) {
-            forestDrawQuietLog(self, diagScene.length ? diagScene : @"场景未知", [NSString stringWithFormat:@"森林寻宝：后台拉取成功（不进寻宝页面也拿到任务）· 场景 %@ · %@", diagScene.length ? diagScene : @"未知", probeDiag]);
-        }
         if (forestDrawPacketRejected(resData, resData)) {
             gForestDrawProbeAwaitUntil = 0;
             gForestDrawProbeDeniedDay = [getCurrentDateString() copy];
