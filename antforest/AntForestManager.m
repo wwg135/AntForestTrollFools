@@ -6097,10 +6097,7 @@ static void markManorMidnightSweepDoneToday(void) {
         [self recordStage:@"蚂蚁庄园：还没到 20:00，小鸡先在外面玩"];
         return;
     }
-    if (isManorSleepDoneToday()) {
-        [self recordStage:@"蚂蚁庄园：小鸡今天已经在家庭别墅睡过了"];
-        return;
-    }
+    if (isManorSleepDoneToday()) return;  // 当日已睡，静默跳过
 
     // 失败重试节流：同一晚每 30 分钟最多一次（小鸡外出或正在进食时服务端会拒）
     static NSTimeInterval lastSleepAttempt = 0;
@@ -6162,10 +6159,7 @@ static void markManorFamilySignDone(void) {
 
 - (void)signManorFamily {
     if (!self.enableAutoManor) return;
-    if (isManorFamilySignDoneToday()) {
-        [self recordStage:@"☑️ 家庭签到今天已完成，无需重复"];
-        return;
-    }
+    if (isManorFamilySignDoneToday()) return;  // 当日已签到，静默跳过
 
     PSDJsBridge *bridge = (self.manorBridge && self.manorBridge != self.jsBridge) ? self.manorBridge : nil;
     if (!bridge) {
@@ -6279,12 +6273,12 @@ static NSTimeInterval gLastManorCheckTime = 0;
 
     // 6. 夜间睡觉（每天 20:00 后送小鸡回家庭别墅，当天只睡一次）
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5200 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
-        [self sleepManorChicken];
+        if (!isManorSleepDoneToday()) [self sleepManorChicken];
     });
 
     // 7. 家庭签到（每天一次，领家庭亲密值；已签到/成功即落盘当日完成）
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6000 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
-        [self signManorFamily];
+        if (!isManorFamilySignDoneToday()) [self signManorFamily];
     });
 
     // 8. 收鸡蛋（有蛋才收：蛋巢无蛋时服务端回绝，静默不打扰；60s 冷却防重发）
