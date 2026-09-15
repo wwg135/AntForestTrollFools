@@ -6142,6 +6142,8 @@ static const NSTimeInterval kManorSleepForceGap = 60.0;         // canSleep=true
 
 // 服务端睡觉许可（sleepNotifyInfo.canSleep）：0=本会话还没收到 / 1=可以睡 / -1=不可以睡（进食/外出）
 static NSInteger gManorCanSleepState = 0;
+// v3.3.5：送睡 RPC 发出时刻 —— 用于回执诊断窗口（每夜一条，看回包真实 opType/memo）
+static NSTimeInterval gManorSleepSentAt = 0;
 
 static NSInteger manorCurrentHour(void) {
     return [[NSCalendar currentCalendar] components:NSCalendarUnitHour fromDate:[NSDate date]].hour;
@@ -6240,7 +6242,7 @@ static void markManorMidnightSweepDoneToday(void) {
     static NSTimeInterval lastSleepAttempt = 0;
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     if (lastSleepAttempt > 0 && now - lastSleepAttempt < minGap) {
-        recordEggDiagOnce(self, @"sleep_cool", @"蚂蚁庄园：睡觉重试冷却中，稍后自动重试");
+        recordEggDiagOnce(self, @"sleep_cool", @"蚂蚁庄园：送睡已发出，冷却期内不重复（等状态回执确认）");
         return;
     }
     lastSleepAttempt = now;
@@ -6267,6 +6269,13 @@ static void markManorMidnightSweepDoneToday(void) {
         NSString *sleepTs = [NSString stringWithFormat:@"%ld", (long)([[NSDate date] timeIntervalSince1970] * 1000)];
         NSString *sleepArg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antfarm.sleep\",\"headers\":{\"source\":\"%@\",\"ags-source\":\"%@\"},\"showError\":false,\"showLoading\":false,\"requestData\":[{\"groupId\":\"%@\",\"recall\":false,\"requestType\":\"RPC\",\"sceneCode\":\"ANTFARM\",\"source\":\"%@\",\"spaceType\":\"ChickFamily\",\"version\":\"unknown\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", kManorSleepRPCSource, kManorSleepRPCSource, kManorFamilyGroupId, kManorSleepSource, sleepTs, [AntForestManager getNumberRandom:15]];
         [bridge _doFlushMessageQueue:sleepArg url:url];
+        gManorSleepSentAt = [[NSDate date] timeIntervalSince1970];
+
+        // v3.3.5：+8s 主动拉一次状态做「结果确认」——由状态路径（8401 分支）落盘并打成功行，
+        // 不依赖 antfarm.sleep 回执（opType 归属可能被同秒并发的其它 RPC 串位）
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (!isManorSleepDoneToday()) [self enterManorFarm];
+        });
 
         // 3. 睡后同步动物状态，刷新页面显示
         if (!farmId.length) return;
@@ -8401,6 +8410,13 @@ static void manorScheduleFeedWake(AntForestManager *mgr, NSInteger countdown) {
             if (serverSleeping) {
                 manorCancelFeedWake();
                 gManorChickenSleepUntil = [[NSDate date] timeIntervalSince1970] + kManorChickenSleepQuiet;
+                // v3.3.5：以服务端状态为权威回执 —— 状态包显示在睡即落盘「今夜已睡」并打成功行。
+                // 不能只依赖 antfarm.sleep 回执（8560 行按 opType 归属判定，体检链同秒并发多个 RPC 时会串位 → 回执丢失，
+                // 于是既不打成功行、也不落盘，下次体检又重发，日志永远停在「冷却中」）
+                if (!isManorSleepDoneToday()) {
+                    markManorSleepDone();
+                    [self recordStage:@"蚂蚁庄园：小鸡已睡着（服务端状态已确认），今夜不再重复送睡"];
+                }
             }
             BOOL isEating = serverEating || (foodInTrough >= foodLimit) || (countdown > 0 && foodInTrough > 0);
             self.isManorChickenEating = isEating;
@@ -8554,6 +8570,14 @@ static void manorScheduleFeedWake(AntForestManager *mgr, NSInteger countdown) {
             } else {
                 [self recordStage:@"蚂蚁庄园：小鸡投喂成功（已倒入 180g 饲料）"];
             }
+        }
+
+        // v3.3.5：睡觉回执诊断（每夜一条）——即使 opType 串位/回包异常，也能看到真实回来的是什么
+        if (gManorSleepSentAt > 0 && [[NSDate date] timeIntervalSince1970] - gManorSleepSentAt < 25.0) {
+            recordEggDiagOnce(self, @"sleep_receipt", [NSString stringWithFormat:@"蚂蚁庄园 · 睡觉回包：op=%@ memo=%@ code=%@",
+                opType.length ? opType : @"(空)",
+                [NSString stringWithFormat:@"%@", (resData[@"memo"] ?: (dict[@"memo"] ?: @""))],
+                [NSString stringWithFormat:@"%@", (resData[@"resultCode"] ?: (dict[@"resultCode"] ?: @""))]]);
         }
 
         // H. 去睡觉回包处理 (sleep)：以服务端回执为准标记当天已完成
