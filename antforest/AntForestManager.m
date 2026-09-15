@@ -2139,9 +2139,8 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
 
 // v3.3.6：领奖励桥接「等待」日志节流（原来每轮一条，用户反馈一直刷屏）
 static NSTimeInterval gRewardWaitLogAt = 0;
-// v3.3.10：进程启动时刻（启动宽限用）与背包存量最近同步时刻（诊断行标注新鲜度用）
+// v3.3.10：进程启动时刻（启动宽限用：启动后 120 秒内不提示「暂无桥接」）
 static NSTimeInterval gProcStartAt = 0;
-static NSTimeInterval gManorFoodStockSyncedAt = 0;
 
 -(void)queryVitalityTaskList {
     [self queryVitalityTaskListWithForce:NO];
@@ -5076,40 +5075,6 @@ static BOOL manorTaskClaimable(NSDictionary *task) {
 }
 
 // 任务诊断（可对账）：数量 / 状态分布 / 可领数与饲料合计 / 逐条明细
-static NSString *manorTaskListDiag(NSArray *taskList) {
-    if (!taskList.count) return @"蚂蚁庄园 · 任务诊断：回包无任务项";
-    NSMutableDictionary<NSString *, NSNumber *> *st = [NSMutableDictionary dictionary];
-    NSMutableArray<NSString *> *detail = [NSMutableArray array];
-    NSInteger claimable = 0, claimableFeed = 0;
-    for (id item in taskList) {
-        if (![item isKindOfClass:NSDictionary.class]) continue;
-        NSDictionary *t = (NSDictionary *)item;
-        NSString *title = t[@"title"] ?: (t[@"bizKey"] ?: (t[@"taskId"] ?: @"任务"));
-        if (![title isKindOfClass:NSString.class]) title = @"任务";
-        NSInteger award = [t[@"awardCount"] respondsToSelector:@selector(integerValue)] ? [t[@"awardCount"] integerValue] : 0;
-        if (award <= 0) award = [t[@"canReceiveAwardCount"] respondsToSelector:@selector(integerValue)] ? [t[@"canReceiveAwardCount"] integerValue] : 0;
-        NSString *status = [t[@"taskStatus"] isKindOfClass:NSString.class] ? t[@"taskStatus"] : @"(空)";
-        NSString *btn = manorTaskButtonText(t);
-        st[status] = @([st[status] integerValue] + 1);
-        if ([status isEqualToString:@"RECEIVED"]) continue;
-        if (manorTaskClaimable(t)) {
-            claimable++;
-            if ([t[@"awardType"] isEqualToString:@"ALLPURPOSE"]) claimableFeed += award;
-        }
-        if (detail.count < 12) {
-            NSString *label = title.length > 14 ? [title substringToIndex:14] : title;
-            NSString *shortBtn = btn.length > 6 ? [btn substringToIndex:6] : btn;
-            [detail addObject:[NSString stringWithFormat:@"%@=%@%@", label, status, shortBtn.length ? [NSString stringWithFormat:@"(%@)", shortBtn] : @""]];
-        }
-    }
-    NSMutableArray<NSString *> *hist = [NSMutableArray array];
-    for (NSString *k in [st.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
-        [hist addObject:[NSString stringWithFormat:@"%@×%@", k, st[k]]];
-    }
-    return [NSString stringWithFormat:@"蚂蚁庄园 · 任务诊断：%lu 个 · 状态 %@ · 可领 %ld 个（饲料合计 %ldg）· 明细：%@",
-            (unsigned long)taskList.count, [hist componentsJoinedByString:@" "], (long)claimable, (long)claimableFeed, [detail componentsJoinedByString:@" "]];
-}
-
 static void recordEggDiagOnce(AntForestManager *mgr, NSString *key, NSString *message);
 
 // 领奖回执兜底：记账后 90 秒仍无回执 → 允许再试（每任务每天最多 2 次）
@@ -5239,31 +5204,6 @@ static void manorClaimMarkReply(NSString *taskId) {
     NSInteger pendingTaskAward = manorPendingTaskFeedAward(taskList, &pendingTaskCount);
     
     NSInteger taskDelayIndex = 0;
-
-    // v3.3.9 任务诊断：只在「内容变化」时输出（原来有可领任务时每轮都打同一条 39 任务明细 → 重复刷屏）
-    NSString *manorDiag = manorTaskListDiag(taskList);
-    if (manorDiag.length) {
-        // 带背包存量/上限——一眼对账「是不是仓位满了导致不领」
-        NSInteger diagStock = self.lastManorFoodStock;
-        NSInteger diagLimit = self.lastManorFoodStockLimit > 0 ? self.lastManorFoodStockLimit : 1800;
-        NSString *manorDiagCore = [NSString stringWithFormat:@"%@ · 背包 %ldg/%ldg%@", manorDiag, (long)diagStock, (long)diagLimit,
-                                   (diagStock + 180 > diagLimit) ? @"（已近上限，领奖会挂起等腾空后补领）" : @""];
-        static NSString *lastManorDiagLine = nil;
-        static NSString *lastManorDiagDay = nil;
-        NSString *diagDay = getCurrentDateString();
-        // 去重只看核心文本（背包新鲜度时间戳会变，不能进签名，否则每轮都会重打）
-        if (![manorDiagCore isEqualToString:lastManorDiagLine] || ![diagDay isEqualToString:lastManorDiagDay]) {
-            lastManorDiagLine = [manorDiagCore copy];
-            lastManorDiagDay = [diagDay copy];
-            NSString *stockFresh = @"";
-            if (gManorFoodStockSyncedAt > 0) {
-                static NSDateFormatter *diagTimeFmt = nil;
-                if (!diagTimeFmt) { diagTimeFmt = [[NSDateFormatter alloc] init]; diagTimeFmt.dateFormat = @"HH:mm:ss"; }
-                stockFresh = [NSString stringWithFormat:@"（状态包同步于 %@）", [diagTimeFmt stringFromDate:[NSDate dateWithTimeIntervalSince1970:gManorFoodStockSyncedAt]]];
-            }
-            [self recordStage:[manorDiagCore stringByAppendingString:stockFresh]];
-        }
-    }
 
     for (NSDictionary *task in taskList) {
         if (![task isKindOfClass:NSDictionary.class]) continue;
@@ -8677,7 +8617,6 @@ static void manorScheduleFeedWake(AntForestManager *mgr, NSInteger countdown) {
             if (stockFromPacket) {
                 self.lastManorFoodStock = foodStock;
                 gManorFoodStockKnown = YES;
-                gManorFoodStockSyncedAt = [[NSDate date] timeIntervalSince1970];   // v3.3.10：标注诊断行背包值的新鲜度
             } else if (gManorFoodStockKnown) {
                 foodStock = self.lastManorFoodStock;
             }
