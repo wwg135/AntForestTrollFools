@@ -922,6 +922,20 @@ static BOOL isNoiseProbeLog(NSString *log) {
     return NO;
 }
 
+// v3.5.0：做美食回包识别（按结构认，不按 op 归属——并发在途请求会串位）
++ (BOOL)isCookPacket:(id)value {
+    if (![value isKindOfClass:NSDictionary.class]) return NO;
+    NSDictionary *dict = (NSDictionary *)value;
+    NSDictionary *resData = [dict[@"resData"] isKindOfClass:NSDictionary.class] ? dict[@"resData"] : dict;
+    NSArray *views = (resData == dict) ? @[ dict ] : @[ dict, resData ];
+    for (NSDictionary *d in views) {
+        if (![d isKindOfClass:NSDictionary.class]) continue;
+        if (d[@"cookResult"] || d[@"cookbook"] || d[@"cookTimesAllowed"] || d[@"canCollectDailyFoodMaterial"] ||
+            d[@"canCollectDailyLimitedFoodMaterial"] || d[@"recievedKitchenGarbageAmount"] || d[@"foodMaterialStock"]) return YES;
+    }
+    return NO;
+}
+
 - (void)recordProbeLog:(NSString *)log {
 #if !ENABLE_PROBE_LOGS
     return;
@@ -2118,6 +2132,9 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
         if (self.enableAutoFarmTasks) {
             [self queryFarmTaskListWithForce:YES];
             [self claimAllVisibleFarmRewardsOnWebView];
+        }
+        if (self.enableAutoCook) {
+            [self runCookAutomation];
         }
     } else if ([lowerUrl containsString:@"2021003115672468"] || [lowerUrl containsString:@"ocean"]) {
         if (self.enableAutoOceanTasks) {
@@ -9205,6 +9222,392 @@ static void extractFarmTasksRecursive(id obj, int depth, NSMutableArray *outTask
     }
 }
 
+#pragma mark - v3.5.0 芭芭农场·做美食（小鸡厨房）自动化（探针 0.3.5 移植定版）
+
+// 抓包实证（ManorProbe 探针 0.2.9~0.3.5，2026-09-16 真机）：
+//   cook op = com.alipay.antfarm.cook（无参）；每次耗 饲料 60g + 食材 60（厨房 + 食材仓合并扣）
+//   产出 1 菜谱 + 肥料 manureAmount(≈50~60)，并产生等量厨房垃圾，必须清（有 garbageAmountLimit）
+//   cookTimesAllowed = floor((foodMaterialStock + foodMaterialWarehouseStock)/60)
+//   食材三源：每日 60（collectDailyFoodMaterial）/ 每日限时 10（collectDailyLimitedFoodMaterial）/ 农场成熟收（foodStatus=FINISHED）
+//   回包外层随桥不同：RVKJsBridge（农场页）是 {resData:{…}}、PSDJsBridge 平铺 ⇒ 取值一律走层级回退链（缺键 ≠ 值为 0）
+//   芭芭农场页桥可直接发整套 antfarm op（真机实测），不需要任何厨房入口
+
+static BOOL gCookRunning = NO;
+static BOOL gCookScheduled = NO;
+static NSInteger gCookStep = 0;
+static NSInteger gCookSeq = 0;
+static NSString *gCookExpect = nil;
+static NSTimeInterval gCookEndAt = 0;
+static NSInteger gCookAllowed = 0;
+static NSInteger gCookFmat = 0;
+static NSInteger gCookFmatLimit = 0;
+static NSInteger gCookWarehouse = 0;
+static NSInteger gCookFeed = 0;
+static NSInteger gCookGarbage = 0;
+static BOOL gCookToday = NO;
+static BOOL gCookCanDaily = NO;
+static BOOL gCookLimitedTried = NO;
+static NSString *gCookFoodStatus = nil;
+static NSInteger gCookLeft = 0;
+static NSInteger gCookDone = 0;
+static NSInteger gCookFail = 0;
+static NSInteger gCookFeedUsed = 0;
+static NSInteger gCookFmatUsed = 0;
+static NSInteger gCookManure = 0;
+static NSString *gCookPathAllowed = nil;
+static NSString *gCookPathFmat = nil;
+static NSString *gCookPathWh = nil;
+static NSString *gCookPathFeed = nil;
+static NSString *gCookPathGarbage = nil;
+
+static id cookPickLayer(id d, NSString *key, NSString *__strong *where) {
+    NSArray *layers = @[ @"", @"resData", @"data", @"result", @"resData.farmVO", @"farmVO", @"resData.baseInfo", @"baseInfo", @"resData.data" ];
+    for (NSString *L in layers) {
+        id cur = d;
+        if (L.length) {
+            for (NSString *seg in [L componentsSeparatedByString:@"."]) {
+                if (![cur isKindOfClass:NSDictionary.class]) { cur = nil; break; }
+                cur = ((NSDictionary *)cur)[seg];
+            }
+        }
+        if ([cur isKindOfClass:NSDictionary.class] && ((NSDictionary *)cur)[key] != nil) {
+            if (where) *where = L.length ? [NSString stringWithFormat:@"%@.%@", L, key] : key;
+            return ((NSDictionary *)cur)[key];
+        }
+    }
+    return nil;
+}
+
+static BOOL cookAccepts(NSString *kind, NSDictionary *d) {
+    if (![d isKindOfClass:NSDictionary.class]) return NO;
+    if ([kind isEqualToString:@"state"]) return (cookPickLayer(d, @"cookbook", NULL) != nil || cookPickLayer(d, @"cookToday", NULL) != nil || cookPickLayer(d, @"foodMaterialStock", NULL) != nil);
+    if ([kind isEqualToString:@"collectDaily"]) return (cookPickLayer(d, @"canCollectDailyFoodMaterial", NULL) != nil && cookPickLayer(d, @"cookbook", NULL) == nil);
+    if ([kind isEqualToString:@"collectLimited"]) return (cookPickLayer(d, @"canCollectDailyLimitedFoodMaterial", NULL) != nil);
+    if ([kind isEqualToString:@"farmCollect"]) return (cookPickLayer(d, @"orchardFoodMaterialStatus", NULL) != nil || cookPickLayer(d, @"foodStatus", NULL) != nil || cookPickLayer(d, @"orchardExist", NULL) != nil);
+    if ([kind isEqualToString:@"cook"]) return (cookPickLayer(d, @"cookResult", NULL) != nil);
+    if ([kind isEqualToString:@"garbage"]) return (cookPickLayer(d, @"recievedKitchenGarbageAmount", NULL) != nil);
+    return NO;
+}
+
+static void cookTakeState(NSDictionary *d) {
+    id v;
+    if ((v = cookPickLayer(d, @"cookTimesAllowed", &gCookPathAllowed))) gCookAllowed = [v integerValue];
+    if ((v = cookPickLayer(d, @"foodMaterialStock", &gCookPathFmat))) gCookFmat = [v integerValue];
+    if ((v = cookPickLayer(d, @"foodMaterialStockLimit", NULL))) gCookFmatLimit = [v integerValue];
+    if ((v = cookPickLayer(d, @"foodMaterialWarehouseStock", &gCookPathWh))) gCookWarehouse = [v integerValue];
+    if ((v = cookPickLayer(d, @"foodStock", &gCookPathFeed))) gCookFeed = [v integerValue];
+    if ((v = cookPickLayer(d, @"cookToday", NULL))) gCookToday = [v boolValue];
+    if ((v = cookPickLayer(d, @"canCollectDailyFoodMaterial", NULL))) gCookCanDaily = [v boolValue];
+    if ((v = cookPickLayer(d, @"garbageAmount", &gCookPathGarbage))) gCookGarbage = [v integerValue];
+    id ofs = cookPickLayer(d, @"orchardFoodMaterialStatus", NULL);
+    if ([ofs isKindOfClass:NSDictionary.class] && [ofs[@"foodStatus"] isKindOfClass:NSString.class]) gCookFoodStatus = ofs[@"foodStatus"];
+    else if ((v = cookPickLayer(d, @"foodStatus", NULL)) && [v isKindOfClass:NSString.class]) gCookFoodStatus = v;
+}
+
+- (void)cookStage:(NSString *)line {
+    if (!line.length) return;
+    [self recordStage:[NSString stringWithFormat:@"做美食：%@", line]];
+    NSLog(@"[AntForestPort][Cook] %@", line);
+}
+
+- (NSDictionary *)cookBodyForKind:(NSString *)kind {
+    NSMutableDictionary *b = [NSMutableDictionary dictionary];
+    b[@"requestType"] = @"RPC";
+    b[@"version"] = @"unknown";
+    if ([kind isEqualToString:@"farmCollect"]) {
+        b[@"source"] = @"orchardGetFood";
+        b[@"sceneCode"] = @"ORCHARD";
+        b[@"collect"] = @YES;
+    } else if ([kind isEqualToString:@"collectLimited"]) {
+        b[@"source"] = @"kitchen";
+        b[@"sceneCode"] = @"ANTFARM";
+        b[@"collectDailyLimitedFoodMaterialAmount"] = @10;
+    } else {
+        b[@"source"] = @"orchardGetFood";
+        b[@"sceneCode"] = @"ANTFARM";
+        if (self.myUserId.length) b[@"userId"] = self.myUserId;
+        if ([kind isEqualToString:@"collectDaily"]) b[@"collectDailyFoodMaterialAmount"] = @60;
+    }
+    return b;
+}
+
+- (void)cookSendOp:(NSString *)op kind:(NSString *)kind {
+    PSDJsBridge *bridge = self.farmBridge ?: [self anyRewardTaskBridge];
+    if (!bridge) {
+        [self cookStage:@"暂无可用桥接，本轮跳过"];
+        [self cookFinish:@"无桥接"];
+        return;
+    }
+    NSString *url = [self effectiveUrlForBridge:bridge] ?: self.farmH5Url;
+    NSData *bd = [NSJSONSerialization dataWithJSONObject:@[ [self cookBodyForKind:kind] ] options:0 error:NULL];
+    NSString *bodyJSON = bd ? [[NSString alloc] initWithData:bd encoding:NSUTF8StringEncoding] : @"[]";
+    NSString *timeStamp = [NSString stringWithFormat:@"%ld", (long)([[NSDate date] timeIntervalSince1970] * 1000)];
+    NSString *randNum = [AntForestManager getNumberRandom:15];
+    NSString *arg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"%@\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"ags-source\":\"chInfo_ch_appcenter__chsub_9patch\"},\"requestData\":%@,\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", op, bodyJSON, timeStamp, randNum];
+    [bridge _doFlushMessageQueue:arg url:url];
+    NSLog(@"[AntForestPort][Cook] → %@ body=%@", op, bodyJSON);
+}
+
+- (void)cookExpect:(NSString *)kind {
+    gCookExpect = kind;
+    gCookSeq++;
+    NSInteger seq = gCookSeq;
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (gCookRunning && seq == gCookSeq && gCookExpect.length) {
+            [weakSelf cookStage:[NSString stringWithFormat:@"第 %ld 步等回包超时 15s（期望 %@）→ 中止本轮", (long)gCookStep, gCookExpect]];
+            [weakSelf cookFinish:@"超时中止"];
+        }
+    });
+}
+
+- (void)cookLogState:(NSString *)tag {
+    [self cookStage:[NSString stringWithFormat:@"状态%@：今日已做=%@｜可做 %ld 次｜厨房食材 %ld/%ld + 食材仓 %ld（每次 60）｜饲料 %ldg｜垃圾 %ld｜农场食材=%@",
+                     tag, gCookToday ? @"是" : @"否", (long)gCookAllowed, (long)gCookFmat, (long)gCookFmatLimit,
+                     (long)gCookWarehouse, (long)gCookFeed, (long)gCookGarbage, gCookFoodStatus ?: @"(缺)"]];
+    [self cookStage:[NSString stringWithFormat:@"取值层级：可做=%@｜厨房食材=%@｜食材仓=%@｜饲料=%@｜垃圾=%@",
+                     gCookPathAllowed ?: @"(缺)", gCookPathFmat ?: @"(缺)", gCookPathWh ?: @"(缺)", gCookPathFeed ?: @"(缺)", gCookPathGarbage ?: @"(缺)"]];
+}
+
+- (void)cookStepRun:(BOOL)answered {
+    if (!gCookRunning) return;
+    switch (gCookStep) {
+        case 1:
+            if (!answered) {
+                [self cookStage:@"① 拉厨房状态（enterKitchen）"];
+                [self cookExpect:@"state"];
+                [self cookSendOp:@"com.alipay.antfarm.enterKitchen" kind:@"enterKitchen"];
+                return;
+            }
+            [self cookLogState:@"· 初始"];
+            gCookStep = 2;
+            [self cookStepRun:NO];
+            return;
+        case 2:
+            if (!answered) {
+                if (!gCookCanDaily) {
+                    [self cookStage:@"② 每日食材暂不可领（canCollectDailyFoodMaterial=0）→ 跳过"];
+                    gCookStep = 4;
+                    [self cookStepRun:NO];
+                    return;
+                }
+                [self cookStage:@"② 领每日食材 +60（collectDailyFoodMaterial）"];
+                [self cookExpect:@"collectDaily"];
+                [self cookSendOp:@"com.alipay.antfarm.collectDailyFoodMaterial" kind:@"collectDaily"];
+                return;
+            }
+            [self cookStage:[NSString stringWithFormat:@"② ✔ 每日食材已领（厨房现 %ld）", (long)gCookFmat]];
+            gCookStep = 4;
+            [self cookStepRun:NO];
+            return;
+        case 4:
+            if (!answered) {
+                if (![gCookFoodStatus isEqualToString:@"FINISHED"]) {
+                    [self cookStage:[NSString stringWithFormat:@"③ 农场食材不可收（foodStatus=%@）→ 跳过", gCookFoodStatus ?: @"(缺)"]];
+                    gCookStep = 6;
+                    [self cookStepRun:NO];
+                    return;
+                }
+                [self cookStage:@"③ 从农场收食材（antorchard.farmFoodMaterialCollect collect=true）"];
+                [self cookExpect:@"farmCollect"];
+                [self cookSendOp:@"com.alipay.antorchard.farmFoodMaterialCollect" kind:@"farmCollect"];
+                return;
+            }
+            [self cookStage:[NSString stringWithFormat:@"③ ✔ 农场食材已收（foodStatus → %@）", gCookFoodStatus ?: @"?"]];
+            gCookStep = 6;
+            [self cookStepRun:NO];
+            return;
+        case 6:
+            if (!answered) {
+                [self cookStage:@"④ 刷新可用次数（enterKitchen）"];
+                [self cookExpect:@"state"];
+                [self cookSendOp:@"com.alipay.antfarm.enterKitchen" kind:@"enterKitchen"];
+                return;
+            }
+            [self cookLogState:@"· 备料后"];
+            gCookLeft = gCookAllowed;
+            if (gCookLeft > 5) gCookLeft = 5;
+            if (gCookLeft <= 0 && !gCookLimitedTried) {
+                gCookLimitedTried = YES;
+                if (gCookFeed < 60) {
+                    [self cookStage:[NSString stringWithFormat:@"④b 饲料不足 60g（%ldg）→ 不试领每日限时食材", (long)gCookFeed]];
+                } else {
+                    [self cookStage:@"④b 可做 0 次 → 试领每日限时食材 +10（collectDailyLimitedFoodMaterial）"];
+                    [self cookExpect:@"collectLimited"];
+                    [self cookSendOp:@"com.alipay.antfarm.collectDailyLimitedFoodMaterial" kind:@"collectLimited"];
+                    return;
+                }
+            }
+            if (gCookLeft <= 0) {
+                [self cookStage:[NSString stringWithFormat:@"食材不足（可做 %ld 次：厨房 %ld + 食材仓 %ld，每次需 60）→ 不做美食",
+                                 (long)gCookAllowed, (long)gCookFmat, (long)gCookWarehouse]];
+                gCookStep = 12;
+                [self cookStepRun:NO];
+                return;
+            }
+            [self cookStage:[NSString stringWithFormat:@"⑤ 开始做美食：计划 %ld 次（每次耗 饲料 60g + 食材 60）", (long)gCookLeft]];
+            gCookStep = 8;
+            [self cookStepRun:NO];
+            return;
+        case 8:
+            if (!answered) {
+                [self cookExpect:@"cook"];
+                [self cookSendOp:@"com.alipay.antfarm.cook" kind:@"cook"];
+                return;
+            }
+            return;
+        case 12:
+            if (!answered) {
+                [self cookStage:@"⑥ 做菜后刷新状态（做菜会产生厨房垃圾，判定必须用新状态）"];
+                [self cookExpect:@"state"];
+                [self cookSendOp:@"com.alipay.antfarm.enterKitchen" kind:@"enterKitchen"];
+                return;
+            }
+            if (gCookGarbage <= 0) {
+                [self cookStage:[NSString stringWithFormat:@"⑥ 无需清厨房垃圾（%ld）→ 跳过", (long)gCookGarbage]];
+                gCookStep = 14;
+                [self cookStepRun:NO];
+                return;
+            }
+            [self cookStage:[NSString stringWithFormat:@"⑥ 清厨房垃圾（%ld）", (long)gCookGarbage]];
+            gCookStep = 13;
+            [self cookStepRun:NO];
+            return;
+        case 13:
+            if (!answered) {
+                [self cookExpect:@"garbage"];
+                [self cookSendOp:@"com.alipay.antfarm.collectKitchenGarbage" kind:@"garbage"];
+                return;
+            }
+            gCookStep = 14;
+            [self cookStepRun:NO];
+            return;
+        case 14:
+            if (!answered) {
+                [self cookStage:@"⑦ 收尾校验（enterKitchen）"];
+                [self cookExpect:@"state"];
+                [self cookSendOp:@"com.alipay.antfarm.enterKitchen" kind:@"enterKitchen"];
+                return;
+            }
+            [self cookLogState:@"· 收尾"];
+            [self cookFinish:@"完成"];
+            return;
+        default:
+            [self cookFinish:@"异常步骤"];
+            return;
+    }
+}
+
+- (void)handleCookResponse:(NSDictionary *)dict {
+    if (!gCookRunning || ![dict isKindOfClass:NSDictionary.class]) return;
+    if (!gCookExpect.length) return;
+    if (!cookAccepts(gCookExpect, dict)) return;
+    NSString *kind = gCookExpect;
+    gCookExpect = nil;
+    if ([kind isEqualToString:@"state"] || [kind isEqualToString:@"collectDaily"]) cookTakeState(dict);
+    if ([kind isEqualToString:@"farmCollect"]) {
+        id ofs = cookPickLayer(dict, @"orchardFoodMaterialStatus", NULL);
+        if ([ofs isKindOfClass:NSDictionary.class] && [ofs[@"foodStatus"] isKindOfClass:NSString.class]) gCookFoodStatus = ofs[@"foodStatus"];
+    }
+    if ([kind isEqualToString:@"collectLimited"]) {
+        id can = cookPickLayer(dict, @"canCollectDailyLimitedFoodMaterial", NULL);
+        NSString *memo = cookPickLayer(dict, @"memo", NULL);
+        BOOL ok = [memo isKindOfClass:NSString.class] && [memo isEqualToString:@"SUCCESS"];
+        [self cookStage:[NSString stringWithFormat:@"④b %@ 每日限时食材：memo=%@ 之后还可领=%@", ok ? @"✔" : @"✘", memo ?: @"?", can ?: @"?"]];
+        [self cookStage:@"④b → 重新刷新状态"];
+        gCookStep = 6;
+        [self cookStepRun:NO];
+        return;
+    }
+    if ([kind isEqualToString:@"garbage"]) {
+        [self cookStage:[NSString stringWithFormat:@"⑥ ✔ 垃圾回收 %@（剩余 %@）",
+                         cookPickLayer(dict, @"recievedKitchenGarbageAmount", NULL) ?: @"?",
+                         cookPickLayer(dict, @"garbageAmount", NULL) ?: @"?"]];
+    }
+    if ([kind isEqualToString:@"cook"]) {
+        id ckv = cookPickLayer(dict, @"cookResult", NULL);
+        BOOL ok = [ckv respondsToSelector:@selector(boolValue)] ? [ckv boolValue] : NO;
+        if (ok) {
+            gCookDone++;
+            gCookLeft--;
+            gCookFeedUsed += 60;
+            gCookFmatUsed += 60;
+            id mav = cookPickLayer(dict, @"manureAmount", NULL);
+            NSInteger ma = [mav respondsToSelector:@selector(integerValue)] ? [mav integerValue] : 0;
+            gCookManure += ma;
+            id cv = cookPickLayer(dict, @"cuisineVO", NULL);
+            NSString *nm = nil;
+            if ([cv isKindOfClass:NSDictionary.class]) nm = cv[@"name"] ?: cv[@"cuisineName"];
+            if (![nm isKindOfClass:NSString.class]) {
+                id nv = cookPickLayer(dict, @"cuisineName", NULL);
+                nm = [nv isKindOfClass:NSString.class] ? nv : @"(缺名)";
+            }
+            [self cookStage:[NSString stringWithFormat:@"⑤ ✔ 第 %ld 次成功：%@｜肥料 +%ld｜剩余可做 %ld 次｜距新菜谱 %@",
+                             (long)gCookDone, nm, (long)ma, (long)gCookLeft,
+                             cookPickLayer(dict, @"newCuisineAfterCookTimes", NULL) ?: @"?"]];
+            if (gCookLeft > 0) {
+                __weak typeof(self) weakSelf = self;
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    if (gCookRunning) [weakSelf cookStepRun:NO];
+                });
+                return;
+            }
+            gCookStep = 12;
+            [self cookStepRun:NO];
+            return;
+        }
+        gCookFail++;
+        gCookLeft = 0;
+        [self cookStage:[NSString stringWithFormat:@"⑤ ✘ 做美食被拒：memo=%@ resultCode=%@",
+                         cookPickLayer(dict, @"memo", NULL) ?: @"?", cookPickLayer(dict, @"resultCode", NULL) ?: @"?"]];
+        gCookStep = 12;
+        [self cookStepRun:NO];
+        return;
+    }
+    [self cookStepRun:YES];
+}
+
+- (void)cookFinish:(NSString *)why {
+    if (!gCookRunning) return;
+    gCookRunning = NO;
+    gCookExpect = nil;
+    gCookEndAt = [[NSDate date] timeIntervalSince1970];
+    [self cookStage:[NSString stringWithFormat:@"汇总：做美食 %ld 次（失败 %ld）｜消耗 饲料 %ldg + 食材 %ld｜肥料合计 %ld｜结束=%@",
+                     (long)gCookDone, (long)gCookFail, (long)gCookFeedUsed, (long)gCookFmatUsed,
+                     (long)gCookManure, why ?: @"完成"]];
+}
+
+- (void)runCookAutomation {
+    if (!self.enableAutoCook) return;
+    if (gCookRunning || gCookScheduled) return;
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    if (now - gCookEndAt < 60) return;
+    gCookScheduled = YES;
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        gCookScheduled = NO;
+        if (!weakSelf.enableAutoCook || gCookRunning) return;
+        PSDJsBridge *bridge = weakSelf.farmBridge ?: [weakSelf anyRewardTaskBridge];
+        if (!bridge) {
+            [weakSelf cookStage:@"进芭芭农场但没有可用桥接 → 本轮跳过"];
+            return;
+        }
+        gCookRunning = YES;
+        gCookStep = 1;
+        gCookSeq = 0;
+        gCookExpect = nil;
+        gCookDone = 0;
+        gCookFail = 0;
+        gCookFeedUsed = 0;
+        gCookFmatUsed = 0;
+        gCookManure = 0;
+        gCookLeft = 0;
+        gCookLimitedTried = NO;
+        [weakSelf cookStage:[NSString stringWithFormat:@"===== 开始自动做美食（桥=%@）=====", weakSelf.farmBridge ? @"芭芭农场页" : @"复用其它页面"]];
+        [weakSelf cookStepRun:NO];
+    });
+}
+
 - (void)handleFarmResponse:(NSDictionary *)dict {
     if (![dict isKindOfClass:NSDictionary.class]) return;
     @try {
@@ -10201,6 +10604,9 @@ static BOOL oceanPlanLoggedThisRound = NO;
         if ([args isKindOfClass:NSDictionary.class]) {
             NSDictionary *dict = args;
             NSDictionary *resData = [dict[@"resData"] isKindOfClass:NSDictionary.class] ? dict[@"resData"] : nil;
+            if (self.enableAutoCook && [AntForestManager isCookPacket:dict]) {
+                [self handleCookResponse:dict];
+            }
             [self updateWaterFriendListFromResponse:args];
             if (waterRunning) {
                 [self handleWaterResponse:args];
