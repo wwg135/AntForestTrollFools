@@ -6869,6 +6869,50 @@ static BOOL manorDrawBumpFail(NSString *scene, NSString *taskId) {
 static NSMutableDictionary<NSString *, NSNumber *> *gManorDrawListAskedAt = nil;   // scene -> 请求时刻；收到该活动列表即摘除
 static NSString *gManorDrawLastListScene = nil;                                    // 最近一次列表请求的活动（诊断署名）
 
+// v3.4.9 根因修复：抽抽乐回包**不带 operationType** —— op 字符串匹配靠「最近一次请求」推断，
+// 并发请求（领奖/同步/任务）一到就串位，导致「满 10 次 → 连抽」整条判定从未执行。
+// 改为按回包结构识别（业务字段才是权威），不再依赖 op 归属。
+static NSMutableDictionary<NSString *, NSNumber *> *gManorDrawQuietAt = nil;   // "kind|scene" → 最近一次信息行时刻（页面轮询降噪）
+static void manorDrawInitState(void);
+
+static BOOL isManorDrawPacket(NSDictionary *resData, NSDictionary *dict) {
+    NSArray *probeKeys = @[@"drawMachineCountDownVO", @"drawMachineActivity", @"otherDrawMachineActivityIds", @"drawMachinePrizeList"];
+    for (NSDictionary *src in @[resData ?: @{}, dict ?: @{}]) {
+        for (NSString *k in probeKeys) {
+            if (src[k]) return YES;
+        }
+    }
+    return NO;
+}
+
+// 查机会回包自带本次活动的 activityId（dailyDrawMachine_* / ipDrawMachine_*）
+// —— 比递归扫描可靠：回包里同时含 otherDrawMachineActivityIds，扫描会认错活动
+static NSString *manorDrawActivitySceneFromPacket(NSDictionary *resData, NSDictionary *dict) {
+    for (NSDictionary *src in @[resData ?: @{}, dict ?: @{}]) {
+        id act = src[@"drawMachineActivity"];
+        NSArray *list = [act isKindOfClass:NSArray.class] ? act : ([act isKindOfClass:NSDictionary.class] ? @[act] : nil);
+        for (id one in list) {
+            if (![one isKindOfClass:NSDictionary.class]) continue;
+            NSString *sig = [NSString stringWithFormat:@"%@", ((NSDictionary *)one)[@"activityId"] ?: ((NSDictionary *)one)[@"scene"] ?: @""];
+            if ([sig containsString:kManorDrawSceneIP]) return kManorDrawSceneIP;
+            if ([sig containsString:kManorDrawSceneDaily]) return kManorDrawSceneDaily;
+        }
+    }
+    return nil;
+}
+
+// 信息行降噪：放宽入口后，H5 页面轮询会让同一结论每分钟出现多次
+static BOOL manorDrawQuietLog(NSString *kind, NSString *scene, NSTimeInterval window) {
+    manorDrawInitState();
+    if (!gManorDrawQuietAt) return YES;
+    NSString *key = [NSString stringWithFormat:@"%@|%@", kind, scene ?: @""];
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    NSNumber *last = gManorDrawQuietAt[key];
+    if (last && now - last.doubleValue < window) return NO;
+    gManorDrawQuietAt[key] = @(now);
+    return YES;
+}
+
 static BOOL isManorDrawOperation(NSString *opType) {
     if (!opType.length) return NO;
     return [opType containsString:@"queryDrawMachineActivity"] || [opType containsString:@"drawMachine"] ||
@@ -6995,6 +7039,7 @@ static NSString *manorDrawSceneInObject(id obj, NSUInteger *budget) {
 static void manorDrawInitState(void) {
     static dispatch_once_t onceDrawState;
     dispatch_once(&onceDrawState, ^{
+        gManorDrawQuietAt = [NSMutableDictionary dictionary];
         gManorDrawPend = [NSMutableDictionary dictionary];
         gManorDrawEndToday = [NSMutableDictionary dictionary];
         gManorDrawLastDrawTimes = [NSMutableDictionary dictionary];
@@ -8057,7 +8102,8 @@ static NSString *manorDrawTracerGroupId(NSDictionary *task) {
 
 // 回包处理：查次数 → 判定是否连抽；连抽失败 → 降级为逐次单抽
 - (void)handleManorDrawMachineResponse:(NSString *)opType resData:(NSDictionary *)resData dict:(NSDictionary *)dict {
-    if (!isManorDrawOperation(opType)) return;
+    // v3.4.9：op 命中 或 回包结构命中（后者权威——回包不带 operationType）
+    if (!isManorDrawOperation(opType) && !isManorDrawPacket(resData, dict)) return;
 
     NSString *memo = [NSString stringWithFormat:@"%@", resData[@"memo"] ?: (dict[@"memo"] ?: @"")];
     // 同一 op 会回两条：桥接 ack（{"status":"success"}）与 RPC 真结果（{code,success,...,finishAwardResultVO}），两条都算成功；
@@ -8105,9 +8151,14 @@ static NSString *manorDrawTracerGroupId(NSDictionary *task) {
         return;
     }
 
-    if ([opType containsString:@"queryDrawMachineActivity"]) {
-        // 以我方请求 FIFO 为准（回包内同时含对方活动 id，扫描容易认错活动）
-        NSString *scene = manorDrawPopQueryScene();
+    BOOL packetHasActivity = ([resData[@"drawMachineActivity"] isKindOfClass:NSDictionary.class] || [dict[@"drawMachineActivity"] isKindOfClass:NSDictionary.class] ||
+                              [resData[@"drawMachineActivity"] isKindOfClass:NSArray.class] || [dict[@"drawMachineActivity"] isKindOfClass:NSArray.class]);
+    // v3.4.9：回包带 drawMachineActivity 就是「查机会」回包（H5 自己发的也算）——不再要求 op 归属
+    if ([opType containsString:@"queryDrawMachineActivity"] || packetHasActivity) {
+        // 活动归属：回包自带的 activityId 优先（H5 自己发的查询也能定位），我方请求 FIFO 兜底，最后才递归扫描
+        NSString *scene = manorDrawActivitySceneFromPacket(resData, dict);
+        NSString *fifoScene = manorDrawPopQueryScene();
+        if (!scene.length) scene = fifoScene;
         if (!scene.length) {
             NSUInteger budget = 400;
             scene = manorDrawSceneInObject(resData, &budget) ?: manorDrawSceneInObject(dict, &budget);
@@ -8143,19 +8194,27 @@ static NSString *manorDrawTracerGroupId(NSDictionary *task) {
         else [gManorDrawEndAt removeObjectForKey:scene];
 
         if (drawTimes <= 0) {
-            [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园 · 抽抽乐（%@）：当前 0 次机会，今日不抽（%@）", scene, daysText]];
+            if (manorDrawQuietLog(@"zero", scene, 1800)) {
+                [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园 · 抽抽乐（%@）：当前 0 次机会，今日不抽（%@）", scene, daysText]];
+            }
             return;
         }
 
         NSInteger times = 0;
         if (drawTimes >= maxDraw) {
             times = maxDraw;
-            [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园 · 抽抽乐（%@）：已积满 %ld 次（%@），开始一键连抽 %ld 次…", scene, (long)drawTimes, daysText, (long)times]];
+            if (manorDrawQuietLog(@"gate", scene, 1800)) {
+                [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园 · 抽抽乐（%@）：已积满 %ld 次（%@），开始一键连抽 %ld 次…", scene, (long)drawTimes, daysText, (long)times]];
+            }
         } else if (isLastDay) {
             times = drawTimes > maxDraw ? maxDraw : drawTimes;
-            [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园 · 抽抽乐（%@）：%@，剩余 %ld 次全部抽掉…", scene, daysText, (long)drawTimes]];
+            if (manorDrawQuietLog(@"gate", scene, 1800)) {
+                [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园 · 抽抽乐（%@）：%@，剩余 %ld 次全部抽掉…", scene, daysText, (long)drawTimes]];
+            }
         } else {
-            [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园 · 抽抽乐（%@）：已积 %ld/%ld 次（%@），未满不抽（满 %ld 自动连抽）", scene, (long)drawTimes, (long)maxDraw, daysText, (long)maxDraw]];
+            if (manorDrawQuietLog(@"gate", scene, 1800)) {
+                [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园 · 抽抽乐（%@）：已积 %ld/%ld 次（%@），未满不抽（满 %ld 自动连抽）", scene, (long)drawTimes, (long)maxDraw, daysText, (long)maxDraw]];
+            }
             return;
         }
 
