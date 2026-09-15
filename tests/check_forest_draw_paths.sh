@@ -83,7 +83,10 @@ chk "缺字段≠0（缺 blance 不当无机会）" "$M" '机会数未取到（�
 chk "缺字段留顶层键诊断"         "$M" 'forestDrawTopKeys'
 chk "后台拉取结果自证行"         "$M" '后台拉取成功（不进寻宝页面也拿到任务）'
 chk "任务扫描覆盖 subTaskList"   "$M" '@"taskInfoList", @"taskList", @"subTaskList"'
-chk "自证行细分待做/其余"         "$M" '（待做 %ld、其余已处理 %ld）'
+chk "自证行升级为诊断行"         "$M" '森林寻宝：后台拉取成功（不进寻宝页面也拿到任务）· %@'
+chk "诊断含状态分布"             "$M" '任务 %lu 个 · 状态 %@'
+chk "诊断含今日已处理缓存命中"    "$M" '今日已处理缓存 %ld'
+chk "诊断含安全可做判定"          "$M" '安全可做 %ld'
 chk "探测间隔 30 分钟"           "$M" 'kForestDrawProbeGap  = 1800.0'
 
 echo "=== 8. 负向断言（历史坑） ==="
