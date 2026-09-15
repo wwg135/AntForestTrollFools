@@ -205,6 +205,10 @@ static void finishForestHomeStart(id controller, id bridge) {
     manager.jsBridge = bridge;
     objc_setAssociatedObject(controller, ForestHomeStartKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     [manager recordStage:@"收取 · 森林首页 H5 Bridge 已就绪"];
+    // v3.2.9：森林首页桥一就绪 → 8 秒后尝试后台拉取寻宝任务与抽奖（不进寻宝页面的「路 A」；10 分钟节流、被拒即停当日）
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [manager forestDrawBackgroundProbe];
+    });
     startSilentRewardContext(controller);
     if (manager.enableWaterOnLaunch) [manager startLaunchWateringThenCollect];
     else if (manager.enableAutoCollect) {
@@ -1599,7 +1603,7 @@ static void installEarnEnergyCollector(id controller) {
 
     [self.view addSubview:grabber];
     UILabel *versionLabel = [[UILabel alloc] init];
-    versionLabel.text = @"当前版本：v3.2.8";
+    versionLabel.text = @"当前版本：v3.2.9";
     versionLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightRegular];
     versionLabel.textColor = [UIColor systemGray2Color];
     versionLabel.textAlignment = NSTextAlignmentCenter;
