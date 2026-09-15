@@ -6974,71 +6974,71 @@ static NSString *forestDrawTopKeys(id packet) {
     return NSStringFromClass([root class]) ?: @"?";
 }
 
-// 任务诊断（v3.3.2）：不只报数量，还要报「为什么没执行」——
-//   解析器对每个任务有四道闸门（3515 今日已完成缓存 / 3520 今日失败缓存 / 3526 熔断 / 3567 安全白名单），
-//   前两道是静默 continue（无日志），日志里看不到 → 这里直接把状态分布、安全可做、缓存命中数报出来。
-static NSString *forestDrawTaskDiag(id packet) {
-    __block NSArray *best = nil;
-    __block NSInteger budget = 4000;
-    forestDrawWalk(packet, 0, &budget, ^(NSDictionary *d) {
-        for (NSString *k in @[@"taskInfoList", @"taskList", @"subTaskList", @"farmTaskList", @"vitalityTaskList"]) {
-            id arr = d[k];
-            if (![arr isKindOfClass:NSArray.class]) continue;
-            if (!best || ((NSArray *)arr).count > best.count) best = (NSArray *)arr;
-        }
-    });
-    if (!best.count) return @"回包无任务数组";
-    NSMutableDictionary<NSString *, NSNumber *> *statuses = [NSMutableDictionary dictionary];
-    NSInteger safe = 0, todo = 0, cached = 0, failed = 0;
-    for (id it in best) {
-        if (![it isKindOfClass:NSDictionary.class]) continue;
-        NSDictionary *t = (NSDictionary *)it;
-        NSDictionary *base = [t[@"taskBaseInfo"] isKindOfClass:NSDictionary.class] ? t[@"taskBaseInfo"] : t;
-        NSString *tt = base[@"taskType"] ?: (t[@"taskType"] ?: (t[@"bizKey"] ?: (base[@"bizKey"] ?: @"")));
-        NSString *title = t[@"taskTitle"] ?: (base[@"taskTitle"] ?: (t[@"title"] ?: @""));
-        id stRaw = t[@"taskStatus"] ?: base[@"taskStatus"];
-        NSString *st = stRaw ? [NSString stringWithFormat:@"%@", stRaw] : @"未知";
-        statuses[st] = @([statuses[st] integerValue] + 1);
-        if (isSafeRewardTask(tt, title)) safe++;
-        if ([st.uppercaseString isEqualToString:@"TODO"]) {
-            todo++;
-            NSString *suffix = [NSString stringWithFormat:@":%@", tt];
-            @synchronized ([AntForestManager class]) {
-                for (NSString *key in gDailyCompletedTasks) { if ([key hasSuffix:suffix]) { cached++; break; } }
-                for (NSString *key in gDailyFailedTasks) { if ([key hasSuffix:suffix]) { failed++; break; } }
-            }
+// 任务诊断（v3.3.3）：口径与解析器逐字对齐 —— 同 allTaskList 构建（3346-3362）、同字段回退链（3382-3386）
+// v3.3.2 版本只取「回包内最大的那个数组」且每天只打一条 → 与真实任务数/状态对不上（用户实测：普通版 5+2、活动版 4+2），已废弃。
+static NSArray<NSDictionary *> *forestDrawAllTasks(id packet) {
+    NSMutableArray<NSDictionary *> *all = [NSMutableArray array];
+    if (![packet isKindOfClass:NSDictionary.class]) return all;
+    NSDictionary *data = (NSDictionary *)packet;
+    NSArray *groupKeys = @[@"forestTasksNew", @"stageTaskList", @"stageInfoList", @"stagePrizeList", @"stageAwards", @"accumulateTasks", @"ladderTasks", @"taskGroupList", @"forestTasks", @"taskList"];
+    for (NSString *key in groupKeys) {
+        NSArray *arr = [data[key] isKindOfClass:NSArray.class] ? data[key] : nil;
+        for (id g in arr) {
+            if (![g isKindOfClass:NSDictionary.class]) continue;
+            NSArray *sub = g[@"taskInfoList"] ?: (g[@"taskList"] ?: g[@"subTaskList"]);
+            if ([sub isKindOfClass:NSArray.class]) [all addObjectsFromArray:sub];
+            else if (g[@"taskBaseInfo"] || g[@"taskType"] || g[@"taskId"]) [all addObject:g];
         }
     }
-    NSMutableArray<NSString *> *parts = [NSMutableArray array];
-    for (NSString *k in [statuses.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
-        [parts addObject:[NSString stringWithFormat:@"%@×%@", k, statuses[k]]];
-    }
-    return [NSString stringWithFormat:@"任务 %lu 个 · 状态 %@ · 安全可做 %ld · 待做(TODO) %ld（其中今日已处理缓存 %ld、今日熔断缓存 %ld）",
-            (unsigned long)best.count, [parts componentsJoinedByString:@" "], (long)safe, (long)todo, (long)cached, (long)failed];
+    NSArray *top = [data[@"taskInfoList"] isKindOfClass:NSArray.class] ? data[@"taskInfoList"] : ([data[@"taskList"] isKindOfClass:NSArray.class] ? data[@"taskList"] : nil);
+    if (top.count > 0) [all addObjectsFromArray:top];
+    return all;
 }
 
-// 任务计数：找回包里最大的任务数组，统计总数与「未完成」数（用于判定后台拉取是否真拿到任务）
-static void forestDrawCountTasks(id packet, NSInteger *total, NSInteger *pending) {
-    __block NSInteger t = 0, p = 0;
-    __block NSInteger budget = 4000;
-    forestDrawWalk(packet, 0, &budget, ^(NSDictionary *d) {
-        for (NSString *k in @[@"taskInfoList", @"taskList", @"subTaskList", @"farmTaskList", @"vitalityTaskList"]) {
-            id arr = d[k];
-            if (![arr isKindOfClass:NSArray.class]) continue;
-            NSArray *a = (NSArray *)arr;
-            if ((NSInteger)a.count <= t) continue;
-            NSInteger pp = 0;
-            for (id it in a) {
-                if (![it isKindOfClass:NSDictionary.class]) continue;
-                NSString *st = [NSString stringWithFormat:@"%@", ((NSDictionary *)it)[@"taskStatus"] ?: @""];
-                if (!([st containsString:@"FINISHED"] || [st containsString:@"RECEIVED"] || [st containsString:@"COMPLETE"] || [st containsString:@"DONE"])) pp++;
-            }
-            t = (NSInteger)a.count;
-            p = pp;
+static NSString *forestDrawTaskDiag(id packet, NSString **sceneOut) {
+    NSArray<NSDictionary *> *tasks = forestDrawAllTasks(packet);
+    if (sceneOut) *sceneOut = @"";
+    if (!tasks.count) return @"回包无任务项";
+    NSMutableDictionary<NSString *, NSNumber *> *statuses = [NSMutableDictionary dictionary];
+    NSMutableArray<NSString *> *detail = [NSMutableArray array];
+    NSInteger safe = 0, cached = 0, limited = 0;
+    NSString *scene = @"";
+    for (NSDictionary *t in tasks) {
+        NSDictionary *base = [t[@"taskBaseInfo"] isKindOfClass:NSDictionary.class] ? t[@"taskBaseInfo"] : t;
+        NSString *taskType = [base[@"taskType"] isKindOfClass:NSString.class] ? base[@"taskType"] : ([t[@"taskId"] isKindOfClass:NSString.class] ? t[@"taskId"] : ([t[@"deliveryId"] isKindOfClass:NSString.class] ? t[@"deliveryId"] : @""));
+        NSString *sceneCode = [base[@"sceneCode"] isKindOfClass:NSString.class] ? base[@"sceneCode"] : ([t[@"sceneCode"] isKindOfClass:NSString.class] ? t[@"sceneCode"] : ([t[@"iepSceneCode"] isKindOfClass:NSString.class] ? t[@"iepSceneCode"] : @"ANTFOREST_VITALITY_TASK"));
+        NSString *status = [base[@"taskStatus"] isKindOfClass:NSString.class] ? base[@"taskStatus"] : ([t[@"taskStatus"] isKindOfClass:NSString.class] ? t[@"taskStatus"] : ([t[@"status"] isKindOfClass:NSString.class] ? t[@"status"] : @""));
+        id bizRaw = base[@"bizInfo"] ?: t[@"bizInfo"];
+        NSDictionary *biz = nil;
+        if ([bizRaw isKindOfClass:NSString.class]) biz = [NSJSONSerialization JSONObjectWithData:[(NSString *)bizRaw dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+        else if ([bizRaw isKindOfClass:NSDictionary.class]) biz = (NSDictionary *)bizRaw;
+        id titleRaw = biz[@"taskTitle"] ?: (biz[@"title"] ?: (t[@"title"] ?: (t[@"taskTitle"] ?: (base[@"taskTitle"] ?: taskType))));
+        NSString *title = [titleRaw isKindOfClass:NSString.class] ? titleRaw : taskType;
+        NSString *btn = biz[@"btnText"] ?: (biz[@"finishedBtnText"] ?: (base[@"btnText"] ?: t[@"btnText"]));
+        if (![btn isKindOfClass:NSString.class]) btn = @"";
+        if (!scene.length && sceneCode.length) scene = sceneCode;
+        NSString *stKey = status.length ? status : @"(空)";
+        statuses[stKey] = @([statuses[stKey] integerValue] + 1);
+        if (isSafeRewardTask(taskType, title)) safe++;
+        NSString *taskKey = [NSString stringWithFormat:@"%@:%@", sceneCode, taskType];
+        BOOL inCache = NO;
+        @synchronized ([AntForestManager class]) { inCache = [gDailyCompletedTasks containsObject:taskKey]; }
+        if (inCache) cached++;
+        // 限时不可做：按钮/标题写明已结束/未开始/限时，或带时间窗但状态空
+        if ([btn containsString:@"结束"] || [btn containsString:@"未开始"] || [title containsString:@"限时"] || [title containsString:@"已结束"]) limited++;
+        if (detail.count < 14) {
+            NSString *shortType = taskType.length > 16 ? [taskType substringToIndex:16] : taskType;
+            NSString *shortBtn = btn.length > 8 ? [btn substringToIndex:8] : btn;
+            [detail addObject:[NSString stringWithFormat:@"%@=%@%@", shortType, stKey, shortBtn.length ? [NSString stringWithFormat:@"(%@)", shortBtn] : @""]];
         }
-    });
-    if (total) *total = t;
-    if (pending) *pending = p;
+    }
+    if (sceneOut) *sceneOut = scene;
+    NSMutableArray<NSString *> *hist = [NSMutableArray array];
+    for (NSString *k in [statuses.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+        [hist addObject:[NSString stringWithFormat:@"%@×%@", k, statuses[k]]];
+    }
+    return [NSString stringWithFormat:@"任务 %lu 个 · 状态 %@ · 安全可做 %ld · 限时类 %ld · 今日缓存命中 %ld · 明细：%@",
+            (unsigned long)tasks.count, [hist componentsJoinedByString:@" "], (long)safe, (long)limited, (long)cached, [detail componentsJoinedByString:@" "]];
 }
 
 static NSArray<NSString *> *forestDrawCollectPrizeNames(id packet) {
@@ -7210,9 +7210,10 @@ static BOOL forestDrawPacketRejected(NSDictionary *resData, NSDictionary *dict) 
     forestDrawLearnFromPacket(resData);
     // 后台探测被服务端拒绝 → 当日不再后台尝试（进寻宝页面仍正常做任务与抽奖）；须在「无在途即返回」之前判定
     if (gForestDrawProbeAwaitUntil > 0 && [[NSDate date] timeIntervalSince1970] < gForestDrawProbeAwaitUntil) {
-        NSString *probeDiag = forestDrawTaskDiag(resData);
-        if (![probeDiag isEqualToString:@"回包无任务数组"]) {
-            forestDrawQuietLog(self, @"probeok", [NSString stringWithFormat:@"森林寻宝：后台拉取成功（不进寻宝页面也拿到任务）· %@", probeDiag]);
+        NSString *diagScene = nil;
+        NSString *probeDiag = forestDrawTaskDiag(resData, &diagScene);
+        if (![probeDiag hasPrefix:@"回包无任务"]) {
+            forestDrawQuietLog(self, diagScene.length ? diagScene : @"场景未知", [NSString stringWithFormat:@"森林寻宝：后台拉取成功（不进寻宝页面也拿到任务）· 场景 %@ · %@", diagScene.length ? diagScene : @"未知", probeDiag]);
         }
         if (forestDrawPacketRejected(resData, resData)) {
             gForestDrawProbeAwaitUntil = 0;
