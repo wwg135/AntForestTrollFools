@@ -2068,11 +2068,41 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
             self.lotteryH5Url = effectiveUrl;
         }
     }
+    {
+        // v3.4.3：任意 H5 页面绑定后补跑通用网关链路（农场/保护地任务与页面无关，不必等 5 分钟循环）；同 60 秒一次
+        static NSTimeInterval lastGenericKickAt = 0;
+        NSTimeInterval gkNow = [[NSDate date] timeIntervalSince1970];
+        if (gkNow - lastGenericKickAt > 60) {
+            lastGenericKickAt = gkNow;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(800 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+                [self queryFarmTaskListWithForce:YES];
+                [self queryMonopolyTaskListWithForce:YES];
+            });
+        }
+    }
 }
 
 - (void)checkAndTriggerPageActionsForUrl:(NSString *)urlStr {
     if (!urlStr.length) return;
     NSString *lowerUrl = urlStr.lowercaseString;
+    {
+        // v3.4.3：页面识别留痕——新形态(URL)才打一行，用于定位某页面为何绑不上桥接（降噪：同 URL 只一条）
+        NSString *pKind = @"未知";
+        if ([lowerUrl containsString:@"180020010001293606"] || [lowerUrl containsString:@"monopoly"] || [lowerUrl containsString:@"hsdwy"] || [lowerUrl containsString:@"patrol"]) pKind = @"保护地";
+        else if ([lowerUrl containsString:@"180020010001290531"] || [lowerUrl containsString:@"aifish"] || [lowerUrl containsString:@"antaifish"]) pKind = @"AI摸鱼";
+        else if ([lowerUrl containsString:@"180020010001263018"] || [lowerUrl containsString:@"farm"] || [lowerUrl containsString:@"orchard"]) pKind = @"芭芭农场";
+        else if ([lowerUrl containsString:@"2021003115672468"] || [lowerUrl containsString:@"ocean"]) pKind = @"神奇海洋";
+        else if ([lowerUrl containsString:@"180020010001279274"] || [lowerUrl containsString:@"lotterymachine"] || [lowerUrl containsString:@"draw"]) pKind = @"森林寻宝";
+        else if ([lowerUrl containsString:@"180020010001247580"] || [lowerUrl containsString:@"home.html"]) pKind = @"森林首页";
+        else if ([lowerUrl containsString:@"66666674"] || [lowerUrl containsString:@"antfarm"] || [lowerUrl containsString:@"ant_farm"]) pKind = @"蚂蚁庄园";
+        NSString *pFp = lowerUrl.length > 120 ? [lowerUrl substringToIndex:120] : lowerUrl;
+        static NSString *lastPageKey = nil;
+        NSString *pKey = [NSString stringWithFormat:@"%@|%@", pKind, pFp];
+        if (!lastPageKey || ![pKey isEqualToString:lastPageKey]) {
+            lastPageKey = [pKey copy];
+            [self recordStage:[NSString stringWithFormat:@"页面识别：%@ · url=%@", pKind, pFp]];
+        }
+    }
     
     if ([lowerUrl containsString:@"180020010001293606"] || [lowerUrl containsString:@"monopoly"] || [lowerUrl containsString:@"hsdwy"] || [lowerUrl containsString:@"patrol"] || [lowerUrl containsString:@"guardian"]) {
         if (self.enableAutoPatrolNew) {
@@ -2370,6 +2400,15 @@ static NSString *sLastQueriedSceneCode = nil;
     initDailyTaskCache();
     
     static NSTimeInterval lastQueryFarmTime = 0;
+    {
+        // v3.4.3：进链留痕——「没跑」与「跑了没任务」必须在面板可区分；同页 60 秒一条
+        static NSTimeInterval lastFarmPullLogAt = 0;
+        NSTimeInterval fpNow = [[NSDate date] timeIntervalSince1970];
+        if (fpNow - lastFarmPullLogAt > 60) {
+            lastFarmPullLogAt = fpNow;
+            [self recordStage:[NSString stringWithFormat:@"芭芭农场：开始拉取任务列表（桥接=%@）", self.farmBridge ? @"农场页" : @"复用其它页面"]];
+        }
+    }
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     NSTimeInterval minInterval = force ? 3.0 : 6.0;
     if (now - lastQueryFarmTime < minInterval) return;
