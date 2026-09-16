@@ -24,7 +24,7 @@ grep -q 'lastManorAnswerAttemptAt"\]' "$M" && grep -q '< 1800) return;' "$M" && 
 echo "[3/4] 任务执行器不再按「游戏类/模式」白名单跳过（反向断言）"
 if grep -q 'cat isEqualToString:@"Game"' "$M"; then bad "仍存在 Game 类直接 continue"; else ok "Game/Game_Charge 硬拦已移除"; fi
 if grep -q 'if (\[mode isEqualToString:@"VIEW"\] || \[mode isEqualToString:@"TRIGGER"\]) {' "$M"; then bad "模式白名单仍在"; else ok "模式白名单已移除（每个 TODO 任务每天试一次）"; fi
-grep -q '每个 TODO 任务每天仍只试一次' "$M" && ok "注释说明在位（可回溯改法）" || bad "说明注释缺失"
+grep -q 'v3.5.5：区分「单次任务」与「多阶段任务」' "$M" && ok "注释说明在位（v3.5.5 起区分单次/多阶段）" || bad "说明注释缺失"
 
 echo "[4/4] 安全闸门必须保留：出资类拦截 + 一天一次记账键 + 不做跳转"
 grep -q 'Public_Welfare_Behavior' "$M" && grep -q 'DONATION' "$M" && ok "捐款/支付类拦截仍在" || bad "出资类拦截被削弱"
