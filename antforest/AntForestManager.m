@@ -5465,7 +5465,19 @@ static BOOL manorFoodTaskGapOK(NSString *bizKey) {
             //   依据（9/16 用户截图）：「看一看水滴排排序」「试玩庄园火爆小游戏」=打开即得30g、最多240g＝8 阶段，
             //   做完第 1 次按钮变「继续完成」，旧逻辑已把它记成当天完成 ⇒ 不再继续。
             // 一律纯 RPC：不跳转、不点 targetUrl。
-            {
+            // v3.5.6：做任务端也要有满仓闸门（原来只有领取端有）——满仓时完成任务只会挂出「待领奖励」，
+            // 领不出来（且可能过期作废）；先不做，等小鸡进食把背包消耗下去再做。取值口径与下方领取闸门逐字一致。
+            NSInteger taskStock = self.lastManorFoodStock;
+            NSInteger taskStockLimit = self.lastManorFoodStockLimit > 0 ? self.lastManorFoodStockLimit : 1800;
+            if (isFoodAward && taskStockLimit > 0 && taskStock + award > taskStockLimit) {
+                static NSTimeInterval lastTaskFullLogTime = 0;
+                NSTimeInterval taskFullNow = [[NSDate date] timeIntervalSince1970];
+                if (taskFullNow - lastTaskFullLogTime > 60) {
+                    lastTaskFullLogTime = taskFullNow;
+                    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：饲料背包已满或将溢出（当前 %ldg/%ldg，任务奖励 %ld%@），暂停做任务，待小鸡进食后再做",
+                                       (long)taskStock, (long)taskStockLimit, (long)award, awardUnit]];
+                }
+            } else {
                 NSString *taskBtn = [NSString stringWithFormat:@"%@", (task[@"btnText"] ?: (task[@"finishedButtonText"] ?: @""))];
                 NSInteger stageLimit = [task[@"rightsTimesLimit"] respondsToSelector:@selector(integerValue)] ? [task[@"rightsTimesLimit"] integerValue] : 0;
                 if (stageLimit <= 0) stageLimit = [task[@"canDoTaskTimesLimit"] respondsToSelector:@selector(integerValue)] ? [task[@"canDoTaskTimesLimit"] integerValue] : 0;
