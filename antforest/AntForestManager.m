@@ -5566,6 +5566,26 @@ static NSTimeInterval gManorCuisineStockScanAt = 0;     // 库存扫描节流：
 static NSTimeInterval gManorCuisineStockAt = 0;         // 上次识别到库存的时间（判断新鲜度）
 static NSTimeInterval gManorCuisineStockQueryAt = 0;    // 主动查库存节流：10 分钟最多一次
 
+// v3.5.3：是否「学到过真实库存数」的持久标记 —— 用来区分「库存表空=确实没有」与「库存表空=还没学到」。
+// 缺了它，持有归零后 manorAdvancedCuisineList 会回退「已识别菜谱全量」，把持有 0/未知的菜谱逐个发
+// useFarmFood（9/16 实测：一轮 41 个判无库存、52 秒白烧，用户看到「没库存还一直投喂」）。
+static NSString * const kManorCuisineStockKnownKey = @"antforest_manor_cuisine_stock_known_v1";
+static BOOL gManorCuisineStockKnown = NO;
+
+static void manorMarkCuisineStockKnown(void) {
+    if (gManorCuisineStockKnown) return;
+    gManorCuisineStockKnown = YES;
+    [NSUserDefaults.standardUserDefaults setBool:YES forKey:kManorCuisineStockKnownKey];
+}
+
+static BOOL manorCuisineStockLearned(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        gManorCuisineStockKnown = [NSUserDefaults.standardUserDefaults boolForKey:kManorCuisineStockKnownKey];
+    });
+    return gManorCuisineStockKnown;
+}
+
 static void manorLoadCuisineStock(void) {
     if (gManorCuisineStock) return;
     gManorCuisineStock = [NSMutableDictionary dictionary];
@@ -5694,6 +5714,9 @@ static NSArray *manorAdvancedCuisineList(void) {
         }
         return out;
     }
+    // v3.5.3：库存表已经有「学过真实持有数」的记录、但当前持有全为 0 ⇒ 这是确实没有可投喂的，
+    // 收工（不再回退「已识别菜谱全量」把持有 0/未知的菜谱逐个盲试）。只有从没学到过库存数时才回退。
+    if (manorCuisineStockLearned()) return @[];
     manorLoadLearnedCuisines();
     if (gManorLearnedCuisines.count > 0) {
         NSMutableArray *out = [NSMutableArray array];
@@ -8410,6 +8433,7 @@ static NSString *manorDrawTracerGroupId(NSDictionary *task) {
         [gManorCuisineEmptyIds removeObject:cuisineId];
     }
     if (!updated) return 0;
+    manorMarkCuisineStockKnown();   // v3.5.3：学到过真实持有数 ⇒ 之后库存表空就是「真的没有」
     gManorCuisineStockAt = [[NSDate date] timeIntervalSince1970];
     manorSaveCuisineStock();
     manorSaveCuisineEmptyIds();
