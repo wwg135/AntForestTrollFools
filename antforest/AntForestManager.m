@@ -5254,6 +5254,43 @@ static void manorClaimMarkReply(NSString *taskId) {
     [bridge _doFlushMessageQueue:doTaskArg url:url];
 }
 
+// v3.5.5：多阶段「领饲料」任务（如「看一看水滴排排序」打开即得 30g、玩一玩最多 240g＝8 阶段）——
+// 做完一次服务端把按钮从「去完成」改成「继续完成」，所以不能再用「一天一次」把它锁死。
+// 次数记在日缓存（ANTFARM_FOOD_TASK_N:<bizKey>:<epoch>，条数=当日次数），App 重启不丢。
+static const NSTimeInterval kManorFoodTaskMinGap = 20.0;   // 同一任务两次触发的最小间隔（防请求风暴）
+static NSMutableDictionary<NSString *, NSNumber *> *gManorFoodTaskLastAt = nil;
+
+static NSInteger manorFoodTaskSentCount(NSString *bizKey) {
+    if (!bizKey.length) return 0;
+    initDailyTaskCache();
+    NSInteger n = 0;
+    NSString *prefix = [NSString stringWithFormat:@"ANTFARM_FOOD_TASK_N:%@:", bizKey];
+    for (NSString *entry in gDailyCompletedTasks) {
+        if ([entry hasPrefix:prefix]) n++;
+    }
+    // 兼容 v3.5.4 前的单次键（已计过就当天不再重复）
+    if ([gDailyCompletedTasks containsObject:[NSString stringWithFormat:@"ANTFARM_FOOD_TASK:%@", bizKey]]) n++;
+    return n;
+}
+
+static void manorFoodTaskMarkSent(NSString *bizKey) {
+    if (!bizKey.length) return;
+    initDailyTaskCache();
+    [gDailyCompletedTasks addObject:[NSString stringWithFormat:@"ANTFARM_FOOD_TASK_N:%@:%ld", bizKey,
+                                     (long)[[NSDate date] timeIntervalSince1970]]];
+    saveDailyTaskCache();
+}
+
+static BOOL manorFoodTaskGapOK(NSString *bizKey) {
+    if (!bizKey.length) return NO;
+    if (!gManorFoodTaskLastAt) gManorFoodTaskLastAt = [NSMutableDictionary dictionary];
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    NSNumber *last = gManorFoodTaskLastAt[bizKey];
+    if (last && now - last.doubleValue < kManorFoodTaskMinGap) return NO;
+    gManorFoodTaskLastAt[bizKey] = @(now);
+    return YES;
+}
+
 - (void)receiveManorFarmTaskAwardWithTaskId:(NSString *)taskId title:(NSString *)title {
     if (!self.enableAutoManor || !taskId.length) return;
     PSDJsBridge *bridge = (self.manorBridge && self.manorBridge != self.jsBridge) ? self.manorBridge : nil;
@@ -5421,15 +5458,29 @@ static void manorClaimMarkReply(NSString *taskId) {
             
             // v3.5.4：不再按「游戏类/模式白名单」挑任务。doFarmTask 就是 App「去完成」按钮发的那个 RPC，
             // 服务端才是权威：能后台完成的（浏览/逛一逛/试玩类）它会回 FINISHED，需要真实上手玩的它会回拒绝 memo。
-            // 上面已拦掉出资类（捐款/支付/金融/信用卡）；这里每个 TODO 任务每天仍只试一次
-            // （记账键 ANTFARM_FOOD_TASK:<bizKey> 天然一天一次），且不做任何跳转、不点 targetUrl。
+            // v3.5.5：区分「单次任务」与「多阶段任务」——
+            //   单次（按钮「去完成」）：保持一天一次；
+            //   多阶段（按钮变「继续完成」，或 rightsTimes<rightsTimesLimit）：继续触发到当日上限
+            //     （取 rightsTimesLimit，硬上限 8 次），同一任务两次触发间隔 ≥ 20 秒。
+            //   依据（9/16 用户截图）：「看一看水滴排排序」「试玩庄园火爆小游戏」=打开即得30g、最多240g＝8 阶段，
+            //   做完第 1 次按钮变「继续完成」，旧逻辑已把它记成当天完成 ⇒ 不再继续。
+            // 一律纯 RPC：不跳转、不点 targetUrl。
             {
-                NSString *taskKey = [NSString stringWithFormat:@"ANTFARM_FOOD_TASK:%@", bizKey];
-                if (![gDailyCompletedTasks containsObject:taskKey]) {
-                    [gDailyCompletedTasks addObject:taskKey];
-                    saveDailyTaskCache();
-                    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：正在完成任务“%@”（类别 %@｜模式 %@）...",
-                                       title, cat.length ? cat : @"-", mode.length ? mode : @"-"]];
+                NSString *taskBtn = [NSString stringWithFormat:@"%@", (task[@"btnText"] ?: (task[@"finishedButtonText"] ?: @""))];
+                NSInteger stageLimit = [task[@"rightsTimesLimit"] respondsToSelector:@selector(integerValue)] ? [task[@"rightsTimesLimit"] integerValue] : 0;
+                if (stageLimit <= 0) stageLimit = [task[@"canDoTaskTimesLimit"] respondsToSelector:@selector(integerValue)] ? [task[@"canDoTaskTimesLimit"] integerValue] : 0;
+                NSInteger stageDone = [task[@"rightsTimes"] respondsToSelector:@selector(integerValue)] ? [task[@"rightsTimes"] integerValue] : 0;
+                BOOL btnContinue = ([taskBtn containsString:@"继续"] || [taskBtn containsString:@"再玩"] || [taskBtn containsString:@"再来"]);
+                BOOL multiStage = (btnContinue || (stageLimit > 1 && stageDone < stageLimit));
+                NSInteger cap = (stageLimit > 1) ? MIN(stageLimit, 8) : 8;
+                NSInteger sent = manorFoodTaskSentCount(bizKey);
+                BOOL allowed = multiStage ? (sent < cap) : (sent == 0);
+                if (allowed && manorFoodTaskGapOK(bizKey)) {
+                    manorFoodTaskMarkSent(bizKey);
+                    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：正在完成任务“%@”（第 %ld 次／上限 %ld%@｜类别 %@｜模式 %@）...",
+                                       title, (long)(sent + 1), (long)(multiStage ? cap : 1),
+                                       multiStage ? @"" : @"·单次任务",
+                                       cat.length ? cat : @"-", mode.length ? mode : @"-"]];
                     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(taskDelayIndex * 350 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
                         [self doManorFarmTaskWithBizKey:bizKey];
                     });
