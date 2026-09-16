@@ -903,6 +903,14 @@ static BOOL isNoiseProbeLog(NSString *log) {
         return NO;
     }
     
+    // v3.5.1：芭芭农场页自己也会发/收 com.alipay.antfarm.*（做美食、厨房、肥料），这类回包只带农场任务列表（taskList）
+    // 而不含庄园结构键 —— 若只按 op 判成庄园，会把「农场桥」误绑为「庄园桥」，庄园 op 全发到农场页 → 全部无回包。
+    BOOL hasManorStructure = (resData[@"subFarmVO"] || dict[@"subFarmVO"] ||
+                              resData[@"dynamicGlobalConfig"] || dict[@"dynamicGlobalConfig"] ||
+                              resData[@"farmTaskList"] || dict[@"farmTaskList"] ||
+                              resData[@"antfarmP2POfflineTime"] || dict[@"antfarmP2POfflineTime"]);
+    if (!hasManorStructure && (dict[@"taskList"] || resData[@"taskList"])) return NO;
+
     NSString *opType = [NSString stringWithFormat:@"%@", (dict[@"operationType"] ?: resData[@"operationType"]) ?: @""];
     if ([opType containsString:@"com.alipay.antfarm"] || [opType containsString:@"antfarm."]) return YES;
     
@@ -9608,6 +9616,15 @@ static void cookTakeState(NSDictionary *d) {
     });
 }
 
+- (void)recordStageOnChange:(NSString *)key text:(NSString *)text {
+    static NSMutableDictionary *lastTexts = nil;
+    if (!lastTexts) lastTexts = [NSMutableDictionary dictionary];
+    NSString *prev = lastTexts[key];
+    if (prev && [prev isEqualToString:text]) return;
+    lastTexts[key] = [text copy];
+    [self recordStage:text];
+}
+
 - (void)handleFarmResponse:(NSDictionary *)dict {
     if (![dict isKindOfClass:NSDictionary.class]) return;
     @try {
@@ -9644,7 +9661,7 @@ static void cookTakeState(NSDictionary *d) {
             }
             NSInteger displayManure = totalManure > 1000 ? (totalManure / 1000) : totalManure;
             NSLog(@"🌾 [芭芭农场·小鸡肥料] 状态:【%@】| 可收肥料: %ld 肥 | 肥料锅数: %lu", canCollect ? @"可收取" : @"生产中", (long)displayManure, (unsigned long)potList.count);
-            [self recordStage:[NSString stringWithFormat:@"芭芭农场：庄园小鸡肥料状态【%@】，可收取约 %ld 肥", canCollect ? @"可领取" : @"生产中/未满", (long)displayManure]];
+            [self recordStageOnChange:@"farm_manure" text:[NSString stringWithFormat:@"芭芭农场：庄园小鸡肥料状态【%@】，可收取约 %ld 肥", canCollect ? @"可领取" : @"生产中/未满", (long)displayManure]];
             
             if (canCollect && self.enableAutoFarmTasks) {
                 [self collectFarmChickenManure];
@@ -9667,7 +9684,7 @@ static void cookTakeState(NSDictionary *d) {
                 
                 NSString *todayStr = getCurrentDateString();
                 if (!signedToday && ([signKey isEqualToString:todayStr] || i == contCount || i == 0)) {
-                    [self recordStage:[NSString stringWithFormat:@"芭芭农场：探测到今日连续签到（%@），正在自动签到...", signKey]];
+                    [self recordStageOnChange:@"farm_sign" text:[NSString stringWithFormat:@"芭芭农场：探测到今日连续签到（%@），正在自动签到...", signKey]];
                     if (self.enableAutoFarmTasks) {
                         [self signFarmDailyWithKey:signKey];
                     }
@@ -9698,7 +9715,7 @@ static void cookTakeState(NSDictionary *d) {
         // 如果发现了任务，逐条格式化打印并调度
         if (allFoundTasks.count > 0) {
             NSLog(@"🌾 [芭芭农场·任务探测] ══════════════ 共发现 %lu 个农场任务 ══════════════", (unsigned long)allFoundTasks.count);
-            [self recordStage:[NSString stringWithFormat:@"芭芭农场：探测到 %lu 个任务，正在解析列表...", (unsigned long)allFoundTasks.count]];
+            [self recordStageOnChange:@"farm_task_count" text:[NSString stringWithFormat:@"芭芭农场：探测到 %lu 个任务，正在解析列表...", (unsigned long)allFoundTasks.count]];
             
             NSMutableArray<NSDictionary *> *tasksToQueue = [NSMutableArray array];
             for (NSUInteger idx = 0; idx < allFoundTasks.count; idx++) {
