@@ -36,6 +36,7 @@ test:
 	sh tests/check_cuisine_stock_known_paths.sh
 	sh tests/check_manor_food_task_paths.sh
 	sh tests/check_manor_multistage_task_paths.sh
+	sh tests/check_manor_full_stock_task_gate.sh
 
 $(TARGET): $(SOURCES)
 	@mkdir -p build
