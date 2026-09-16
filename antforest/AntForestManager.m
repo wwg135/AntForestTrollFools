@@ -4993,9 +4993,12 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
      "}"
      "}catch(e){console.error(e);}})();"];
     
-    NSString *today = getCurrentDateString();
-    [[NSUserDefaults standardUserDefaults] setObject:today forKey:@"lastManorAnswerDate"];
-    [self recordStage:@"蚂蚁庄园：庄园小课堂答题已提交（稳拿 180g 饲料）"];
+    // v3.5.4：不再「提交即记账」——脚本可能点空（页面没渲染/按钮文案变了），原来照样把当天标成已答
+    // ⇒ 当天整天不再重试、面板日志上也看不出失败（症状＝小课堂一直没做）。
+    // 落盘只由任务状态 RECEIVED 触发（handleManorTaskList 的 RECEIVED/ANSWER 分支）；
+    // 这里只记「最近一次尝试时刻」，用于 30 分钟节流重试。
+    [[NSUserDefaults standardUserDefaults] setDouble:[[NSDate date] timeIntervalSince1970] forKey:@"lastManorAnswerAttemptAt"];
+    [self recordStage:@"蚂蚁庄园：庄园小课堂答题已提交（以任务状态确认为准，稳拿 180g 饲料）"];
 }
 
 - (void)answerManorClassroomQuestion {
@@ -5006,6 +5009,9 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
     if ([lastAnswerDate isEqualToString:today]) {
         return;
     }
+    // v3.5.4：当天还没成功时允许重试，但 30 分钟最多一次（原来脚本跑过一次就整天不再试，失败被吞）
+    NSTimeInterval lastAnswerAttempt = [[NSUserDefaults standardUserDefaults] doubleForKey:@"lastManorAnswerAttemptAt"];
+    if (lastAnswerAttempt > 0 && [[NSDate date] timeIntervalSince1970] - lastAnswerAttempt < 1800) return;
     
     [self recordStage:@"蚂蚁庄园：正在进入庄园小课堂自动答题（稳拿180g饲料）..."];
     
@@ -5407,22 +5413,23 @@ static void manorClaimMarkReply(NSString *taskId) {
                 [bizKey containsString:@"PAY"] || [bizKey containsString:@"PURCHASE"] ||
                 [bizKey containsString:@"ZhangDanTZ"] || [title containsString:@"信用卡"] ||
                 [bizKey isEqualToString:@"JINGTAN_FEED_FISH"] ||
-                [desc containsString:@"捐"] || [desc containsString:@"付款"] || [desc containsString:@"支付"] || [desc containsString:@"实付"]) {
+                [desc containsString:@"捐"] || [desc containsString:@"付款"] || [desc containsString:@"支付"] || [desc containsString:@"实付"] ||
+                [title containsString:@"付款"] || [title containsString:@"支付"] || [title containsString:@"到店"] ||
+                [title containsString:@"充值"] || [title containsString:@"购买"] || [title containsString:@"下单"]) {
                 continue;
             }
             
-            // 过滤纯游戏玩局类任务 (Game / Game_Charge)
-            if ([cat isEqualToString:@"Game"] || [cat isEqualToString:@"Game_Charge"]) {
-                continue;
-            }
-            
-            // 针对 VIEW 或 TRIGGER 模式的浏览、逛一逛、功能开启类常规任务进行自动触发
-            if ([mode isEqualToString:@"VIEW"] || [mode isEqualToString:@"TRIGGER"]) {
+            // v3.5.4：不再按「游戏类/模式白名单」挑任务。doFarmTask 就是 App「去完成」按钮发的那个 RPC，
+            // 服务端才是权威：能后台完成的（浏览/逛一逛/试玩类）它会回 FINISHED，需要真实上手玩的它会回拒绝 memo。
+            // 上面已拦掉出资类（捐款/支付/金融/信用卡）；这里每个 TODO 任务每天仍只试一次
+            // （记账键 ANTFARM_FOOD_TASK:<bizKey> 天然一天一次），且不做任何跳转、不点 targetUrl。
+            {
                 NSString *taskKey = [NSString stringWithFormat:@"ANTFARM_FOOD_TASK:%@", bizKey];
                 if (![gDailyCompletedTasks containsObject:taskKey]) {
                     [gDailyCompletedTasks addObject:taskKey];
                     saveDailyTaskCache();
-                    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：正在完成浏览任务“%@”...", title]];
+                    [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：正在完成任务“%@”（类别 %@｜模式 %@）...",
+                                       title, cat.length ? cat : @"-", mode.length ? mode : @"-"]];
                     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(taskDelayIndex * 350 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
                         [self doManorFarmTaskWithBizKey:bizKey];
                     });
