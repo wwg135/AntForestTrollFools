@@ -1607,7 +1607,7 @@ static void installEarnEnergyCollector(id controller) {
 
     [self.view addSubview:grabber];
     UILabel *versionLabel = [[UILabel alloc] init];
-    versionLabel.text = @"当前版本：v3.5.0";
+    versionLabel.text = @"当前版本：v3.5.1";
     versionLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightRegular];
     versionLabel.textColor = [UIColor systemGray2Color];
     versionLabel.textAlignment = NSTextAlignmentCenter;
@@ -2470,11 +2470,12 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
     NSURL *ctrlUrl = [controller respondsToSelector:@selector(url)] ? [controller url] : nil;
 
     // 1. 庄园与农场特征检测优先判定，避免森林 Bridge 缓存误判
+    // v3.5.1：页面归属以 URL 为准。芭芭农场页会发/收 com.alipay.antfarm.*（做美食、厨房、肥料），
+    // 只按数据判会把农场桥误绑成庄园桥 ⇒ 庄园 op 全发到农场页 ⇒ 全部无回包（9/16 高级饲料/家庭签到）。
+    BOOL isFarmByUrl = ctrlUrl && isFarmURL(ctrlUrl);
     BOOL isManorByUrl = ctrlUrl && [AntForestManager isManorURL:ctrlUrl];
     BOOL isManorByData = [AntForestManager isManorResponse:value];
-    BOOL isManor = isManorByUrl || isManorByData || (manager.manorBridge == self);
-
-    BOOL isFarmByUrl = ctrlUrl && isFarmURL(ctrlUrl);
+    BOOL isManor = isManorByUrl || (isManorByData && !isFarmByUrl) || ((manager.manorBridge == self) && !isFarmByUrl);
     BOOL isFarmByData = (resData[@"limitedTimeChallenge"] || dict[@"limitedTimeChallenge"] ||
                          resData[@"taskList"] || dict[@"taskList"] ||
                          resData[@"manureFactory"] || dict[@"manureFactory"] ||
@@ -2534,7 +2535,8 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
                 manager.jsBridge = nil;
             }
             BOOL isFirstBind = (manager.manorBridge != self);
-            if (isFirstBind) {
+            BOOL blockedByFarmBridge = (manager.farmBridge == self && !isManorByUrl);
+            if (isFirstBind && !blockedByFarmBridge) {
                 manager.manorBridge = self;
                 [manager recordStage:@"蚂蚁庄园 · 已绑定庄园 H5 Bridge"];
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(500 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
