@@ -5959,7 +5959,7 @@ static BOOL manorConsumeBowlEmptyFeedWanted(void) {
         NSString *stuckId = gManorCuisineInFlightId;
         if (stuckId.length) [gManorCuisineBadIds addObject:stuckId];
         manorNoteCuisineFail(stuckId, @"4 秒无回执");
-        [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：高级饲料 %@ 4 秒无回执，本轮跳过（已成功 %lu 个）",
+        [self recordStage:[NSString stringWithFormat:@"蚂蚁庄园：高级饲料 %@ 4 秒未收到回执（服务端可能已投喂），本轮跳过（已成功 %lu 个）",
                            stuckId.length ? stuckId : @"未知菜谱", (unsigned long)gManorCuisineFedCount]];
         if (gManorCuisineFedCount >= 15) {
             [self stopManorAdvancedFoodFeed:@"连喂 15 个未收到成功回执" silent:NO];
@@ -6422,6 +6422,7 @@ static const NSTimeInterval kManorSleepForceGap = 60.0;         // canSleep=true
 static NSInteger gManorCanSleepState = 0;
 // v3.3.5：送睡 RPC 发出时刻 —— 用于回执诊断窗口（每夜一条，看回包真实 opType/memo）
 static NSTimeInterval gManorSleepSentAt = 0;
+static NSTimeInterval gManorFamilySignSentAt = 0;   // v3.5.2：家庭签到奖励请求发出时刻（结构认包的下界）
 
 static NSInteger manorCurrentHour(void) {
     return [[NSCalendar currentCalendar] components:NSCalendarUnitHour fromDate:[NSDate date]].hour;
@@ -6617,6 +6618,7 @@ static void markManorFamilySignDone(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3000 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
         NSString *awardArg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antfarm.receiveFarmTaskAward\",\"headers\":{\"source\":\"%@\",\"ags-source\":\"%@\"},\"showError\":false,\"showLoading\":false,\"requestData\":[{\"awardType\":\"FAMILY_INTIMACY\",\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"H5\",\"taskId\":\"FAMILY_SIGN_TASK\",\"taskSceneCode\":\"ANTFARM_FAMILY_TASK\",\"version\":\"1.8.2302070202.46\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", kManorSleepRPCSource, kManorSleepRPCSource, [NSString stringWithFormat:@"%ld", (long)([[NSDate date] timeIntervalSince1970] * 1000)], [AntForestManager getNumberRandom:15]];
         [bridge _doFlushMessageQueue:awardArg url:url];
+        gManorFamilySignSentAt = [[NSDate date] timeIntervalSince1970];
         gManorFamilySignPending = YES;   // 等这条回包判定成功/已签到
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6000 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
             if (!gManorFamilySignPending) return;   // 已收到回包，无需处理
@@ -8931,6 +8933,18 @@ static void manorScheduleFeedWake(AntForestManager *mgr, NSInteger countdown) {
         
         // E. 领饲料奖励回包处理 (receiveFarmTaskAward)
         NSString *opType = [NSString stringWithFormat:@"%@", dict[@"operationType"] ?: (resData[@"operationType"] ?: (self.lastRpcOperationType ?: @""))];
+        // v3.5.2：庄园 op 回包不带 operationType（形如 {code,memo,success}）——9/15 领奖实证、9/16 投喂实证：
+        // 高级饲料实际已喂进去、日志却报「4 秒无回执」；家庭签到同理反复超时。⇒ 回执判定不能只靠 opType
+        // （opType 还会被 lastRpcOperationType 兜底成上一条请求 → 并发链串位），改「在飞状态 + op 型回包结构」
+        // 为权威，opType 只作快速路径。
+        BOOL manorReplyHasStruct = (resData[@"subFarmVO"] || dict[@"subFarmVO"] ||
+                                    resData[@"farmTaskList"] || dict[@"farmTaskList"] ||
+                                    resData[@"dynamicGlobalConfig"] || dict[@"dynamicGlobalConfig"] ||
+                                    resData[@"taskList"] || dict[@"taskList"]);
+        BOOL manorOpReplyLike = !manorReplyHasStruct &&
+            (dict[@"code"] != nil || resData[@"code"] != nil ||
+             dict[@"success"] != nil || resData[@"success"] != nil ||
+             dict[@"memo"] != nil || resData[@"memo"] != nil);
         // v3.3.10：家庭签到在途时不再整段吞掉（原来这一支直接跳过 → 领奖回包到了也没有任何日志）
         BOOL manorClaimReplySeen = (resData[@"haveAddFoodStock"] != nil || dict[@"haveAddFoodStock"] != nil ||
                                     [opType containsString:@"receiveFarmTaskAward"]);
@@ -8995,7 +9009,8 @@ static void manorScheduleFeedWake(AntForestManager *mgr, NSInteger countdown) {
         }
 
         // I. 家庭签到回包处理：以服务端回执为准标记当天已完成
-        if (gManorFamilySignPending && [opType containsString:@"receiveFarmTaskAward"]) {
+        if (gManorFamilySignPending && ([opType containsString:@"receiveFarmTaskAward"] ||
+            (manorOpReplyLike && gManorFamilySignSentAt > 0 && [[NSDate date] timeIntervalSince1970] - gManorFamilySignSentAt >= 1.0))) {
             gManorFamilySignPending = NO;
             NSString *fsMemo = [NSString stringWithFormat:@"%@", resData[@"memo"] ?: (dict[@"memo"] ?: @"")];
             BOOL fsOk = [resData[@"success"] boolValue] || [dict[@"success"] boolValue] ||
@@ -9080,7 +9095,7 @@ static void manorScheduleFeedWake(AntForestManager *mgr, NSInteger countdown) {
         }
         
         // M. 高级饲料投喂回包处理 (useFarmFood)：成功 → 1.2 秒后继续喂下一个；喂不动/喂完 → 转普通饲料兜底
-        if ([opType containsString:@"useFarmFood"]) {
+        if ([opType containsString:@"useFarmFood"] || (manorOpReplyLike && gManorCuisineInFlight)) {
             if (gManorCuisineInFlight) {
                 gManorCuisineInFlight = NO;
                 id cuisineMemoRaw = resData[@"memo"] ?: dict[@"memo"];
