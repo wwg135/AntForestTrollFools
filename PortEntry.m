@@ -210,8 +210,12 @@ static void finishForestHomeStart(id controller, id bridge) {
             [manager recordStage:@"诊断 · 首页桥接就绪：前一轮扫描执行中，跳过重复启动"];
             return;
         }
-        [manager recordStage:@"收取 · 首页桥接就绪，立即补跑"];
-        [manager autoCollectBubbles];
+        [manager recordStage:@"收取 · 首页桥接就绪，平滑延迟启动好友扫描"];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3500 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+            if (manager.enableAutoCollect && !manager.isScanRunning && manager.jsBridge) {
+                [manager autoCollectBubbles];
+            }
+        });
     }
 }
 
@@ -2726,65 +2730,9 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(700 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{ tryAutoCollectWaterGift(); });
     }
     
-    // 关键隔离机制：
-    // 阻断插件后台静默发起的请求回包（好友首页气泡查询、全量200条排行榜、找能量候选、跨业务海洋回包等）透传给前端 H5 WebView！
-    // 否则前端 React/Preact 森林首页全局 Store 会因接收到 nextAction="Friend" 误判为已离开首页进入好友森林，
-    // 导致仅在本人首页存在的底部排行榜组件被置为失效状态，点击日榜/周榜/总榜/PK榜等所有 Tab 完全如同点在“死玻璃”上毫无反应。
-    NSString *respId = dict[@"responseId"] ?: dict[@"callbackId"];
-    
-    BOOL isSelfHome = isMyHomeResponse(value, manager);
-    
-    // 1. 好友森林页面回包隔离（防止首页组件误判为好友页导致排行榜死锁）
-    BOOL isFriendPageResp = NO;
-    if (!isSelfHome) {
-        NSString *nextAction = resData[@"nextAction"] ?: dict[@"nextAction"];
-        NSString *respUid = resData[@"userBaseInfo"][@"userId"] ?: dict[@"userBaseInfo"][@"userId"] ?: resData[@"userEnergy"][@"userId"] ?: dict[@"userEnergy"][@"userId"];
-        if ([nextAction isEqualToString:@"Friend"] ||
-            (respUid.length && manager.myUserId.length && ![respUid isEqualToString:manager.myUserId])) {
-            isFriendPageResp = YES;
-        }
-    }
-    
-    // 2. 插件后台全量排行榜回包隔离（200 条巨量数据阻断，避免破坏前端 20 条分页与事件绑定）
-    BOOL isSilentRankResp = NO;
-    NSArray *totalDatas = [resData[@"totalDatas"] isKindOfClass:NSArray.class] ? resData[@"totalDatas"] : ([dict[@"totalDatas"] isKindOfClass:NSArray.class] ? dict[@"totalDatas"] : nil);
-    if (totalDatas.count > 25) {
-        isSilentRankResp = YES;
-    }
-    if (respId.length && ([respId containsString:@"af_silent_rank"] ||
-                         (manager.lastSilentRankCallbackId.length && [respId isEqualToString:manager.lastSilentRankCallbackId]))) {
-        isSilentRankResp = YES;
-    }
-    
-    // 3. 找能量续查候选回包隔离（仅含 friendId，无气泡）
-    BOOL isTakeLookCandidate = (resData[@"friendId"] != nil && resData[@"bubbles"] == nil && dict[@"bubbles"] == nil);
-    
-    // 4. 森林桥接上的神奇海洋回包隔离（避免跨业务数据干扰森林首页 Store）
-    BOOL isOceanDataOnForest = (self == manager.jsBridge) && (resData[@"antOceanTaskVOList"] || dict[@"antOceanTaskVOList"] || resData[@"cleanRewardVOS"] || dict[@"cleanRewardVOS"] || resData[@"canClearFriendSeaToday"] || [gLastRpcOperationType containsString:@"antocean"]);
-    
-    // 5. 好友能量收取回包隔离
-    BOOL isFriendCollectResp = NO;
-    BOOL hasCollectedEnergy = (resData[@"collectedEnergy"] != nil || dict[@"collectedEnergy"] != nil);
-    NSString *collectedUid = resData[@"userId"] ?: dict[@"userId"];
-    if (hasCollectedEnergy && collectedUid.length && manager.myUserId.length && ![collectedUid isEqualToString:manager.myUserId]) {
-        isFriendCollectResp = YES;
-    }
-    
-    BOOL shouldIsolateFromFrontend = isFriendPageResp || isSilentRankResp || isTakeLookCandidate || isOceanDataOnForest || isFriendCollectResp;
-    
-    if (shouldIsolateFromFrontend) {
-        NSMutableDictionary *safeResp = [NSMutableDictionary dictionary];
-        safeResp[@"resultStatus"] = @1000;
-        safeResp[@"resultCode"] = @"SUCCESS";
-        safeResp[@"success"] = @YES;
-        safeResp[@"resData"] = @{@"success": @YES, @"resultCode": @"SUCCESS"};
-        if (respId.length) safeResp[@"responseId"] = respId;
-        if (originalTransformResponseData) {
-            return originalTransformResponseData(self, _cmd, safeResp);
-        }
-        return safeResp;
-    }
-    
+    // 保持原生响应管道纯净透明透传：
+    // 严禁向 H5 WebView 注入缺失 totalDatas 的伪造空回包（否则前端 React 在读取 map/length 时会抛出未捕获 TypeError 导致榜单彻底锁死成“死玻璃”）。
+    // 真实响应完整回传给前端，前端日榜/周榜/总榜 Tab 选中态与列表渲染恢复灵敏顺畅。
     if (originalTransformResponseData) {
         return originalTransformResponseData(self, _cmd, value);
     }

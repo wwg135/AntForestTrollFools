@@ -1339,7 +1339,7 @@ static NSTimeInterval lastMyBubblesQueryTime = 0;
 
 -(void)queryMyBubbles {
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-    if (now - lastMyBubblesQueryTime < 3.0) return;
+    if (now - lastMyBubblesQueryTime < 10.0) return;
     lastMyBubblesQueryTime = now;
     
     [self recordStage:@"请求本人首页（含赠能）"];
@@ -1368,7 +1368,7 @@ static NSTimeInterval lastMyBubblesQueryTime = 0;
     NSString *timeStamp = [NSString stringWithFormat:@"%ld",(long)[[NSDate  date] timeIntervalSince1970]*1000];
     NSString *randNum=[AntForestManager getNumberRandom:15];
     NSString *arg1=[NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"alipay.antforest.forest.h5.queryFriendHomePage\",\"showError\":false,\"showLoading\":false,\"requestData\":[{\"userId\":\"%@\",\"version\":\"%@\",\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"fromAct\":\"TAKE_LOOK\",\"configVersionMap\":{\"wateringBubbleConfig\":\"0\"},\"skipWhackMole\":false,\"activityParam\":{},\"currentEnergy\":99999999,\"currentVitalityAmount\":8888888}]},\"callbackId\":\"rpc_%@.%@\"}]",friendId,version,timeStamp,randNum];
-    NSString *arg2 = @"https://render.alipay.com/p/yuyan/180020010001247580/home.html?caprMode=sync&__webview_options__=bc%3D3194732";
+    NSString *arg2 = @"https://render.alipay.com/p/yuyan/180020010001247580/home.html?__webview_options__=bc%3D3194732";
     
     if([self jsBridge]) {
         [self recordStage:@"诊断 · 请求好友气泡"];
@@ -1459,7 +1459,7 @@ static NSMutableDictionary *friendOceanCleanCounts = nil;
     NSString *arg1=[NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"alipay.antocean.ocean.h5.cleanOcean\",\"showError\":false,\"showLoading\":false,\"requestData\":[{\"cleanedUserId\":\"%@\",\"source\":\"ANT_FOREST\",\"uniqueId\":\"%@%@\"}],\"appName\":\"antocean\",\"facadeName\":\"InteractController\",\"methodName\":\"cleanOcean\",\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]",self.myUserId,timeStamp,randNum,timeStamp,randNum2];
     NSString *arg2 = [NSString stringWithFormat:@"https://2021003115672468.h5app.alipay.com/www/index.html"];
     id bridge = self.oceanBridge ?: self.jsBridge;
-    if(bridge) {
+    if(bridge && self.oceanBridge && self.oceanBridge != self.jsBridge) {
         [bridge _doFlushMessageQueue:arg1 url:arg2];
     }
 }
@@ -1474,7 +1474,7 @@ static NSMutableDictionary *friendOceanCleanCounts = nil;
     NSString *arg1=[NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"alipay.antocean.ocean.h5.cleanFriendOcean\",\"showError\":false,\"showLoading\":false,\"requestData\":[{\"cleanedUserId\":\"%@\",\"source\":\"ANT_FOREST\",\"uniqueId\":\"%@%@\"}],\"appName\":\"antocean\",\"facadeName\":\"InteractController\",\"methodName\":\"cleanFriendsOcean\",\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]",uid,timeStamp,randNum,timeStamp,randNum2];
     NSString *arg2 = [NSString stringWithFormat:@"https://2021003115672468.h5app.alipay.com/www/index.html?fromAct=SAIL_AWAY&userId=%@&interactFlags=&source=ANT_FOREST&__webview_options__=ttb%%3Dauto%%26pd%%3DNO%%26bc%%3D1324950",uid];
     id bridge = self.oceanBridge ?: self.jsBridge;
-    if(bridge) {
+    if(bridge && self.oceanBridge && self.oceanBridge != self.jsBridge) {
         [bridge _doFlushMessageQueue:arg1 url:arg2];
     }
 }
@@ -1493,7 +1493,7 @@ static NSMutableDictionary *friendOceanCleanCounts = nil;
     NSString *arg1=[NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"alipay.antocean.ocean.h5.queryFriendList\",\"showError\":false,\"showLoading\":false,\"requestData\":[{\"source\":\"ANT_FOREST\"}],\"appName\":\"antocean\",\"facadeName\":\"InteractController\",\"methodName\":\"queryFriendList\",\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", timeStamp, randNum];
     NSString *arg2 = @"https://2021003115672468.h5app.alipay.com/www/index.html";
     id bridge = self.oceanBridge ?: self.jsBridge;
-    if(bridge) {
+    if(bridge && self.oceanBridge && self.oceanBridge != self.jsBridge) {
         [self recordStage:@"请求神奇海洋好友列表"];
         [bridge _doFlushMessageQueue:arg1 url:arg2];
         dispatch_async(globalSerialQueueQuery, ^{
@@ -5939,7 +5939,7 @@ static BOOL oceanPlanLoggedThisRound = NO;
     NSString *callbackId = [NSString stringWithFormat:@"rpc_af_silent_rank_%@.%@_p%ld", timeStamp, randNum, (long)startIndex];
     self.lastSilentRankCallbackId = callbackId;
     NSString *arg1 = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"alipay.antmember.forest.h5.queryEnergyRanking\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"ags-source\":\"chInfo_ch_appcenter__chsub_9patch\"},\"requestData\":[{\"rankType\":\"energyRank\",\"periodType\":\"total\",\"version\":\"%@\",\"startIndex\":%ld,\"pageSize\":200,\"contactsStatus\":\"N\",\"source\":\"chInfo_ch_appcenter__chsub_9patch\"}],\"getResponse\":true},\"callbackId\":\"%@\"}]", version, (long)startIndex, callbackId];
-    NSString *arg2 = @"https://render.alipay.com/p/yuyan/180020010001247580/home.html?caprMode=sync";
+    NSString *arg2 = @"https://render.alipay.com/p/yuyan/180020010001247580/home.html";
     [self recordStage:[NSString stringWithFormat:@"请求好友排行榜自动翻页（第 %ld-%ld 位）", (long)startIndex + 1, (long)startIndex + 200]];
     [self safeFlushBridge:[self jsBridge] message:arg1 url:arg2];
 }
@@ -5952,7 +5952,7 @@ static BOOL oceanPlanLoggedThisRound = NO;
     NSString *callbackId = [NSString stringWithFormat:@"rpc_af_silent_rank_%@.%@", timeStamp, randNum];
     self.lastSilentRankCallbackId = callbackId;
     NSString *arg1=[NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"alipay.antmember.forest.h5.queryEnergyRanking\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"ags-source\":\"chInfo_ch_appcenter__chsub_9patch\"},\"requestData\":[{\"rankType\":\"energyRank\",\"periodType\":\"total\",\"version\":\"%@\",\"startNum\":1,\"startIndex\":0,\"pageSize\":200,\"contactsStatus\":\"N\",\"source\":\"chInfo_ch_appcenter__chsub_9patch\"}],\"getResponse\":true},\"callbackId\":\"%@\"}]",version,callbackId];
-    NSString *arg2 = @"https://render.alipay.com/p/yuyan/180020010001247580/home.html?caprMode=sync";
+    NSString *arg2 = @"https://render.alipay.com/p/yuyan/180020010001247580/home.html";
     if([self jsBridge]) {
         [self recordStage:@"请求全量好友排行榜（200位/页）"];
         [self safeFlushBridge:[self jsBridge] message:arg1 url:arg2];
@@ -6055,8 +6055,9 @@ static BOOL oceanPlanLoggedThisRound = NO;
         if (self.enableAutoRewardTasks) {
             [self queryVitalityTaskList];
         }
-        if (self.enableAutoRevive && reviveDailyCount() < 6) {
-            // 避开前台首页日榜并发初载期，延迟 2.5 秒在后台静默发起全量好友过期能量扫描
+        BOOL isAppInBackground = ([UIApplication sharedApplication].applicationState != UIApplicationStateActive);
+        if (self.enableAutoRevive && reviveDailyCount() < 6 && isAppInBackground) {
+            // 仅在后台循环中发起全量好友过期能量扫描，避免前台首页并发干扰用户交互
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2500 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
                 if (self.enableAutoCollect && self.enableAutoRevive && cycle == collectionCycle && self.isScanRunning) {
                     [self queryTotalRank];
@@ -7099,8 +7100,8 @@ static BOOL oceanPlanLoggedThisRound = NO;
                         if (self.enableCleanOcean && fr.allKeys.count > 0) {
                             [self scanOceanForFriends:fr.allKeys];
                         }
-                        // 浇水列表刷新或好友待复活能量补查（未达到6次上限且队列未满）时执行分页补全
-                        BOOL shouldPaginate = waterFriendRefreshPending || (self.enableAutoRevive && reviveDailyCount() < 6 && [reviveQueue count] < 6);
+                        // 仅在设置页手动刷新浇水列表时执行分页补全，日常自动扫描绝不自动翻页覆盖
+                        BOOL shouldPaginate = waterFriendRefreshPending;
                         if (shouldPaginate) {
                             BOOL hasMore = [resData[@"hasMore"] boolValue] || [resData[@"hasNext"] boolValue];
                             NSInteger nextIndex = [resData[@"nextStartIndex"] integerValue] ?: [resData[@"startIndex"] integerValue] + rankTotalArr.count;
