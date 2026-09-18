@@ -6455,7 +6455,16 @@ static BOOL oceanPlanLoggedThisRound = NO;
             if (!list && [dict isKindOfClass:NSDictionary.class]) {
                 list = dict[@"friendList"] ?: dict[@"friendOceanList"] ?: dict[@"friendSeaList"] ?: dict[@"friendListVO"] ?: dict[@"friendInfoList"] ?: dict[@"friends"] ?: dict[@"oceanFriendList"];
             }
-            if ([list isKindOfClass:NSArray.class] && list.count > 0) {
+            NSString *opType = [NSString stringWithFormat:@"%@", dict[@"operationType"] ?: (resData[@"operationType"] ?: (self.lastRpcOperationType ?: @""))];
+            BOOL isOceanRespContext = [opType containsString:@"antocean"] ||
+                                      resData[@"canClearFriendSeaToday"] || resData[@"canCleanFriendSea"] ||
+                                      resData[@"canClearFriendSea"] || resData[@"canClearSea"] ||
+                                      resData[@"friendOceanList"] || resData[@"friendSeaList"] ||
+                                      resData[@"oceanFriendList"] || resData[@"oceanFriends"] ||
+                                      [dict[@"appName"] isEqualToString:@"antocean"] ||
+                                      [dict[@"methodName"] isEqualToString:@"cleanFriendsOcean"] ||
+                                      [dict[@"methodName"] isEqualToString:@"cleanOcean"];
+            if (isOceanRespContext && [list isKindOfClass:NSArray.class] && list.count > 0) {
                 NSNumber *canClearFriendSeaToday = resData[@"canClearFriendSeaToday"] ?: resData[@"canCleanFriendSea"] ?: resData[@"canClearFriendSea"] ?: resData[@"canClearSea"];
                 NSInteger todayCleaned = [resData[@"todayCleanCount"] integerValue] ?: [resData[@"cleanedCount"] integerValue] ?: [resData[@"todayCleanedCount"] integerValue];
                 if ((canClearFriendSeaToday && [canClearFriendSeaToday boolValue] == NO) || todayCleaned >= 20) {
@@ -6501,7 +6510,13 @@ static BOOL oceanPlanLoggedThisRound = NO;
                 if (resData[@"forestTasksNew"] || resData[@"energySignVO"] || resData[@"forestSignVOList"] || dict[@"forestSignVOList"] || resData[@"forestSignVO"] || dict[@"forestSignVO"] || resData[@"signModel"] || dict[@"signModel"] || taskInfoList || resData[@"taskList"] || dict[@"taskList"] || resData[@"drawAsset"] || resData[@"drawEntranceVO"] || resData[@"drawActivity"] || resData[@"drawPrize"] || resData[@"drawPrizes"] || resData[@"finishAwardResultVO"] || resData[@"receiveAwardResultVO"] || resData[@"awardResultVO"] || resData[@"finishVO"] || isSignResp || [opType containsString:@"antiep"] || [opType containsString:@"queryTaskList"] || [opType containsString:@"queryCommonSign"] || [opType containsString:@"finishTask"] || [opType containsString:@"receiveTaskAward"] || [opType containsString:@"draw"] || [opType containsString:@"exchangeVitality"] || [resData[@"code"] isEqualToString:@"400000040"] || [resData[@"code"] isEqualToString:@"400000004"] || [resData[@"code"] isEqualToString:@"400000030"] || [resData[@"code"] isEqualToString:@"B000000008"] || [resData[@"desc"] containsString:@"不支持rpc调用"] || [resData[@"desc"] containsString:@"无法领取"] || [dict[@"error"] integerValue] == 3000) {
                     [self handleVitalityTaskListResponse:dict];
                 }
-                if (self.enableAutoFarmTasks && (resData[@"taskList"] || dict[@"taskList"] || resData[@"limitedTimeChallenge"] || dict[@"limitedTimeChallenge"])) {
+                BOOL isForestOp = [opType containsString:@"forest"] || [opType containsString:@"antmember.forest"];
+                BOOL isFarmOpOrBridge = [opType containsString:@"farm"] || [opType containsString:@"orchard"] || [opType containsString:@"baba"] ||
+                                        (self.farmBridge && self.farmBridge != self.jsBridge);
+                BOOL hasFarmExplicitData = resData[@"manureFactory"] || dict[@"manureFactory"] ||
+                                           resData[@"balloonCooper"] || dict[@"balloonCooper"] ||
+                                           resData[@"helpFarmChannelConfig"] || dict[@"helpFarmChannelConfig"];
+                if (self.enableAutoFarmTasks && !isForestOp && (isFarmOpOrBridge || hasFarmExplicitData)) {
                     [self handleFarmResponse:dict ?: resData];
                 }
             } else if (self.enableAutoManor) {

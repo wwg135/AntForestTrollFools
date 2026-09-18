@@ -2573,40 +2573,47 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
 
     NSURL *ctrlUrl = [controller respondsToSelector:@selector(url)] ? [controller url] : nil;
 
-    // 1. 庄园与农场特征检测优先判定，避免森林 Bridge 缓存误判
+    // 1. URL与Bridge上下文特征探测
+    BOOL isForestByUrl = ctrlUrl && isForestHomeURL(ctrlUrl);
+    BOOL isKnownForestBridge = (manager.jsBridge == self);
     BOOL isManorByUrl = ctrlUrl && [AntForestManager isManorURL:ctrlUrl];
-    BOOL isManorByData = [AntForestManager isManorResponse:value];
-    BOOL isManor = isManorByUrl || isManorByData || (manager.manorBridge == self);
-
     BOOL isFarmByUrl = ctrlUrl && isFarmURL(ctrlUrl);
-    BOOL isFarmByData = (resData[@"limitedTimeChallenge"] || dict[@"limitedTimeChallenge"] ||
-                         resData[@"taskList"] || dict[@"taskList"] ||
-                         resData[@"manureFactory"] || dict[@"manureFactory"] ||
-                         resData[@"signTaskInfo"] || dict[@"signTaskInfo"] ||
-                         resData[@"balloonCooper"] || dict[@"balloonCooper"] ||
-                         resData[@"helpFarmChannelConfig"] || dict[@"helpFarmChannelConfig"] ||
-                         resData[@"subplotsActivityList"] || dict[@"subplotsActivityList"] ||
-                         resData[@"indexDeliveryList"] || dict[@"indexDeliveryList"]);
-    BOOL isFarmResp = !isManor && (isFarmByUrl || isFarmByData || (manager.farmBridge == self));
 
-    // 2. 森林判定：只有在明确不是庄园且不是农场的前提下，才判定为森林
+    // 森林首页绝对优先保护：若是森林首页URL或已绑定的森林首页Bridge（且未发生向庄园/农场的明确跳转），100%锁定为森林，绝不被农场/庄园判定截胡！
     BOOL isForest = NO;
-    if (!isManor && !isFarmResp) {
-        isForest = isForestResponse(value) || (ctrlUrl && isForestHomeURL(ctrlUrl));
-        if (!isForest && manager.jsBridge == self) {
+    if (isForestByUrl || (isKnownForestBridge && !isManorByUrl && !isFarmByUrl) || isForestResponse(value)) {
+        if (!isManorByUrl && !isFarmByUrl) {
             isForest = YES;
         }
     }
+
+    BOOL isManor = NO;
+    BOOL isFarmResp = NO;
 
     if (isForest) {
         if (manager.manorBridge == self) manager.manorBridge = nil;
         if (manager.farmBridge == self) manager.farmBridge = nil;
         if (manager.oceanBridge == self) manager.oceanBridge = nil;
-    } else if (isFarmResp) {
-        if (manager.manorBridge == self) manager.manorBridge = nil;
-    } else if (isManor) {
-        if (manager.farmBridge == self) manager.farmBridge = nil;
-        if (manager.jsBridge == self) manager.jsBridge = nil;
+    } else {
+        // 仅在明确不是森林的场景下，才判定庄园与农场
+        BOOL isManorByData = [AntForestManager isManorResponse:value];
+        isManor = isManorByUrl || isManorByData || (manager.manorBridge == self);
+
+        BOOL isFarmByData = (resData[@"manureFactory"] || dict[@"manureFactory"] ||
+                             resData[@"signTaskInfo"] || dict[@"signTaskInfo"] ||
+                             resData[@"balloonCooper"] || dict[@"balloonCooper"] ||
+                             resData[@"helpFarmChannelConfig"] || dict[@"helpFarmChannelConfig"] ||
+                             resData[@"subplotsActivityList"] || dict[@"subplotsActivityList"] ||
+                             resData[@"indexDeliveryList"] || dict[@"indexDeliveryList"] ||
+                             ((isFarmByUrl || manager.farmBridge == self) && (resData[@"taskList"] || dict[@"taskList"] || resData[@"limitedTimeChallenge"] || dict[@"limitedTimeChallenge"])));
+        isFarmResp = !isManor && (isFarmByUrl || isFarmByData || (manager.farmBridge == self));
+
+        if (isFarmResp) {
+            if (manager.manorBridge == self) manager.manorBridge = nil;
+        } else if (isManor) {
+            if (manager.farmBridge == self) manager.farmBridge = nil;
+            if (manager.jsBridge == self) manager.jsBridge = nil;
+        }
     }
 
     if (isForest) {
