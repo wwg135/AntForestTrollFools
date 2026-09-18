@@ -1317,6 +1317,21 @@ NSString* getCurrentDateTimeString() {
     [self queryUsingCreatureInfo];
 }
 
+- (void)safeFlushBridge:(id)bridge message:(NSString *)msg url:(NSString *)url {
+    if (!bridge || !msg.length) return;
+    if ([NSThread isMainThread]) {
+        if ([bridge respondsToSelector:@selector(_doFlushMessageQueue:url:)]) {
+            [bridge _doFlushMessageQueue:msg url:url];
+        }
+    } else {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if ([bridge respondsToSelector:@selector(_doFlushMessageQueue:url:)]) {
+                [bridge _doFlushMessageQueue:msg url:url];
+            }
+        });
+    }
+}
+
 static NSTimeInterval lastMyBubblesQueryTime = 0;
 
 -(void)queryMyBubbles {
@@ -1334,7 +1349,7 @@ static NSTimeInterval lastMyBubblesQueryTime = 0;
     NSString *arg2 = [NSString stringWithFormat:@"https://render.alipay.com/p/yuyan/180020010001247580/home.html?caprMode=sync&__webview_options__=bc%%3D3194732"];
     
     if([self jsBridge]) {
-        [[self jsBridge] _doFlushMessageQueue:arg1 url:arg2];
+        [self safeFlushBridge:[self jsBridge] message:arg1 url:arg2];
         [self queryUsingCreatureInfo];
     }
     
@@ -1354,7 +1369,7 @@ static NSTimeInterval lastMyBubblesQueryTime = 0;
     
     if([self jsBridge]) {
         [self recordStage:@"诊断 · 请求好友气泡"];
-        [[self jsBridge] _doFlushMessageQueue:arg1 url:arg2];
+        [self safeFlushBridge:[self jsBridge] message:arg1 url:arg2];
         //FileLog(@"anthook queryFriendsBubbles: %@",friendId);
     }
     
@@ -1392,7 +1407,7 @@ static NSTimeInterval lastMyBubblesQueryTime = 0;
     NSString *arg2 = [NSString stringWithFormat:@"https://render.alipay.com/p/yuyan/180020010001247580/home.html?caprMode=sync&userId=%@&__webview_options__=bc%%3D3194732&source=chInfo_ch_appcenter__chsub_9patch&fromAct=TAKE_LOOK", userId];
     if([self jsBridge]) {
         [self recordStage:[NSString stringWithFormat:@"诊断 · 请求收取能量：第 %lu 轮，待确认 %lu 笔", (unsigned long)collectionCycle, (unsigned long)pendingCollectBubbles.count]];
-        [[self jsBridge] _doFlushMessageQueue:arg1 url:arg2];
+        [self safeFlushBridge:[self jsBridge] message:arg1 url:arg2];
         //FileLog(@"anthook collectBubbles: %@ | [%@] ",uid,bids);
     }
     double collectRandomDelay = 0.12 + (arc4random_uniform(100) / 1000.0);
@@ -5918,10 +5933,12 @@ static BOOL oceanPlanLoggedThisRound = NO;
     NSString *version = @"20230501";
     NSString *timeStamp = [NSString stringWithFormat:@"%ld",(long)[[NSDate date] timeIntervalSince1970]*1000];
     NSString *randNum = [AntForestManager getNumberRandom:16];
-    NSString *arg1 = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"alipay.antmember.forest.h5.queryEnergyRanking\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"ags-source\":\"chInfo_ch_appcenter__chsub_9patch\"},\"requestData\":[{\"rankType\":\"energyRank\",\"periodType\":\"total\",\"version\":\"%@\",\"startIndex\":%ld,\"pageSize\":200,\"contactsStatus\":\"N\",\"source\":\"chInfo_ch_appcenter__chsub_9patch\"}],\"relationLocal\":{\"pathList\":[\"friendRanking\",\"myself\",\"totalDatas\"]},\"getResponse\":true},\"callbackId\":\"rpc_%@.%@_p%ld\"}]", version, (long)startIndex, timeStamp, randNum, (long)startIndex];
-    NSString *arg2 = @"https://render.alipay.com/p/yuyan/180020010001247580/listRank.html?caprMode=sync&init=energyRank&periodType=total";
+    NSString *callbackId = [NSString stringWithFormat:@"rpc_af_silent_rank_%@.%@_p%ld", timeStamp, randNum, (long)startIndex];
+    self.lastSilentRankCallbackId = callbackId;
+    NSString *arg1 = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"alipay.antmember.forest.h5.queryEnergyRanking\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"ags-source\":\"chInfo_ch_appcenter__chsub_9patch\"},\"requestData\":[{\"rankType\":\"energyRank\",\"periodType\":\"total\",\"version\":\"%@\",\"startIndex\":%ld,\"pageSize\":200,\"contactsStatus\":\"N\",\"source\":\"chInfo_ch_appcenter__chsub_9patch\"}],\"getResponse\":true},\"callbackId\":\"%@\"}]", version, (long)startIndex, callbackId];
+    NSString *arg2 = @"https://render.alipay.com/p/yuyan/180020010001247580/home.html?caprMode=sync";
     [self recordStage:[NSString stringWithFormat:@"请求好友排行榜自动翻页（第 %ld-%ld 位）", (long)startIndex + 1, (long)startIndex + 200]];
-    [[self jsBridge] _doFlushMessageQueue:arg1 url:arg2];
+    [self safeFlushBridge:[self jsBridge] message:arg1 url:arg2];
 }
 
 //查询总排行 可以获取所有人的ID
@@ -5929,11 +5946,13 @@ static BOOL oceanPlanLoggedThisRound = NO;
     NSString *version = @"20230501";
     NSString *timeStamp = [NSString stringWithFormat:@"%ld",(long)[[NSDate  date] timeIntervalSince1970]*1000];
     NSString *randNum=[AntForestManager getNumberRandom:16];
-    NSString *arg1=[NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"alipay.antmember.forest.h5.queryEnergyRanking\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"ags-source\":\"chInfo_ch_appcenter__chsub_9patch\"},\"requestData\":[{\"rankType\":\"energyRank\",\"periodType\":\"total\",\"version\":\"%@\",\"startNum\":1,\"startIndex\":0,\"pageSize\":200,\"contactsStatus\":\"N\",\"source\":\"chInfo_ch_appcenter__chsub_9patch\"}],\"relationLocal\":{\"pathList\":[\"friendRanking\",\"myself\",\"totalDatas\"]},\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]",version,timeStamp,randNum];
-    NSString *arg2 = @"https://render.alipay.com/p/yuyan/180020010001247580/listRank.html?caprMode=sync&init=energyRank&periodType=total";
+    NSString *callbackId = [NSString stringWithFormat:@"rpc_af_silent_rank_%@.%@", timeStamp, randNum];
+    self.lastSilentRankCallbackId = callbackId;
+    NSString *arg1=[NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"alipay.antmember.forest.h5.queryEnergyRanking\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"ags-source\":\"chInfo_ch_appcenter__chsub_9patch\"},\"requestData\":[{\"rankType\":\"energyRank\",\"periodType\":\"total\",\"version\":\"%@\",\"startNum\":1,\"startIndex\":0,\"pageSize\":200,\"contactsStatus\":\"N\",\"source\":\"chInfo_ch_appcenter__chsub_9patch\"}],\"getResponse\":true},\"callbackId\":\"%@\"}]",version,callbackId];
+    NSString *arg2 = @"https://render.alipay.com/p/yuyan/180020010001247580/home.html?caprMode=sync";
     if([self jsBridge]) {
         [self recordStage:@"请求全量好友排行榜（200位/页）"];
-        [[self jsBridge] _doFlushMessageQueue:arg1 url:arg2];
+        [self safeFlushBridge:[self jsBridge] message:arg1 url:arg2];
     }
 }
 
@@ -5942,12 +5961,10 @@ static BOOL oceanPlanLoggedThisRound = NO;
     [[AntForestManager sharedLock] lock];
     NSString *timeStamp = [NSString stringWithFormat:@"%ld",(long)[[NSDate  date] timeIntervalSince1970]*1000];
     NSString *randNum=[AntForestManager getNumberRandom:16];
-    NSString *arg1=[NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"alipay.antforest.forest.h5.fillUserRobFlag\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"ags-source\":\"chInfo_ch_appcenter__chsub_9patch\"},\"requestData\":[{\"userIdList\":[%@],\"source\":\"chInfo_ch_appcenter__chsub_9patch\"}],\"relationLocal\":{\"pathList\":[\"friendRanking\"]},\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]",uids,timeStamp,randNum];
-    NSString *arg2 = [NSString stringWithFormat:@"https://render.alipay.com/p/yuyan/180020010001247580/listRank.html?caprMode=sync&init=energyRank&periodType=total"];
+    NSString *arg1=[NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"alipay.antforest.forest.h5.fillUserRobFlag\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"ags-source\":\"chInfo_ch_appcenter__chsub_9patch\"},\"requestData\":[{\"userIdList\":[%@],\"source\":\"chInfo_ch_appcenter__chsub_9patch\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]",uids,timeStamp,randNum];
+    NSString *arg2 = @"https://render.alipay.com/p/yuyan/180020010001247580/home.html?caprMode=sync";
     if([self jsBridge]) {
-        [[self jsBridge] _doFlushMessageQueue:arg1 url:arg2];
-        //FileLog(@"uids:%@", uids);
-        //FileLog(@"anthook queryRobFlag");
+        [self safeFlushBridge:[self jsBridge] message:arg1 url:arg2];
     }
     double robFlagDelay = 0.15 + (arc4random_uniform(100) / 1000.0);
     [NSThread sleepForTimeInterval:robFlagDelay];
@@ -5959,13 +5976,12 @@ static BOOL oceanPlanLoggedThisRound = NO;
     NSString *timeStamp = [NSString stringWithFormat:@"%ld",(long)[[NSDate  date] timeIntervalSince1970]*1000];
     NSString *randNum=[AntForestManager getNumberRandom:16];
     NSString *arg1=[NSString stringWithFormat:@"[{\"handlerName\":\"APSocialNebulaPlugin.queryExistingAccounts\",\"data\":{\"uids\":[%@]},\"callbackId\":\"APSocialNebulaPlugin.queryExistingAccounts_%@.%@\"}]",uids,timeStamp,randNum];
-    NSString *arg2 = [NSString stringWithFormat:@"https://render.alipay.com/p/yuyan/180020010001247580/listRank.html?caprMode=sync&init=energyRank&periodType=total"];
+    NSString *arg2 = @"https://render.alipay.com/p/yuyan/180020010001247580/home.html?caprMode=sync";
     if([self jsBridge]) {
-        [[self jsBridge] _doFlushMessageQueue:arg1 url:arg2];
-        //FileLog(@"uids:%@", uids);
-        //FileLog(@"anthook queryAccount");
+        [self safeFlushBridge:[self jsBridge] message:arg1 url:arg2];
     }
 }
+
 
 -(NSMutableArray*)intArrToStr:(NSArray*)arr{
     // 将每个数字转换为带双引号的字符串
@@ -5983,25 +5999,12 @@ static BOOL oceanPlanLoggedThisRound = NO;
         [self startTakeLookContinuation];
         return;
     }
-    NSUInteger groupCount = (friendIds.count + 19) / 20;
-    [self recordStage:[NSString stringWithFormat:@"诊断 · 排行榜全量回包：%lu 位好友，分 %lu 组校验", (unsigned long)friendIds.count, (unsigned long)groupCount]];
-    [self queryAccount:[[self intArrToStr:friendIds] componentsJoinedByString:@","]];
-    NSMutableArray<NSString *> *groups = [NSMutableArray array];
-    for (NSUInteger index = 0; index < friendIds.count; index += 20) {
-        NSRange range = NSMakeRange(index, MIN((NSUInteger)20, friendIds.count - index));
-        [groups addObject:[[self intArrToStr:[friendIds subarrayWithRange:range]] componentsJoinedByString:@","]];
-    }
-    dispatch_async(globalSerialQueueTest, ^{
-        for (NSUInteger index = 0; index < groups.count; index++) {
-            if (!self.enableAutoCollect || cycle != collectionCycle) break;
-            [self recordStage:[NSString stringWithFormat:@"诊断 · 排行榜校验：第 %lu/%lu 组", (unsigned long)(index + 1), (unsigned long)groups.count]];
-            [self queryRobFlag:groups[index]];
-            double rankGroupDelay = 0.18 + (arc4random_uniform(200) / 1000.0);
-            [NSThread sleepForTimeInterval:rankGroupDelay];
+    [self recordStage:[NSString stringWithFormat:@"诊断 · 排行榜好友扫描就绪（%lu 位），转入找能量续查", (unsigned long)friendIds.count]];
+    // 剔除历史遗留的 50 轮 queryRobFlag/queryAccount 冗余请求轰炸，彻底释放 H5 容器并发槽位与 JSBridge 通道
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(600 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+        if (self.enableAutoCollect && cycle == collectionCycle) {
+            [self startTakeLookContinuation];
         }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (self.enableAutoCollect && cycle == collectionCycle) [self startTakeLookContinuation];
-        });
     });
 }
 
@@ -6022,6 +6025,7 @@ static BOOL oceanPlanLoggedThisRound = NO;
         oceanPlanLoggedThisRound = NO;
         lastCollectStartedAt = NSDate.date;
         collectionCycle++;
+        self.lastRankFetchedIndex = 0;
         sVitalityAutoRefreshRounds = 0;
         @synchronized(self) {
             if (gVitalityTaskRetryCounts) [gVitalityTaskRetryCounts removeAllObjects];
@@ -6036,6 +6040,11 @@ static BOOL oceanPlanLoggedThisRound = NO;
         @synchronized (self) { [pendingCollectBubbles removeAllObjects]; }
         [shieldReportedFriendsInRound removeAllObjects];
         [self recordStage:@"本轮扫描开始"];
+        if (self.enableSelfCollect) {
+            dispatch_async(globalSerialQueueQuery, ^{
+                [[AntForestManager sharedInstance] queryMyBubbles];
+            });
+        }
         [self queryTotalRank];
         if (self.enableCleanOcean) {
             [self cleanMyOceanThoroughly];
@@ -6980,28 +6989,30 @@ static BOOL oceanPlanLoggedThisRound = NO;
             if(resData && resData[@"myself"]) {
                 NSDictionary *myDict = resData[@"myself"];
                 NSString *userIdMy = [AntForestManager extractUserIdFromDictionary:myDict] ?: [myDict objectForKey:@"userId"];
+                BOOL hadUserIdBefore = (self.myUserId.length > 0);
                 if (userIdMy.length) {
-                    if (!self.myUserId.length) {
+                    if (!hadUserIdBefore) {
                         [[AntForestManager sharedInstance] setMyUserId:userIdMy];
                         [self recordStage:@"收取 · 本人账户已识别"];
+                        // 首次识别本人账户时，若开启本人收集且本轮扫描执行中，初次补查一次
+                        if (self.isScanRunning) {
+                            if (self.enableSelfCollect) {
+                                dispatch_async(globalSerialQueueQuery, ^{
+                                    [[AntForestManager sharedInstance] queryMyBubbles];
+                                });
+                            }
+                            if (self.enableAutoRewardTasks) {
+                                dispatch_async(globalSerialQueueQuery, ^{
+                                    [[AntForestManager sharedInstance] queryVitalityTaskList];
+                                });
+                            }
+                        }
                     } else {
                         [[AntForestManager sharedInstance] setMyUserId:userIdMy];
                     }
                 }
                 NSNumber *canCollectEnergy = [myDict objectForKey:@"canCollectEnergy"];
                 [self recordStage:[NSString stringWithFormat:@"诊断 · 本人能量状态：%@", [canCollectEnergy isEqualToNumber:@1] ? @"可收" : @"暂无成熟能量"]];
-                if (self.isScanRunning) {
-                    if(self.enableSelfCollect) {
-                        dispatch_async(globalSerialQueueQuery, ^{
-                            [[AntForestManager sharedInstance] queryMyBubbles];
-                        });
-                    }
-                    if (self.enableAutoRewardTasks) {
-                        dispatch_async(globalSerialQueueQuery, ^{
-                            [[AntForestManager sharedInstance] queryVitalityTaskList];
-                        });
-                    }
-                }
             }
             if(resData && (resData[@"friendRanking"] || resData[@"totalDatas"])) {
                 NSArray *rankArr = [resData[@"friendRanking"] isKindOfClass:NSArray.class] ? resData[@"friendRanking"] : resData[@"totalDatas"];
@@ -7067,27 +7078,38 @@ static BOOL oceanPlanLoggedThisRound = NO;
                     }
                 }
                 if (self.isScanRunning) {
-                    if (rankScanPending) {
-                        rankScanPending = NO;
-                        if (selfPriorityPending) {
-                            deferredRankedFriendIds = fr.allKeys;
-                        } else {
-                            [self scanRankedFriends:fr.allKeys cycle:collectionCycle];
-                        }
+                    NSString *respId = [dict objectForKey:@"responseId"] ?: [dict objectForKey:@"callbackId"];
+                    BOOL isOurSilentRank = NO;
+                    if (respId.length) {
+                        isOurSilentRank = [respId containsString:@"af_silent_rank"] ||
+                                          (self.lastSilentRankCallbackId.length && [respId isEqualToString:self.lastSilentRankCallbackId]);
                     }
-                    if (self.enableCleanOcean && fr.allKeys.count > 0) {
-                        [self scanOceanForFriends:fr.allKeys];
-                    }
-                    BOOL hasMore = [resData[@"hasMore"] boolValue] || [resData[@"hasNext"] boolValue];
-                    NSInteger nextIndex = [resData[@"nextStartIndex"] integerValue] ?: [resData[@"startIndex"] integerValue] + rankTotalArr.count;
-                    if ((hasMore || rankTotalArr.count >= 200) && nextIndex > 0 && nextIndex < 1000) {
-                        static NSInteger lastFetchedIndex = 0;
-                        if (nextIndex > lastFetchedIndex) {
-                            lastFetchedIndex = nextIndex;
-                            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(800 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
-                                [self queryRankPage:nextIndex];
-                            });
+                    if (isOurSilentRank) {
+                        self.lastSilentRankCallbackId = nil;
+                        if (rankScanPending) {
+                            rankScanPending = NO;
+                            if (selfPriorityPending) {
+                                deferredRankedFriendIds = fr.allKeys;
+                            } else {
+                                [self scanRankedFriends:fr.allKeys cycle:collectionCycle];
+                            }
                         }
+                        if (self.enableCleanOcean && fr.allKeys.count > 0) {
+                            [self scanOceanForFriends:fr.allKeys];
+                        }
+                        BOOL hasMore = [resData[@"hasMore"] boolValue] || [resData[@"hasNext"] boolValue];
+                        NSInteger nextIndex = [resData[@"nextStartIndex"] integerValue] ?: [resData[@"startIndex"] integerValue] + rankTotalArr.count;
+                        if ((hasMore || rankTotalArr.count >= 200) && nextIndex > 0 && nextIndex < 1000) {
+                            if (nextIndex > self.lastRankFetchedIndex) {
+                                self.lastRankFetchedIndex = nextIndex;
+                                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(800 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+                                    [self queryRankPage:nextIndex];
+                                });
+                            }
+                        }
+                    } else {
+                        // 用户手动在 H5 榜单点击（如日榜、周榜、黄金PK榜、收我最多榜等）：保持前端视图独立，绝不触发后台自动翻页覆盖！
+                        [self recordStage:@"诊断 · 捕获用户手动榜单交互回包，保持前端视图独立，跳过自动翻页覆盖"];
                     }
                 }
             }

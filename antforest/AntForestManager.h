@@ -86,6 +86,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property (strong, nonatomic) NSString* myUserId; //我自己的ID
 @property (nonatomic, copy) NSString *lastRpcOperationType; // 最近一次发起的 RPC operationType
+@property (nonatomic, copy) NSString *lastSilentRankCallbackId; // 最近一次后台发起的静默排行榜 callbackId
+@property (nonatomic, assign) NSInteger lastRankFetchedIndex; // 最近一次拉取的排行榜分页游标
 
 -(BOOL)isAnimalEnergyCollectedTodayForCode:(NSString *)code name:(NSString *)name;
 -(void)markAnimalEnergyCollectedTodayForCode:(NSString *)code name:(NSString *)name reason:(NSString *)reason;
@@ -145,6 +147,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 -(void)takeLook;
 -(void)queryFriendsBubbles:(NSString*)friendId;
+-(void)safeFlushBridge:(id)bridge message:(NSString *)msg url:(NSString *)url;
 -(void)queryMyBubbles;
 -(void)collectBubbles:(NSString*)uid bubblesId:(NSString*)bids;
 -(void)reviveEnergy:(NSString*)uid signId:(NSString*)signId; //貌似查询
