@@ -747,7 +747,6 @@ static NSInteger reviveDailyCount(void) {
     if (!selfPriorityPending || selfPriorityCycle != cycle) return;
     selfPriorityPending = NO;
     NSArray<NSString *> *friendIds = deferredFriendRankIds.copy;
-    NSArray<NSString *> *rankedIds = deferredRankedFriendIds;
     [deferredFriendRankIds removeAllObjects];
     deferredRankedFriendIds = nil;
     [self recordStage:[NSString stringWithFormat:@"本人优先完成，开始好友扫描（%@）", reason]];
@@ -756,7 +755,11 @@ static NSInteger reviveDailyCount(void) {
             [self queryFriendsBubbles:friendId];
         });
     }
-    if (rankedIds.count) [self scanRankedFriends:rankedIds cycle:cycle];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(600 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+        if (self.enableAutoCollect && cycle == collectionCycle && self.isScanRunning) {
+            [self startTakeLookContinuation];
+        }
+    });
 }
 
 + (NSLock*)sharedLock {
@@ -6036,7 +6039,7 @@ static BOOL oceanPlanLoggedThisRound = NO;
         selfPriorityCycle = cycle;
         [deferredFriendRankIds removeAllObjects];
         deferredRankedFriendIds = nil;
-        rankScanPending = YES;
+        rankScanPending = NO;
         @synchronized (self) { [pendingCollectBubbles removeAllObjects]; }
         [shieldReportedFriendsInRound removeAllObjects];
         [self recordStage:@"本轮扫描开始"];
@@ -6045,7 +6048,6 @@ static BOOL oceanPlanLoggedThisRound = NO;
                 [[AntForestManager sharedInstance] queryMyBubbles];
             });
         }
-        [self queryTotalRank];
         if (self.enableCleanOcean) {
             [self cleanMyOceanThoroughly];
             [self queryOceanFriendList];
@@ -6057,14 +6059,14 @@ static BOOL oceanPlanLoggedThisRound = NO;
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 [self releaseSelfPriorityForCycle:cycle reason:@"本人首页回包超时"];
             });
+        } else {
+            // 未开启本人收取时，延迟 800ms 直接转入找能量巡检
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(800 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+                if (self.enableAutoCollect && cycle == collectionCycle && self.isScanRunning) {
+                    [self startTakeLookContinuation];
+                }
+            });
         }
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(12 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            if (rankScanPending && cycle == collectionCycle) {
-                rankScanPending = NO;
-                [self recordStage:@"诊断 · 排行榜回包超时，转入找能量续查"];
-                [self startTakeLookContinuation];
-            }
-        });
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(45 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             if (self.isScanRunning && cycle == collectionCycle) {
                 self.isScanRunning = NO;
@@ -7086,25 +7088,20 @@ static BOOL oceanPlanLoggedThisRound = NO;
                     }
                     if (isOurSilentRank) {
                         self.lastSilentRankCallbackId = nil;
-                        if (rankScanPending) {
-                            rankScanPending = NO;
-                            if (selfPriorityPending) {
-                                deferredRankedFriendIds = fr.allKeys;
-                            } else {
-                                [self scanRankedFriends:fr.allKeys cycle:collectionCycle];
-                            }
-                        }
                         if (self.enableCleanOcean && fr.allKeys.count > 0) {
                             [self scanOceanForFriends:fr.allKeys];
                         }
-                        BOOL hasMore = [resData[@"hasMore"] boolValue] || [resData[@"hasNext"] boolValue];
-                        NSInteger nextIndex = [resData[@"nextStartIndex"] integerValue] ?: [resData[@"startIndex"] integerValue] + rankTotalArr.count;
-                        if ((hasMore || rankTotalArr.count >= 200) && nextIndex > 0 && nextIndex < 1000) {
-                            if (nextIndex > self.lastRankFetchedIndex) {
-                                self.lastRankFetchedIndex = nextIndex;
-                                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(800 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
-                                    [self queryRankPage:nextIndex];
-                                });
+                        // 仅当用户在设置页主动点击“刷新浇水好友列表”时才执行分页加载，前台日常自动收集完全不触发翻页
+                        if (waterFriendRefreshPending) {
+                            BOOL hasMore = [resData[@"hasMore"] boolValue] || [resData[@"hasNext"] boolValue];
+                            NSInteger nextIndex = [resData[@"nextStartIndex"] integerValue] ?: [resData[@"startIndex"] integerValue] + rankTotalArr.count;
+                            if ((hasMore || rankTotalArr.count >= 200) && nextIndex > 0 && nextIndex < 1000) {
+                                if (nextIndex > self.lastRankFetchedIndex) {
+                                    self.lastRankFetchedIndex = nextIndex;
+                                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(800 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+                                        [self queryRankPage:nextIndex];
+                                    });
+                                }
                             }
                         }
                     } else {
