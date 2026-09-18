@@ -17,6 +17,7 @@ grep -Fq 'queryOceanTaskList' "$source_file"
 grep -Fq '神奇海洋·任务探测' "$source_file"
 grep -Fq 'antOceanTaskVOList' "$source_file"
 grep -Fq 'ANTOCEAN_TASK' "$source_file"
+grep -Fq 'alipay.antocean.ocean.h5.queryTaskList' "$source_file"
 
 grep -Fq 'isOceanURL' "$entry_file"
 grep -Fq 'toggleAutoOceanTasks:' "$entry_file"

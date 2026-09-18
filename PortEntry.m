@@ -1591,7 +1591,7 @@ static void installEarnEnergyCollector(id controller) {
 
     [self.view addSubview:grabber];
     UILabel *versionLabel = [[UILabel alloc] init];
-    versionLabel.text = @"当前版本：v3.2 测试版";
+    versionLabel.text = @"当前版本：v3.2-1 测试版";
     versionLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightRegular];
     versionLabel.textColor = [UIColor systemGray2Color];
     versionLabel.textAlignment = NSTextAlignmentCenter;
@@ -2484,6 +2484,7 @@ static BOOL hookRPCProbeMethod(Class cls) {
 #endif
 }
 
+static NSString *gLastRpcOperationType = nil;
 static void (*originalDoFlushMessageQueue)(id, SEL, id, id);
 static void portDoFlushMessageQueue(id self, SEL _cmd, id msg, id url) {
     @try {
@@ -2496,6 +2497,22 @@ static void portDoFlushMessageQueue(id self, SEL _cmd, id msg, id url) {
             if (d) msgStr = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
         }
         if (!msgStr) msgStr = [msg description];
+        
+        if (msgStr.length) {
+            static NSRegularExpression *opRegex = nil;
+            static dispatch_once_t onceToken;
+            dispatch_once(&onceToken, ^{
+                opRegex = [NSRegularExpression regularExpressionWithPattern:@"\"operationType\"\\s*:\\s*\"([^\"]+)\"" options:0 error:nil];
+            });
+            NSTextCheckingResult *match = [opRegex firstMatchInString:msgStr options:0 range:NSMakeRange(0, msgStr.length)];
+            if (match && match.numberOfRanges > 1) {
+                NSString *extractedOp = [msgStr substringWithRange:[match rangeAtIndex:1]];
+                if (extractedOp.length) {
+                    gLastRpcOperationType = [extractedOp copy];
+                    [AntForestManager sharedInstance].lastRpcOperationType = [extractedOp copy];
+                }
+            }
+        }
         
         BOOL isSignRelated = [msgStr containsString:@"sign"] || [msgStr containsString:@"Sign"] || [msgStr containsString:@"SIGN"] ||
                              [msgStr containsString:@"antiep"] || [msgStr containsString:@"vitality"] || [msgStr containsString:@"ANTFOREST_ENERGY"];
@@ -2514,10 +2531,6 @@ static void portDoFlushMessageQueue(id self, SEL _cmd, id msg, id url) {
         originalDoFlushMessageQueue(self, _cmd, msg, url);
     }
 }
-
-
-
-static NSString *gLastRpcOperationType = nil;
 
 static id portTransformResponseData(id self, SEL _cmd, id value) {
     id controller = forestControllerForBridge(self);
@@ -2630,7 +2643,7 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
             }
             [manager handleManorResponse:dict ?: resData];
         }
-        if (resData[@"antOceanTaskVOList"] || [dict[@"antOceanTaskVOList"] isKindOfClass:NSArray.class]) {
+        if (resData[@"antOceanTaskVOList"] || [dict[@"antOceanTaskVOList"] isKindOfClass:NSArray.class] || [gLastRpcOperationType containsString:@"antocean"]) {
             if (manager.oceanBridge != self) {
                 manager.oceanBridge = self;
                 [manager recordStage:@"神奇海洋 · 已绑定海洋 H5 Bridge"];
