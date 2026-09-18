@@ -2725,6 +2725,24 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
     if (manager.enableAutoCollect && manager.enableSelfCollect && isMyHomeResponse(value, manager)) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(700 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{ tryAutoCollectWaterGift(); });
     }
+    
+    // 关键隔离：如果是插件后台静默发起的排行榜全量查询（用于扫描好友待复活能量或刷新浇水列表），
+    // 必须阻断该 200 条巨量 totalDatas 数据透传给前端 H5 WebView！
+    // 否则前端 React 榜单组件会因数据结构/并发回调冲突抛出未捕获异常，导致事件监听器卸载，Tab 按钮完全死锁成“死玻璃”。
+    NSDictionary *respDict = [value isKindOfClass:NSDictionary.class] ? value : nil;
+    NSString *respId = respDict[@"responseId"] ?: respDict[@"callbackId"];
+    BOOL isOurSilentRank = respId.length && ([respId containsString:@"af_silent_rank"] ||
+                                            (manager.lastSilentRankCallbackId.length && [respId isEqualToString:manager.lastSilentRankCallbackId]));
+    if (isOurSilentRank) {
+        NSMutableDictionary *safeResp = [NSMutableDictionary dictionary];
+        if (respId) safeResp[@"responseId"] = respId;
+        safeResp[@"responseData"] = @{@"success": @YES, @"resultCode": @"100"};
+        if (originalTransformResponseData) {
+            return originalTransformResponseData(self, _cmd, safeResp);
+        }
+        return safeResp;
+    }
+    
     if (originalTransformResponseData) {
         return originalTransformResponseData(self, _cmd, value);
     }

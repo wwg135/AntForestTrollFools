@@ -6055,6 +6055,14 @@ static BOOL oceanPlanLoggedThisRound = NO;
         if (self.enableAutoRewardTasks) {
             [self queryVitalityTaskList];
         }
+        if (self.enableAutoRevive && reviveDailyCount() < 6) {
+            // 避开前台首页日榜并发初载期，延迟 2.5 秒在后台静默发起全量好友过期能量扫描
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2500 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+                if (self.enableAutoCollect && self.enableAutoRevive && cycle == collectionCycle && self.isScanRunning) {
+                    [self queryTotalRank];
+                }
+            });
+        }
         if (selfPriorityPending) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 [self releaseSelfPriorityForCycle:cycle reason:@"本人首页回包超时"];
@@ -7091,14 +7099,15 @@ static BOOL oceanPlanLoggedThisRound = NO;
                         if (self.enableCleanOcean && fr.allKeys.count > 0) {
                             [self scanOceanForFriends:fr.allKeys];
                         }
-                        // 仅当用户在设置页主动点击“刷新浇水好友列表”时才执行分页加载，前台日常自动收集完全不触发翻页
-                        if (waterFriendRefreshPending) {
+                        // 浇水列表刷新或好友待复活能量补查（未达到6次上限且队列未满）时执行分页补全
+                        BOOL shouldPaginate = waterFriendRefreshPending || (self.enableAutoRevive && reviveDailyCount() < 6 && [reviveQueue count] < 6);
+                        if (shouldPaginate) {
                             BOOL hasMore = [resData[@"hasMore"] boolValue] || [resData[@"hasNext"] boolValue];
                             NSInteger nextIndex = [resData[@"nextStartIndex"] integerValue] ?: [resData[@"startIndex"] integerValue] + rankTotalArr.count;
                             if ((hasMore || rankTotalArr.count >= 200) && nextIndex > 0 && nextIndex < 1000) {
                                 if (nextIndex > self.lastRankFetchedIndex) {
                                     self.lastRankFetchedIndex = nextIndex;
-                                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(800 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+                                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1000 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
                                         [self queryRankPage:nextIndex];
                                     });
                                 }
