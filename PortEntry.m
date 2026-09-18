@@ -2601,6 +2601,7 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
     if (isForest) {
         if (manager.manorBridge == self) manager.manorBridge = nil;
         if (manager.farmBridge == self) manager.farmBridge = nil;
+        if (manager.oceanBridge == self) manager.oceanBridge = nil;
     } else if (isFarmResp) {
         if (manager.manorBridge == self) manager.manorBridge = nil;
     } else if (isManor) {
@@ -2647,7 +2648,8 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
             }
             [manager handleManorResponse:dict ?: resData];
         }
-        if (resData[@"antOceanTaskVOList"] || [dict[@"antOceanTaskVOList"] isKindOfClass:NSArray.class] || [gLastRpcOperationType containsString:@"antocean"]) {
+        BOOL isOceanResp = !isForest && self != manager.jsBridge && (isOceanURL(ctrlUrl) || (ctrlUrl && [ctrlUrl.absoluteString containsString:@"2021003115672468"]));
+        if (isOceanResp && (resData[@"antOceanTaskVOList"] || [dict[@"antOceanTaskVOList"] isKindOfClass:NSArray.class] || [gLastRpcOperationType containsString:@"antocean"])) {
             if (manager.oceanBridge != self) {
                 manager.oceanBridge = self;
                 [manager recordStage:@"神奇海洋 · 已绑定海洋 H5 Bridge"];
@@ -2707,7 +2709,7 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
             if (isAIFish) {
                 manager.aiFishBridge = self;
             }
-            if (isOcean) {
+            if (isOcean && !isForest && self != manager.jsBridge) {
                 manager.oceanBridge = self;
             }
             if (isFarm && !isManor && !isForest) {
@@ -2730,9 +2732,24 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(700 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{ tryAutoCollectWaterGift(); });
     }
     
-    // 保持原生响应管道纯净透明透传：
-    // 严禁向 H5 WebView 注入缺失 totalDatas 的伪造空回包（否则前端 React 在读取 map/length 时会抛出未捕获 TypeError 导致榜单彻底锁死成“死玻璃”）。
-    // 真实响应完整回传给前端，前端日榜/周榜/总榜 Tab 选中态与列表渲染恢复灵敏顺畅。
+    // 隔离插件后台静默发起的非用户点击请求（精准匹配 af_silent_ 唯一前缀）：
+    // 1. 绝不拦截用户手动点击的榜单（用户的 callbackId 是前端生成的，无 af_silent_ 前缀，100% 透传完整 totalDatas）；
+    // 2. 插件后台发起的静默请求（如 queryFriendsBubbles、takeLook、queryTotalRank 等）若透传给前端，会导致 H5 收到 nextAction="Friend" 误判为已离开首页，从而卸载/死锁首页排行榜；
+    // 对 af_silent_ 前缀的后台回包，返回纯净的空成功回包，切断对 H5 视图路由的跨页面污染。
+    NSString *respId = dict[@"responseId"] ?: dict[@"callbackId"];
+    if (respId.length && [respId containsString:@"af_silent_"]) {
+        NSMutableDictionary *safeResp = [NSMutableDictionary dictionary];
+        safeResp[@"resultStatus"] = @1000;
+        safeResp[@"resultCode"] = @"SUCCESS";
+        safeResp[@"success"] = @YES;
+        safeResp[@"resData"] = @{@"success": @YES, @"resultCode": @"SUCCESS"};
+        safeResp[@"responseId"] = respId;
+        if (originalTransformResponseData) {
+            return originalTransformResponseData(self, _cmd, safeResp);
+        }
+        return safeResp;
+    }
+    
     if (originalTransformResponseData) {
         return originalTransformResponseData(self, _cmd, value);
     }

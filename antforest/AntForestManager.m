@@ -1041,8 +1041,9 @@ NSString* getCurrentDateTimeString() {
     for (NSString *friendId in visitedFriends) skipUsers[friendId] = @YES;
     NSData *skipUsersData = [NSJSONSerialization dataWithJSONObject:skipUsers options:0 error:nil];
     NSString *skipUsersJSON = [[NSString alloc] initWithData:skipUsersData encoding:NSUTF8StringEncoding] ?: @"{}";
-    NSString *arg1=[NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"alipay.antforest.forest.h5.takeLook\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"ags-source\":\"chInfo_ch_appcenter__chsub_9patch\"},\"requestData\":[{\"skipUsers\":%@,\"version\":\"%@\",\"contactsStatus\":\"N\",\"source\":\"chInfo_ch_appcenter__chsub_9patch\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]",skipUsersJSON,version,timeStamp,randNum];
-    NSString *arg2 = @"https://render.alipay.com/p/yuyan/180020010001247580/home.html?caprMode=sync&__webview_options__=bc%3D3194732";
+    NSString *callbackId = [NSString stringWithFormat:@"rpc_af_silent_takelook_%@.%@", timeStamp, randNum];
+    NSString *arg1=[NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"alipay.antforest.forest.h5.takeLook\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"ags-source\":\"chInfo_ch_appcenter__chsub_9patch\"},\"requestData\":[{\"skipUsers\":%@,\"version\":\"%@\",\"contactsStatus\":\"N\",\"source\":\"chInfo_ch_appcenter__chsub_9patch\"}],\"getResponse\":true},\"callbackId\":\"%@\"}]",skipUsersJSON,version,callbackId];
+    NSString *arg2 = @"https://render.alipay.com/p/yuyan/180020010001247580/home.html?__webview_options__=bc%3D3194732";
     
     if([self jsBridge]) {
         [self recordStage:[NSString stringWithFormat:@"诊断 · 请求找能量续查：已跳过 %lu 位", (unsigned long)visitedFriends.count]];
@@ -1349,7 +1350,7 @@ static NSTimeInterval lastMyBubblesQueryTime = 0;
     NSString *timeStamp = [NSString stringWithFormat:@"%ld",(long)[[NSDate  date] timeIntervalSince1970]*1000];
     NSString *randNum=[AntForestManager getNumberRandom:16];
     NSString *arg1=[NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"alipay.antforest.forest.h5.queryHomePage\",\"showError\":false,\"showLoading\":false,\"requestData\":[{\"version\":\"%@\",\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"configVersionMap\":{\"wateringBubbleConfig\":\"0\"},\"skipWhackMole\":false,\"activityParam\":{}}]},\"callbackId\":\"rpc_%@.%@\"}]",version,timeStamp,randNum];
-    NSString *arg2 = [NSString stringWithFormat:@"https://render.alipay.com/p/yuyan/180020010001247580/home.html?caprMode=sync&__webview_options__=bc%%3D3194732"];
+    NSString *arg2 = @"https://render.alipay.com/p/yuyan/180020010001247580/home.html?__webview_options__=bc%3D3194732";
     
     if([self jsBridge]) {
         [self safeFlushBridge:[self jsBridge] message:arg1 url:arg2];
@@ -1367,7 +1368,8 @@ static NSTimeInterval lastMyBubblesQueryTime = 0;
     NSString *version = @"20241025";
     NSString *timeStamp = [NSString stringWithFormat:@"%ld",(long)[[NSDate  date] timeIntervalSince1970]*1000];
     NSString *randNum=[AntForestManager getNumberRandom:15];
-    NSString *arg1=[NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"alipay.antforest.forest.h5.queryFriendHomePage\",\"showError\":false,\"showLoading\":false,\"requestData\":[{\"userId\":\"%@\",\"version\":\"%@\",\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"fromAct\":\"TAKE_LOOK\",\"configVersionMap\":{\"wateringBubbleConfig\":\"0\"},\"skipWhackMole\":false,\"activityParam\":{},\"currentEnergy\":99999999,\"currentVitalityAmount\":8888888}]},\"callbackId\":\"rpc_%@.%@\"}]",friendId,version,timeStamp,randNum];
+    NSString *callbackId = [NSString stringWithFormat:@"rpc_af_silent_friend_%@.%@", timeStamp, randNum];
+    NSString *arg1=[NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"alipay.antforest.forest.h5.queryFriendHomePage\",\"showError\":false,\"showLoading\":false,\"requestData\":[{\"userId\":\"%@\",\"version\":\"%@\",\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"fromAct\":\"TAKE_LOOK\",\"configVersionMap\":{\"wateringBubbleConfig\":\"0\"},\"skipWhackMole\":false,\"activityParam\":{},\"currentEnergy\":99999999,\"currentVitalityAmount\":8888888}]},\"callbackId\":\"%@\"}]",friendId,version,callbackId];
     NSString *arg2 = @"https://render.alipay.com/p/yuyan/180020010001247580/home.html?__webview_options__=bc%3D3194732";
     
     if([self jsBridge]) {
@@ -2013,8 +2015,10 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
                 [self claimAllVisibleFarmRewardsOnWebView];
             });
         } else if ([lowerUrl containsString:@"2021003115672468"] || [lowerUrl containsString:@"ocean"]) {
-            self.oceanBridge = bridge;
-            self.oceanH5Url = effectiveUrl;
+            if (bridge != self.jsBridge) {
+                self.oceanBridge = bridge;
+                self.oceanH5Url = effectiveUrl;
+            }
         } else if ([lowerUrl containsString:@"180020010001279274"] || [lowerUrl containsString:@"lotterymachine"] || [lowerUrl containsString:@"draw"]) {
             self.lotteryBridge = bridge;
             self.lotteryH5Url = effectiveUrl;
@@ -2216,7 +2220,8 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
 
 -(void)queryOceanTaskListWithForce:(BOOL)force {
     if (!self.enableAutoOceanTasks) return;
-    PSDJsBridge *bridge = self.oceanBridge ?: self.rewardTaskBridge ?: self.jsBridge;
+    if (!self.oceanBridge || self.oceanBridge == self.jsBridge) return;
+    PSDJsBridge *bridge = self.oceanBridge;
     if (!bridge) return;
     initDailyTaskCache();
     
@@ -2397,7 +2402,7 @@ static NSString *sLastQueriedSceneCode = nil;
     if (isAIFishScene) {
         bridge = self.aiFishBridge ?: self.oceanBridge ?: self.rewardTaskBridge ?: self.jsBridge;
     } else if (isOceanScene) {
-        bridge = self.oceanBridge ?: self.rewardTaskBridge ?: self.jsBridge;
+        bridge = (self.oceanBridge && self.oceanBridge != self.jsBridge) ? self.oceanBridge : nil;
     } else if (isFarmScene) {
         bridge = self.farmBridge;
     } else if (isMonopolyScene) {
@@ -2470,7 +2475,7 @@ static NSString *sLastQueriedSceneCode = nil;
     } else if (isAIFishScene) {
         bridge = self.aiFishBridge ?: self.oceanBridge ?: self.rewardTaskBridge ?: self.jsBridge;
     } else if (isOceanScene) {
-        bridge = self.oceanBridge ?: self.rewardTaskBridge ?: self.jsBridge;
+        bridge = (self.oceanBridge && self.oceanBridge != self.jsBridge) ? self.oceanBridge : nil;
     } else if (isFarmScene) {
         bridge = self.farmBridge;
     } else if (isMonopolyScene) {
@@ -2525,7 +2530,7 @@ static NSString *sLastQueriedSceneCode = nil;
     } else if (isAIFishScene) {
         bridge = self.aiFishBridge ?: self.oceanBridge ?: self.rewardTaskBridge ?: self.jsBridge;
     } else if (isOceanScene) {
-        bridge = self.oceanBridge ?: self.rewardTaskBridge ?: self.jsBridge;
+        bridge = (self.oceanBridge && self.oceanBridge != self.jsBridge) ? self.oceanBridge : nil;
     } else if (isFarmScene) {
         bridge = self.farmBridge;
     } else if (isMonopolyScene) {
@@ -2738,7 +2743,7 @@ static NSInteger sVitalityAutoRefreshRounds = 0;
             BOOL isLotteryScene = [sceneCode containsString:@"NORMAL_DRAW"] || [sceneCode containsString:@"ACTIVITY_DRAW"] || [sceneCode containsString:@"DRAW"] || [sceneCode containsString:@"LOTTERY"];
             BOOL isOceanScene = [itemPrefix isEqualToString:@"神奇海洋"] || [sceneCode containsString:@"RESCUE"] || [sceneCode containsString:@"OCEAN"];
             if (isOceanScene) {
-                bridge = self.oceanBridge ?: self.rewardTaskBridge ?: self.jsBridge;
+                bridge = (self.oceanBridge && self.oceanBridge != self.jsBridge) ? self.oceanBridge : nil;
             } else if ([sceneCode containsString:@"AIFISH"]) {
                 bridge = self.aiFishBridge ?: self.oceanBridge ?: self.rewardTaskBridge ?: self.jsBridge;
             } else if (isFarmScene) {
@@ -3956,6 +3961,7 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
                                   taskTitle, taskType, taskStatus, taskJumpBtn, awardDesc]];
             
             if (!self.enableAutoOceanTasks) continue;
+            if (!self.oceanBridge || self.oceanBridge == self.jsBridge) continue;
             
             NSString *taskKey = [NSString stringWithFormat:@"%@:%@", sceneCode, taskType];
             BOOL isMultiIncomplete = isMultiStageIncompleteTask(taskTitle, 0, 0) || isMultiStageTaskFromDict(t, nil, bizInfo);
@@ -5965,7 +5971,7 @@ static BOOL oceanPlanLoggedThisRound = NO;
     NSString *timeStamp = [NSString stringWithFormat:@"%ld",(long)[[NSDate  date] timeIntervalSince1970]*1000];
     NSString *randNum=[AntForestManager getNumberRandom:16];
     NSString *arg1=[NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"alipay.antforest.forest.h5.fillUserRobFlag\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"ags-source\":\"chInfo_ch_appcenter__chsub_9patch\"},\"requestData\":[{\"userIdList\":[%@],\"source\":\"chInfo_ch_appcenter__chsub_9patch\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]",uids,timeStamp,randNum];
-    NSString *arg2 = @"https://render.alipay.com/p/yuyan/180020010001247580/home.html?caprMode=sync";
+    NSString *arg2 = @"https://render.alipay.com/p/yuyan/180020010001247580/home.html";
     if([self jsBridge]) {
         [self safeFlushBridge:[self jsBridge] message:arg1 url:arg2];
     }
@@ -5979,7 +5985,7 @@ static BOOL oceanPlanLoggedThisRound = NO;
     NSString *timeStamp = [NSString stringWithFormat:@"%ld",(long)[[NSDate  date] timeIntervalSince1970]*1000];
     NSString *randNum=[AntForestManager getNumberRandom:16];
     NSString *arg1=[NSString stringWithFormat:@"[{\"handlerName\":\"APSocialNebulaPlugin.queryExistingAccounts\",\"data\":{\"uids\":[%@]},\"callbackId\":\"APSocialNebulaPlugin.queryExistingAccounts_%@.%@\"}]",uids,timeStamp,randNum];
-    NSString *arg2 = @"https://render.alipay.com/p/yuyan/180020010001247580/home.html?caprMode=sync";
+    NSString *arg2 = @"https://render.alipay.com/p/yuyan/180020010001247580/home.html";
     if([self jsBridge]) {
         [self safeFlushBridge:[self jsBridge] message:arg1 url:arg2];
     }
