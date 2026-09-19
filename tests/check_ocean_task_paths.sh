@@ -28,6 +28,12 @@ grep -Fq 'isSafeOceanTask' "$source_file"
 grep -Fq 'sLastExecutedSceneCode containsString:@"OCEAN"' "$source_file"
 grep -Fq 'queryOceanTaskListWithForce:YES' "$source_file"
 grep -Fq 'id bridge = self.oceanBridge ?: self.jsBridge;' "$source_file"
+grep -Fq 'self.lastCleanedOceanUserId = nil;' "$source_file"
+grep -Fq 'scanOceanForFriends:fr.allKeys' "$source_file"
+grep -Fq 'cleanFriendOcean' "$entry_file"
+grep -Fq 'lastCleanedOceanUserId' "$entry_file"
 
 grep -Fq 'AntForestPort-Ocean.dylib' "$makefile"
 grep -Fq 'AntForestPort-Ocean-iOS14.dylib' "$makefile"
+
+echo "✅ All Ocean automation checks passed successfully!"

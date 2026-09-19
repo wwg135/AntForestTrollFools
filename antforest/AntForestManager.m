@@ -1464,9 +1464,12 @@ static NSMutableDictionary *friendOceanCleanCounts = nil;
     NSString *randNum=[AntForestManager getNumberRandom:15];
     NSString *randNum2=[AntForestManager getNumberRandom:16];
     NSString *callbackId = [NSString stringWithFormat:@"rpc_af_silent_ocean_%@.%@", timeStamp, randNum2];
-    NSString *arg1=[NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"alipay.antocean.ocean.h5.cleanOcean\",\"showError\":false,\"showLoading\":false,\"requestData\":[{\"cleanedUserId\":\"%@\",\"source\":\"ANT_FOREST\",\"uniqueId\":\"%@%@\"}],\"appName\":\"antocean\",\"facadeName\":\"InteractController\",\"methodName\":\"cleanOcean\",\"getResponse\":true},\"callbackId\":\"%@\"}]",self.myUserId,timeStamp,randNum,callbackId];
-    NSString *arg2 = [NSString stringWithFormat:@"https://2021003115672468.h5app.alipay.com/www/index.html"];
+    NSString *arg1=[NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"alipay.antocean.ocean.h5.cleanOcean\",\"showError\":false,\"showLoading\":false,\"requestData\":[{\"cleanedUserId\":\"%@\",\"userId\":\"%@\",\"source\":\"ANT_FOREST\",\"uniqueId\":\"%@%@\"}],\"appName\":\"antocean\",\"facadeName\":\"InteractController\",\"methodName\":\"cleanOcean\",\"getResponse\":true},\"callbackId\":\"%@\"}]",self.myUserId,self.myUserId,timeStamp,randNum,callbackId];
     id bridge = self.oceanBridge ?: self.jsBridge;
+    NSString *arg2 = (bridge == self.oceanBridge && self.oceanH5Url.length) ? self.oceanH5Url : ([self effectiveUrlForBridge:bridge] ?: @"https://2021003115672468.h5app.alipay.com/www/index.html");
+    if (bridge == self.jsBridge) {
+        arg2 = [self effectiveUrlForBridge:bridge] ?: @"https://render.alipay.com/p/yuyan/180020010001247580/home.html";
+    }
     if(bridge) {
         [bridge _doFlushMessageQueue:arg1 url:arg2];
     }
@@ -1480,9 +1483,14 @@ static NSMutableDictionary *friendOceanCleanCounts = nil;
     NSString *randNum=[AntForestManager getNumberRandom:15];
     NSString *randNum2=[AntForestManager getNumberRandom:16];
     NSString *callbackId = [NSString stringWithFormat:@"rpc_af_silent_ocean_%@.%@", timeStamp, randNum2];
-    NSString *arg1=[NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"alipay.antocean.ocean.h5.cleanFriendOcean\",\"showError\":false,\"showLoading\":false,\"requestData\":[{\"cleanedUserId\":\"%@\",\"source\":\"ANT_FOREST\",\"uniqueId\":\"%@%@\"}],\"appName\":\"antocean\",\"facadeName\":\"InteractController\",\"methodName\":\"cleanFriendsOcean\",\"getResponse\":true},\"callbackId\":\"%@\"}]",uid,timeStamp,randNum,callbackId];
-    NSString *arg2 = [NSString stringWithFormat:@"https://2021003115672468.h5app.alipay.com/www/index.html?fromAct=SAIL_AWAY&userId=%@&interactFlags=&source=ANT_FOREST&__webview_options__=ttb%%3Dauto%%26pd%%3DNO%%26bc%%3D1324950",uid];
+    NSString *arg1=[NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"alipay.antocean.ocean.h5.cleanFriendOcean\",\"showError\":false,\"showLoading\":false,\"requestData\":[{\"cleanedUserId\":\"%@\",\"userId\":\"%@\",\"source\":\"ANT_FOREST\",\"uniqueId\":\"%@%@\"}],\"appName\":\"antocean\",\"facadeName\":\"InteractController\",\"methodName\":\"cleanFriendsOcean\",\"getResponse\":true},\"callbackId\":\"%@\"}]",uid,uid,timeStamp,randNum,callbackId];
     id bridge = self.oceanBridge ?: self.jsBridge;
+    NSString *arg2 = [NSString stringWithFormat:@"https://2021003115672468.h5app.alipay.com/www/index.html?fromAct=SAIL_AWAY&userId=%@&interactFlags=&source=ANT_FOREST&__webview_options__=ttb%%3Dauto%%26pd%%3DNO%%26bc%%3D1324950",uid];
+    if (bridge == self.oceanBridge && self.oceanH5Url.length) {
+        arg2 = self.oceanH5Url;
+    } else if (bridge == self.jsBridge) {
+        arg2 = [self effectiveUrlForBridge:bridge] ?: @"https://render.alipay.com/p/yuyan/180020010001247580/home.html";
+    }
     if(bridge) {
         [bridge _doFlushMessageQueue:arg1 url:arg2];
     }
@@ -1500,15 +1508,33 @@ static NSMutableDictionary *friendOceanCleanCounts = nil;
     NSString *timeStamp = [NSString stringWithFormat:@"%ld",(long)[[NSDate date] timeIntervalSince1970]*1000];
     NSString *randNum=[AntForestManager getNumberRandom:15];
     NSString *callbackId = [NSString stringWithFormat:@"rpc_af_silent_ocean_%@.%@", timeStamp, randNum];
-    NSString *arg1=[NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"alipay.antocean.ocean.h5.queryFriendList\",\"showError\":false,\"showLoading\":false,\"requestData\":[{\"source\":\"ANT_FOREST\"}],\"appName\":\"antocean\",\"facadeName\":\"InteractController\",\"methodName\":\"queryFriendList\",\"getResponse\":true},\"callbackId\":\"%@\"}]", callbackId];
-    NSString *arg2 = @"https://2021003115672468.h5app.alipay.com/www/index.html";
+    NSString *arg1=[NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"alipay.antocean.ocean.h5.queryFriendList\",\"showError\":false,\"showLoading\":false,\"requestData\":[{\"source\":\"ANT_FOREST\",\"uniqueId\":\"%@%@\"}],\"appName\":\"antocean\",\"facadeName\":\"InteractController\",\"methodName\":\"queryFriendList\",\"getResponse\":true},\"callbackId\":\"%@\"}]", timeStamp, randNum, callbackId];
     id bridge = self.oceanBridge ?: self.jsBridge;
+    NSString *arg2 = (bridge == self.oceanBridge && self.oceanH5Url.length) ? self.oceanH5Url : @"https://2021003115672468.h5app.alipay.com/www/index.html";
+    if (bridge == self.jsBridge) {
+        arg2 = [self effectiveUrlForBridge:bridge] ?: @"https://render.alipay.com/p/yuyan/180020010001247580/home.html";
+    }
     if(bridge) {
         [self recordStage:@"请求神奇海洋好友列表"];
         [bridge _doFlushMessageQueue:arg1 url:arg2];
         dispatch_async(globalSerialQueueQuery, ^{
             [self cleanMyOcean];
         });
+    }
+    
+    // 双保险：若已有好友排行榜缓存，直接将候选好友加入海洋清理队列，杜绝因 queryFriendList 延迟或跨域导致不拾取好友垃圾
+    NSMutableDictionary *fr = self.friendsRank;
+    if (!fr.count) {
+        NSData *data = [[NSUserDefaults standardUserDefaults] objectForKey:@"cachedFriendsRank"];
+        if (data) {
+            NSDictionary *cached = [NSKeyedUnarchiver unarchiveObjectWithData:data];
+            if ([cached isKindOfClass:NSDictionary.class] && cached.count) {
+                fr = [cached mutableCopy];
+            }
+        }
+    }
+    if (fr.allKeys.count > 0) {
+        [self scanOceanForFriends:fr.allKeys];
     }
 }
 
@@ -5895,7 +5921,8 @@ static const NSUInteger kOceanMaxCleanPerRound = 5;
 }
 
 - (void)oceanSendNext {
-    if (!self.enableCleanOcean || !self.jsBridge) {
+    id bridge = self.oceanBridge ?: self.jsBridge;
+    if (!self.enableCleanOcean || !bridge) {
         if (oceanRunning) [self oceanStopWithReason:@"任务已停止或桥接不可用"];
         return;
     }
@@ -5907,16 +5934,9 @@ static const NSUInteger kOceanMaxCleanPerRound = 5;
         [defaults setObject:@[] forKey:@"oceanCleanedFriendsToday"];
         [defaults setBool:NO forKey:@"oceanLimitReachedToday"];
     }
-    if ([defaults boolForKey:@"oceanLimitReachedToday"]) {
-        oceanRunning = NO;
-        oceanCurrentUserId = nil;
-        [oceanQueue removeAllObjects];
-        return;
-    }
-    
     NSArray *cleanedArr = [defaults arrayForKey:@"oceanCleanedFriendsToday"] ?: @[];
     NSMutableSet *cleanedSet = [NSMutableSet setWithArray:cleanedArr];
-    if (cleanedSet.count >= 20) {
+    if (cleanedSet.count >= 20 || ([defaults boolForKey:@"oceanLimitReachedToday"] && cleanedSet.count >= 20)) {
         [defaults setBool:YES forKey:@"oceanLimitReachedToday"];
         [self recordStage:@"神奇海洋：今日已帮满 20 位好友清理，已达每日上限"];
         oceanRunning = NO;
@@ -5983,11 +6003,9 @@ static BOOL oceanPlanLoggedThisRound = NO;
         [defaults setObject:@[] forKey:@"oceanCleanedFriendsToday"];
         [defaults setBool:NO forKey:@"oceanLimitReachedToday"];
     }
-    if ([defaults boolForKey:@"oceanLimitReachedToday"]) return;
-    
     NSArray *cleanedArr = [defaults arrayForKey:@"oceanCleanedFriendsToday"] ?: @[];
     NSMutableSet *cleanedSet = [NSMutableSet setWithArray:cleanedArr];
-    if (cleanedSet.count >= 20) return;
+    if (cleanedSet.count >= 20 || ([defaults boolForKey:@"oceanLimitReachedToday"] && cleanedSet.count >= 20)) return;
     
     NSUInteger added = 0;
     for (NSString *uid in friendIds) {
@@ -6431,15 +6449,19 @@ static BOOL oceanPlanLoggedThisRound = NO;
                 self.isScanRunning = NO;
                 return;
             }
-            if ([resultCode isEqualToString:@"LIMIT_EXCEEDED"] || [resultCode isEqualToString:@"ACCESS_DENIED"] || [resultCode isEqualToString:@"FORBIDDEN"] || [memo containsString:@"拒绝"] || [memo containsString:@"代理"] || [memo containsString:@"风控"]) {
+            NSString *opType = [NSString stringWithFormat:@"%@", dict[@"operationType"] ?: (resData[@"operationType"] ?: (self.lastRpcOperationType ?: @""))];
+            NSString *resDesc = [NSString stringWithFormat:@"%@", resData[@"resultDesc"] ?: dict[@"resultDesc"] ?: @""];
+            BOOL isOceanSilentResp = [respId containsString:@"af_silent_ocean"];
+            BOOL isOceanCleanOp = [dict[@"methodName"] isEqualToString:@"cleanFriendsOcean"] || [dict[@"operationType"] containsString:@"cleanFriendOcean"] || [dict[@"methodName"] isEqualToString:@"cleanOcean"] || [dict[@"operationType"] containsString:@"cleanOcean"] || [opType containsString:@"cleanFriendOcean"] || [opType containsString:@"cleanOcean"];
+            BOOL isOceanCleanResp = isOceanSilentResp || isOceanCleanOp || resData[@"cleanRewardVOS"] || resData[@"canClearFriendSeaToday"];
+            
+            if (isOceanCleanResp && ([resultCode isEqualToString:@"LIMIT_EXCEEDED"] || [resultCode isEqualToString:@"ACCESS_DENIED"] || [resultCode isEqualToString:@"FORBIDDEN"] || [memo containsString:@"拒绝"] || [memo containsString:@"代理"] || [memo containsString:@"风控"])) {
                 [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"oceanLimitReachedToday"];
                 [self recordStage:@"神奇海洋：收到服务端安全风险拦截，已自动熔断暂停本日清理（保护账号安全）"];
             }
-            NSString *resDesc = [NSString stringWithFormat:@"%@", resData[@"resultDesc"] ?: dict[@"resultDesc"] ?: @""];
-            BOOL isOceanLimit = [resultCode containsString:@"LIMIT"] || [resData[@"resultCode"] containsString:@"LIMIT"] || [resDesc containsString:@"上限"] || [resDesc containsString:@"已达20次"];
-            BOOL isOceanSilentResp = [respId containsString:@"af_silent_ocean"];
-            BOOL isOceanCleanOp = [dict[@"methodName"] isEqualToString:@"cleanFriendsOcean"] || [dict[@"operationType"] containsString:@"cleanFriendOcean"] || [dict[@"methodName"] isEqualToString:@"cleanOcean"] || [dict[@"operationType"] containsString:@"cleanOcean"];
-            if (resData && (resData[@"cleanRewardVOS"] || resData[@"canClearFriendSeaToday"] || isOceanCleanOp || isOceanLimit || isOceanSilentResp)) {
+            
+            BOOL isOceanLimit = isOceanCleanResp && ([resultCode isEqualToString:@"CLEAN_TIMES_EXCEED"] || [resultCode isEqualToString:@"USER_CLEAN_TIRED"] || [resultCode isEqualToString:@"HELP_CLEAN_LIMIT"] || [resDesc containsString:@"已达20次"] || ([resDesc containsString:@"上限"] && [opType containsString:@"antocean"]));
+            if (resData && isOceanCleanResp) {
                 NSNumber *canClearToday = resData[@"canClearFriendSeaToday"];
                 if ((canClearToday && [canClearToday boolValue] == NO) || isOceanLimit) {
                     [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"oceanLimitReachedToday"];
@@ -6449,6 +6471,7 @@ static BOOL oceanPlanLoggedThisRound = NO;
                 }
                 NSArray *rewards = resData[@"cleanRewardVOS"];
                 NSString *cleanedUid = resData[@"cleanedUserId"] ?: resData[@"userId"] ?: dict[@"cleanedUserId"] ?: oceanCurrentUserId ?: self.lastCleanedOceanUserId;
+                self.lastCleanedOceanUserId = nil;
                 BOOL isSelfOcean = !cleanedUid.length || [cleanedUid isEqualToString:self.myUserId];
                 if ([rewards isKindOfClass:NSArray.class] && rewards.count > 0) {
                     NSString *targetName = @"自己";
@@ -6529,7 +6552,7 @@ static BOOL oceanPlanLoggedThisRound = NO;
             if (!list && [dict isKindOfClass:NSDictionary.class]) {
                 list = dict[@"friendList"] ?: dict[@"friendOceanList"] ?: dict[@"friendSeaList"] ?: dict[@"friendListVO"] ?: dict[@"friendInfoList"] ?: dict[@"friends"] ?: dict[@"oceanFriendList"];
             }
-            NSString *opType = [NSString stringWithFormat:@"%@", dict[@"operationType"] ?: (resData[@"operationType"] ?: (self.lastRpcOperationType ?: @""))];
+            if (!opType.length) opType = [NSString stringWithFormat:@"%@", dict[@"operationType"] ?: (resData[@"operationType"] ?: (self.lastRpcOperationType ?: @""))];
             BOOL isOceanRespContext = isOceanSilentResp ||
                                       [opType containsString:@"antocean"] ||
                                       resData[@"canClearFriendSeaToday"] || resData[@"canCleanFriendSea"] ||
@@ -7184,6 +7207,9 @@ static BOOL oceanPlanLoggedThisRound = NO;
                         [[NSUserDefaults standardUserDefaults] setObject:data forKey:@"friendsName"];
                         [[NSUserDefaults standardUserDefaults] synchronize];
                     }
+                }
+                if (self.enableCleanOcean && fr.allKeys.count > 0 && oceanQueue.count == 0 && !oceanRunning) {
+                    [self scanOceanForFriends:fr.allKeys];
                 }
                 if (self.isScanRunning) {
                     NSString *respId = [dict objectForKey:@"responseId"] ?: [dict objectForKey:@"callbackId"];

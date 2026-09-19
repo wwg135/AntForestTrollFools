@@ -33,7 +33,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property(atomic) NSInteger todayCollectedEnergy;
 
 @property (nonatomic, strong) NSTimer *autoCollectTimer; //后台任务定时器
-@property(nonatomic, copy) NSString *lastCleanedOceanUserId;
+@property(nonatomic, copy, nullable) NSString *lastCleanedOceanUserId;
 @property (nonatomic, strong) NSTimer *scheduledCollectTimer;
 @property (nonatomic, strong) NSTimer *scheduledWaterTimer;
 
@@ -86,7 +86,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property (strong, nonatomic) NSString* myUserId; //我自己的ID
 @property (nonatomic, copy) NSString *lastRpcOperationType; // 最近一次发起的 RPC operationType
-@property (nonatomic, copy) NSString *lastSilentRankCallbackId; // 最近一次后台发起的静默排行榜 callbackId
+@property (nonatomic, copy, nullable) NSString *lastSilentRankCallbackId; // 最近一次后台发起的静默排行榜 callbackId
 @property (nonatomic, assign) NSInteger lastRankFetchedIndex; // 最近一次拉取的排行榜分页游标
 
 -(BOOL)isAnimalEnergyCollectedTodayForCode:(NSString *)code name:(NSString *)name;

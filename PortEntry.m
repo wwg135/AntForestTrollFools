@@ -2522,6 +2522,55 @@ static void portDoFlushMessageQueue(id self, SEL _cmd, id msg, id url) {
                     [AntForestManager sharedInstance].lastRpcOperationType = [extractedOp copy];
                 }
             }
+            
+            // 神奇海洋：精准捕获正在清理的海域目标用户ID（好友海域 vs 个人海域）
+            if ([msgStr containsString:@"cleanFriendOcean"] || [msgStr containsString:@"cleanedUserId"]) {
+                static NSRegularExpression *userRegex = nil;
+                static dispatch_once_t uToken;
+                dispatch_once(&uToken, ^{
+                    userRegex = [NSRegularExpression regularExpressionWithPattern:@"\"(?:cleanedUserId|userId)\"\\s*:\\s*\"([^\"]+)\"" options:0 error:nil];
+                });
+                NSTextCheckingResult *uMatch = [userRegex firstMatchInString:msgStr options:0 range:NSMakeRange(0, msgStr.length)];
+                NSString *u = (uMatch && uMatch.numberOfRanges > 1) ? [msgStr substringWithRange:[uMatch rangeAtIndex:1]] : nil;
+                if (!u.length || [u isEqualToString:[AntForestManager sharedInstance].myUserId]) {
+                    static NSRegularExpression *urlUserRegex = nil;
+                    static dispatch_once_t urlUToken;
+                    dispatch_once(&urlUToken, ^{
+                        urlUserRegex = [NSRegularExpression regularExpressionWithPattern:@"[?&]userId=([^&#]+)" options:0 error:nil];
+                    });
+                    NSTextCheckingResult *urlMatch = [urlUserRegex firstMatchInString:urlStr options:0 range:NSMakeRange(0, urlStr.length)];
+                    if (urlMatch && urlMatch.numberOfRanges > 1) {
+                        NSString *urlUid = [urlStr substringWithRange:[urlMatch rangeAtIndex:1]];
+                        if (urlUid.length && ![urlUid isEqualToString:[AntForestManager sharedInstance].myUserId]) {
+                            u = urlUid;
+                        }
+                    }
+                }
+                if (u.length) {
+                    [AntForestManager sharedInstance].lastCleanedOceanUserId = u;
+                }
+            } else if ([msgStr containsString:@"cleanOcean"]) {
+                NSString *u = nil;
+                if ([urlStr containsString:@"userId="]) {
+                    static NSRegularExpression *urlUserRegex = nil;
+                    static dispatch_once_t urlUToken;
+                    dispatch_once(&urlUToken, ^{
+                        urlUserRegex = [NSRegularExpression regularExpressionWithPattern:@"[?&]userId=([^&#]+)" options:0 error:nil];
+                    });
+                    NSTextCheckingResult *urlMatch = [urlUserRegex firstMatchInString:urlStr options:0 range:NSMakeRange(0, urlStr.length)];
+                    if (urlMatch && urlMatch.numberOfRanges > 1) {
+                        NSString *urlUid = [urlStr substringWithRange:[urlMatch rangeAtIndex:1]];
+                        if (urlUid.length && ![urlUid isEqualToString:[AntForestManager sharedInstance].myUserId]) {
+                            u = urlUid;
+                        }
+                    }
+                }
+                if (u.length) {
+                    [AntForestManager sharedInstance].lastCleanedOceanUserId = u;
+                } else {
+                    [AntForestManager sharedInstance].lastCleanedOceanUserId = [AntForestManager sharedInstance].myUserId;
+                }
+            }
         }
         
         BOOL isSignRelated = [msgStr containsString:@"sign"] || [msgStr containsString:@"Sign"] || [msgStr containsString:@"SIGN"] ||
