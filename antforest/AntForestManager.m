@@ -1702,7 +1702,6 @@ static BOOL isSafeRewardTask(NSString *taskType, NSString *title) {
         [cleanTitle containsString:@"浇水"] ||
         [cleanTitle containsString:@"一键浇水"] ||
         [cleanTitle containsString:@"添加组件"] ||
-        [cleanTitle containsString:@"淘宝签到"] ||
         [cleanTitle containsString:@"给随机好友"]) {
         return NO;
     }
@@ -6605,7 +6604,9 @@ static BOOL oceanPlanLoggedThisRound = NO;
             NSString *signStr = [dict[@"data"] isKindOfClass:NSString.class] ? dict[@"data"] : ([resData[@"data"] isKindOfClass:NSString.class] ? resData[@"data"] : nil);
             BOOL isSignDateStr = (signStr.length >= 8 && signStr.length <= 15 && [signStr containsString:@"-"]);
             BOOL isSignResp = (([opType containsString:@"antiep.sign"] || [self.lastRpcOperationType containsString:@"antiep.sign"]) && isSignDateStr);
-            if (![AntForestManager isManorResponse:args] && ![opType containsString:@"antocean"]) {
+            BOOL isPkOrSeasonContext = (resData[@"currentSeasonInfo"] || dict[@"currentSeasonInfo"] || resData[@"seasonInfo"] || dict[@"seasonInfo"] || resData[@"pkRanking"] || dict[@"pkRanking"] || resData[@"pkRankList"] || dict[@"pkRankList"] || resData[@"challengeRank"] || dict[@"challengeRank"] || resData[@"userPkInfo"] || dict[@"userPkInfo"]);
+            BOOL hasExplicitVitalitySign = (resData[@"forestTasksNew"] || resData[@"energySignVO"] || resData[@"forestSignVOList"] || dict[@"forestSignVOList"] || resData[@"forestSignVO"] || dict[@"forestSignVO"] || resData[@"signModel"] || dict[@"signModel"]);
+            if (![AntForestManager isManorResponse:args] && ![opType containsString:@"antocean"] && (!isPkOrSeasonContext || hasExplicitVitalitySign)) {
                 if (resData[@"forestTasksNew"] || resData[@"energySignVO"] || resData[@"forestSignVOList"] || dict[@"forestSignVOList"] || resData[@"forestSignVO"] || dict[@"forestSignVO"] || resData[@"signModel"] || dict[@"signModel"] || taskInfoList || resData[@"taskList"] || dict[@"taskList"] || resData[@"drawAsset"] || resData[@"drawEntranceVO"] || resData[@"drawActivity"] || resData[@"drawPrize"] || resData[@"drawPrizes"] || resData[@"finishAwardResultVO"] || resData[@"receiveAwardResultVO"] || resData[@"awardResultVO"] || resData[@"finishVO"] || isSignResp || [opType containsString:@"antiep"] || [opType containsString:@"queryTaskList"] || [opType containsString:@"queryCommonSign"] || [opType containsString:@"finishTask"] || [opType containsString:@"receiveTaskAward"] || [opType containsString:@"draw"] || [opType containsString:@"exchangeVitality"] || [resData[@"code"] isEqualToString:@"400000040"] || [resData[@"code"] isEqualToString:@"400000004"] || [resData[@"code"] isEqualToString:@"400000030"] || [resData[@"code"] isEqualToString:@"B000000008"] || [resData[@"desc"] containsString:@"不支持rpc调用"] || [resData[@"desc"] containsString:@"无法领取"] || [dict[@"error"] integerValue] == 3000) {
                     [self handleVitalityTaskListResponse:dict];
                 }
@@ -7145,12 +7146,18 @@ static BOOL oceanPlanLoggedThisRound = NO;
                 NSNumber *canCollectEnergy = [myDict objectForKey:@"canCollectEnergy"];
                 [self recordStage:[NSString stringWithFormat:@"诊断 · 本人能量状态：%@", [canCollectEnergy isEqualToNumber:@1] ? @"可收" : @"暂无成熟能量"]];
             }
+            NSString *rankRespId = [dict objectForKey:@"responseId"] ?: [dict objectForKey:@"callbackId"];
+            BOOL isOurSilentRank = NO;
+            if (rankRespId.length) {
+                isOurSilentRank = [rankRespId containsString:@"af_silent_rank"] ||
+                                  (self.lastSilentRankCallbackId.length && [rankRespId isEqualToString:self.lastSilentRankCallbackId]);
+            }
             if(resData && (resData[@"friendRanking"] || resData[@"totalDatas"])) {
                 NSArray *rankArr = [resData[@"friendRanking"] isKindOfClass:NSArray.class] ? resData[@"friendRanking"] : resData[@"totalDatas"];
                 NSUInteger collectable = 0;
                 for (NSDictionary *dictRank in rankArr) if ([[dictRank objectForKey:@"canCollectEnergy"] isEqualToNumber:@1]) collectable++;
                 [self recordStage:[NSString stringWithFormat:@"诊断 · 排行榜校验回包：%lu 位，可收 %lu 位", (unsigned long)rankArr.count, (unsigned long)collectable]];
-                if (self.isScanRunning) {
+                if (self.isScanRunning && isOurSilentRank) {
                     for(NSDictionary *dictRank in rankArr) {
                         NSString *userId = [AntForestManager extractUserIdFromDictionary:dictRank] ?: [dictRank objectForKey:@"userId"];
                         if (!userId.length) continue;
@@ -7169,6 +7176,8 @@ static BOOL oceanPlanLoggedThisRound = NO;
                             }
                         }
                     }
+                } else if (!isOurSilentRank) {
+                    [self recordStage:@"诊断 · 捕获用户手动榜单交互回包，保持前端视图独立，跳过后台好友气泡并发查询"];
                 }
             }
             //匹配排行
@@ -7180,7 +7189,7 @@ static BOOL oceanPlanLoggedThisRound = NO;
                 for(NSDictionary *dictTotalRank in rankTotalArr) {
                     NSString *userId = [AntForestManager extractUserIdFromDictionary:dictTotalRank] ?: [dictTotalRank objectForKey:@"userId"];
                     if (!userId.length) continue;
-                    if (self.isScanRunning && canReviveFriendBubble(dictTotalRank)) {
+                    if (self.isScanRunning && isOurSilentRank && canReviveFriendBubble(dictTotalRank)) {
                         [self queueAutoReviveForUser:userId];
                     }
                     NSString *rank = [dictTotalRank objectForKey:@"rank"];
@@ -7208,16 +7217,7 @@ static BOOL oceanPlanLoggedThisRound = NO;
                         [[NSUserDefaults standardUserDefaults] synchronize];
                     }
                 }
-                if (self.enableCleanOcean && fr.allKeys.count > 0 && oceanQueue.count == 0 && !oceanRunning) {
-                    [self scanOceanForFriends:fr.allKeys];
-                }
                 if (self.isScanRunning) {
-                    NSString *respId = [dict objectForKey:@"responseId"] ?: [dict objectForKey:@"callbackId"];
-                    BOOL isOurSilentRank = NO;
-                    if (respId.length) {
-                        isOurSilentRank = [respId containsString:@"af_silent_rank"] ||
-                                          (self.lastSilentRankCallbackId.length && [respId isEqualToString:self.lastSilentRankCallbackId]);
-                    }
                     if (isOurSilentRank) {
                         self.lastSilentRankCallbackId = nil;
                         if (self.enableCleanOcean && fr.allKeys.count > 0) {

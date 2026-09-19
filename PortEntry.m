@@ -252,7 +252,8 @@ static BOOL isForestResponse(id value) {
     NSDictionary *data = [response[@"resData"] isKindOfClass:NSDictionary.class] ? response[@"resData"] : nil;
     BOOL hasBubbles = (response[@"bubbles"] || response[@"wateringBubbles"] || data[@"bubbles"] || data[@"wateringBubbles"]);
     BOOL hasUser = (response[@"userBaseInfo"] || response[@"loginUserBaseInfo"] || response[@"userEnergy"] || data[@"userBaseInfo"] || data[@"loginUserBaseInfo"] || data[@"userEnergy"] || data[@"combineHandlerVOMap"]);
-    return (hasBubbles && hasUser) || data[@"totalDatas"] || data[@"friendRanking"] || data[@"myself"] || data[@"friendId"] || data[@"combineHandlerVOMap"];
+    BOOL isPkOrSeason = (data[@"currentSeasonInfo"] || response[@"currentSeasonInfo"] || data[@"seasonInfo"] || response[@"seasonInfo"] || data[@"pkRanking"] || response[@"pkRanking"] || data[@"pkRankList"] || response[@"pkRankList"] || data[@"pkDatas"] || response[@"pkDatas"] || data[@"challengeRank"] || response[@"challengeRank"] || data[@"userPkInfo"] || response[@"userPkInfo"]);
+    return (hasBubbles && hasUser) || data[@"totalDatas"] || data[@"friendRanking"] || data[@"myself"] || data[@"friendId"] || data[@"combineHandlerVOMap"] || isPkOrSeason;
 }
 
 static BOOL isMyHomeResponse(id value, AntForestManager *manager) {
@@ -2733,9 +2734,9 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
             }
         }
         NSArray *taskInfoList = [resData[@"taskInfoList"] isKindOfClass:NSArray.class] ? resData[@"taskInfoList"] : ([dict[@"taskInfoList"] isKindOfClass:NSArray.class] ? dict[@"taskInfoList"] : nil);
-        if (resData[@"forestTasksNew"] || taskInfoList || resData[@"drawAsset"] || resData[@"drawEntranceVO"] || resData[@"drawActivity"] || resData[@"drawPrize"] || resData[@"drawPrizes"] || [dict[@"currentSeasonInfo"] isKindOfClass:NSDictionary.class]) {
+        if (resData[@"forestTasksNew"] || taskInfoList || resData[@"drawAsset"] || resData[@"drawEntranceVO"] || resData[@"drawActivity"] || resData[@"drawPrize"] || resData[@"drawPrizes"]) {
             BOOL isMonopoly = (manager.monopolyBridge == self);
-            BOOL isAIFish = (manager.aiFishBridge == self) || [dict[@"currentSeasonInfo"] isKindOfClass:NSDictionary.class];
+            BOOL isAIFish = (manager.aiFishBridge == self && self != manager.jsBridge);
             BOOL isOcean = (manager.oceanBridge == self);
             BOOL isFarm = (manager.farmBridge == self);
             BOOL isLottery = (manager.lotteryBridge == self);
@@ -2745,7 +2746,9 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
                     if ([sc containsString:@"MONOPOLY"] || [sc containsString:@"HSDWY"]) {
                         isMonopoly = YES;
                     } else if ([sc containsString:@"AIFISH"]) {
-                        isAIFish = YES;
+                        if (!isForest && self != manager.jsBridge) {
+                            isAIFish = YES;
+                        }
                     } else if ([sc containsString:@"OCEAN"]) {
                         isOcean = YES;
                     } else if ([sc containsString:@"FARM"] || [sc containsString:@"ORCHARD"] || [sc isEqualToString:@"10021"] || [sc isEqualToString:@"3646"] || [sc hasPrefix:@"BABA_"]) {
@@ -2768,7 +2771,7 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
                 }
                 manager.monopolyDrawerOpened = YES;
             }
-            if (isAIFish) {
+            if (isAIFish && !isForest && self != manager.jsBridge) {
                 manager.aiFishBridge = self;
             }
             if (isOcean && !isForest && self != manager.jsBridge) {
@@ -2780,7 +2783,7 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
             if (isLottery) {
                 manager.lotteryBridge = self;
             }
-            if (!isMonopoly && !isAIFish && !isOcean && !isFarm && !isLottery && !isManor && !isForest) {
+            if (!isMonopoly && !isAIFish && !isOcean && !isFarm && !isLottery && !isManor && !isForest && self != manager.jsBridge) {
                 if (manager.rewardTaskBridge != self) {
                     manager.rewardTaskBridge = self;
                 }
