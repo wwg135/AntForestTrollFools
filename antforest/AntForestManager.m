@@ -6032,11 +6032,11 @@ static const NSUInteger kOceanMaxCleanPerRound = 5;
     
     [self cleanFriendsOcean:nextUid];
     
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         if (oceanRunning && token == oceanRequestToken) {
             oceanRunning = NO;
             oceanCurrentUserId = nil;
-            double delaySec = 1.0 + (arc4random_uniform(1000) / 1000.0);
+            double delaySec = 0.5 + (arc4random_uniform(500) / 1000.0);
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delaySec * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 if (self.enableCleanOcean) [self oceanSendNext];
             });
@@ -6178,6 +6178,9 @@ static BOOL oceanPlanLoggedThisRound = NO;
         self.isScanRunning = YES;
         oceanCleanedInCurrentRound = 0;
         oceanPlanLoggedThisRound = NO;
+        oceanRunning = NO;
+        oceanCurrentUserId = nil;
+        oceanRequestToken++;
         lastCollectStartedAt = NSDate.date;
         collectionCycle++;
         self.lastRankFetchedIndex = 0;
@@ -6545,9 +6548,24 @@ static BOOL oceanPlanLoggedThisRound = NO;
                     return;
                 }
                 NSArray *rewards = resData[@"cleanRewardVOS"];
-                NSString *cleanedUid = resData[@"cleanedUserId"] ?: resData[@"userId"] ?: dict[@"cleanedUserId"] ?: oceanCurrentUserId ?: self.lastCleanedOceanUserId;
+                NSString *cleanedUid = nil;
+                if (oceanCurrentUserId.length > 0) {
+                    cleanedUid = oceanCurrentUserId;
+                } else if ([resData[@"cleanedUserId"] isKindOfClass:NSString.class] && [resData[@"cleanedUserId"] length] > 0) {
+                    cleanedUid = resData[@"cleanedUserId"];
+                } else if ([dict[@"cleanedUserId"] isKindOfClass:NSString.class] && [dict[@"cleanedUserId"] length] > 0) {
+                    cleanedUid = dict[@"cleanedUserId"];
+                } else if (self.lastCleanedOceanUserId.length > 0 && ![self.lastCleanedOceanUserId isEqualToString:self.myUserId]) {
+                    cleanedUid = self.lastCleanedOceanUserId;
+                } else if ([resData[@"userId"] isKindOfClass:NSString.class] && [resData[@"userId"] length] > 0) {
+                    cleanedUid = resData[@"userId"];
+                }
                 self.lastCleanedOceanUserId = nil;
-                BOOL isSelfOcean = !cleanedUid.length || [cleanedUid isEqualToString:self.myUserId];
+                BOOL isSelfOcean = (!cleanedUid.length || [cleanedUid isEqualToString:self.myUserId]);
+                if (oceanCurrentUserId.length > 0 && ![oceanCurrentUserId isEqualToString:self.myUserId]) {
+                    cleanedUid = oceanCurrentUserId;
+                    isSelfOcean = NO;
+                }
                 if ([rewards isKindOfClass:NSArray.class] && rewards.count > 0) {
                     NSString *targetName = @"自己";
                     NSInteger currentCleanedCount = 0;
@@ -6619,6 +6637,14 @@ static BOOL oceanPlanLoggedThisRound = NO;
                         });
                     }
                 }
+            }
+            if (!resData && isOceanCleanResp && oceanRunning && oceanCurrentUserId.length > 0) {
+                oceanRunning = NO;
+                oceanCurrentUserId = nil;
+                oceanRequestToken++;
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    if (self.enableCleanOcean) [self oceanSendNext];
+                });
             }
             NSArray *list = nil;
             if ([resData isKindOfClass:NSDictionary.class]) {
