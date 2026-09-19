@@ -112,7 +112,25 @@ CHOptimizedMethod(0, self, void, H5WebViewController, viewDidLoad) {
             NSArray *retrievedDict3 = [NSKeyedUnarchiver unarchivedObjectOfClass:[NSArray class] fromData:storedData3 error:nil];
             afm.logRecord = [retrievedDict3 mutableCopy];
         }
-        afm.friendsRank = [NSMutableDictionary dictionary]; //必须要初始化 否则设置不成功
+        if (!afm.friendsRank.count) {
+            NSData *storedRank = [[NSUserDefaults standardUserDefaults] objectForKey:@"cachedFriendsRank"];
+            if (storedRank) {
+                @try {
+                    NSError *err = nil;
+                    NSSet *classes = [NSSet setWithArray:@[NSDictionary.class, NSString.class, NSNumber.class]];
+                    NSDictionary *dict = [NSKeyedUnarchiver unarchivedObjectOfClasses:classes fromData:storedRank error:&err];
+                    if (!dict) {
+                        dict = [NSKeyedUnarchiver unarchiveObjectWithData:storedRank];
+                    }
+                    if ([dict isKindOfClass:NSDictionary.class] && dict.count) {
+                        afm.friendsRank = [dict mutableCopy];
+                    }
+                } @catch (__unused NSException *e) {}
+            }
+            if (!afm.friendsRank) {
+                afm.friendsRank = [NSMutableDictionary dictionary];
+            }
+        }
         afm.totalCollectedEnergy =[[NSUserDefaults standardUserDefaults] integerForKey:@"totalCollectedEnergy"];
         afm.enableAutoCollect = [[NSUserDefaults standardUserDefaults] boolForKey:@"enableAutoCollect"];
         afm.failedTimes = 0;

@@ -2316,6 +2316,10 @@ static void portViewDidAppear(id self, SEL _cmd, BOOL animated) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(800 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
                 [manager cleanMyOceanThoroughly];
                 [manager queryOceanFriendList];
+                NSMutableOrderedSet *candidateFriends = [NSMutableOrderedSet orderedSet];
+                if (manager.friendsRank.allKeys.count) [candidateFriends addObjectsFromArray:manager.friendsRank.allKeys];
+                if (manager.friendsName.allKeys.count) [candidateFriends addObjectsFromArray:manager.friendsName.allKeys];
+                if (candidateFriends.count) [manager scanOceanForFriends:candidateFriends.array];
             });
         }
     }

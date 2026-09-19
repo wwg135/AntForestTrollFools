@@ -1522,18 +1522,18 @@ static NSMutableDictionary *friendOceanCleanCounts = nil;
         });
     }
     
-    // 双保险：若已有好友排行榜缓存，直接将候选好友加入海洋清理队列，杜绝因 queryFriendList 延迟或跨域导致不拾取好友垃圾
+    // 双保险：若已有好友排行榜或好友名称缓存，直接将候选好友加入海洋清理队列，杜绝因 queryFriendList 延迟或跨域导致不拾取好友垃圾
     NSMutableDictionary *fr = self.friendsRank;
-    if (!fr.count) {
-        NSData *data = [[NSUserDefaults standardUserDefaults] objectForKey:@"cachedFriendsRank"];
-        if (data) {
-            NSDictionary *cached = [NSKeyedUnarchiver unarchiveObjectWithData:data];
-            if ([cached isKindOfClass:NSDictionary.class] && cached.count) {
-                fr = [cached mutableCopy];
-            }
-        }
-    }
+    NSMutableOrderedSet<NSString *> *allCandidates = [NSMutableOrderedSet orderedSet];
     if (fr.allKeys.count > 0) {
+        [allCandidates addObjectsFromArray:fr.allKeys];
+    }
+    if (self.friendsName.allKeys.count > 0) {
+        [allCandidates addObjectsFromArray:self.friendsName.allKeys];
+    }
+    if (allCandidates.count > 0) {
+        [self scanOceanForFriends:allCandidates.array];
+    } else if (fr.allKeys.count > 0) {
         [self scanOceanForFriends:fr.allKeys];
     }
 }
@@ -5033,6 +5033,64 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
     [self executeManorTaskProcessScript];
 }
 
+@synthesize friendsRank = _friendsRank;
+
+- (NSMutableDictionary *)friendsRank {
+    if (!_friendsRank || !_friendsRank.count) {
+        if (!_friendsRank) {
+            _friendsRank = [NSMutableDictionary dictionary];
+        }
+        NSData *data = [[NSUserDefaults standardUserDefaults] objectForKey:@"cachedFriendsRank"];
+        if (data) {
+            @try {
+                NSError *error = nil;
+                NSSet *classes = [NSSet setWithArray:@[NSDictionary.class, NSString.class, NSNumber.class]];
+                NSDictionary *cached = [NSKeyedUnarchiver unarchivedObjectOfClasses:classes fromData:data error:&error];
+                if (!cached) {
+                    cached = [NSKeyedUnarchiver unarchiveObjectWithData:data];
+                }
+                if ([cached isKindOfClass:NSDictionary.class] && cached.count) {
+                    [_friendsRank addEntriesFromDictionary:cached];
+                }
+            } @catch (__unused NSException *e) {}
+        }
+    }
+    return _friendsRank;
+}
+
+- (void)setFriendsRank:(NSMutableDictionary *)friendsRank {
+    _friendsRank = friendsRank ?: [NSMutableDictionary dictionary];
+}
+
+@synthesize friendsName = _friendsName;
+
+- (NSMutableDictionary *)friendsName {
+    if (!_friendsName || !_friendsName.count) {
+        if (!_friendsName) {
+            _friendsName = [NSMutableDictionary dictionary];
+        }
+        NSData *data = [[NSUserDefaults standardUserDefaults] objectForKey:@"friendsName"];
+        if (data) {
+            @try {
+                NSError *error = nil;
+                NSSet *classes = [NSSet setWithArray:@[NSDictionary.class, NSArray.class, NSString.class, NSNumber.class]];
+                NSDictionary *cached = [NSKeyedUnarchiver unarchivedObjectOfClasses:classes fromData:data error:&error];
+                if (!cached) {
+                    cached = [NSKeyedUnarchiver unarchiveObjectWithData:data];
+                }
+                if ([cached isKindOfClass:NSDictionary.class] && cached.count) {
+                    [_friendsName addEntriesFromDictionary:cached];
+                }
+            } @catch (__unused NSException *e) {}
+        }
+    }
+    return _friendsName;
+}
+
+- (void)setFriendsName:(NSMutableDictionary *)friendsName {
+    _friendsName = friendsName ?: [NSMutableDictionary dictionary];
+}
+
 @synthesize myUserId = _myUserId;
 
 - (NSString *)myUserId {
@@ -6109,8 +6167,8 @@ static BOOL oceanPlanLoggedThisRound = NO;
 // 每隔300秒一次
 -(void)autoCollectBubbles {
     @try {
-        if (!self.enableAutoCollect || !self.jsBridge) {
-            [self recordStage:[NSString stringWithFormat:@"诊断 · 收取未启动：自动收取=%d，桥接=%d", self.enableAutoCollect, self.jsBridge != nil]];
+        if (!self.enableAutoCollect || (!self.jsBridge && !self.oceanBridge)) {
+            [self recordStage:[NSString stringWithFormat:@"诊断 · 收取未启动：自动收取=%d，森林桥接=%d，海洋桥接=%d", self.enableAutoCollect, self.jsBridge != nil, self.oceanBridge != nil]];
             return;
         }
         if (self.isScanRunning) {
@@ -6129,7 +6187,7 @@ static BOOL oceanPlanLoggedThisRound = NO;
             if (gFarmTaskRetryCounts) [gFarmTaskRetryCounts removeAllObjects];
         }
         NSUInteger cycle = collectionCycle;
-        selfPriorityPending = self.enableSelfCollect;
+        selfPriorityPending = self.enableSelfCollect && (self.jsBridge != nil);
         selfPriorityCycle = cycle;
         [deferredFriendRankIds removeAllObjects];
         deferredRankedFriendIds = nil;
@@ -6137,7 +6195,7 @@ static BOOL oceanPlanLoggedThisRound = NO;
         @synchronized (self) { [pendingCollectBubbles removeAllObjects]; }
         [shieldReportedFriendsInRound removeAllObjects];
         [self recordStage:@"本轮扫描开始"];
-        if (self.enableSelfCollect) {
+        if (self.enableSelfCollect && self.jsBridge) {
             dispatch_async(globalSerialQueueQuery, ^{
                 [[AntForestManager sharedInstance] queryMyBubbles];
             });
@@ -6146,27 +6204,45 @@ static BOOL oceanPlanLoggedThisRound = NO;
             [self cleanMyOceanThoroughly];
             [self queryOceanFriendList];
         }
+        if (self.enableAutoOceanTasks && self.oceanBridge) {
+            [self queryOceanTaskListWithForce:NO];
+        }
         if (self.enableAutoRewardTasks) {
             [self queryVitalityTaskList];
         }
+        
+        static NSDate *lastRankFetchedDate = nil;
         BOOL isAppInBackground = ([UIApplication sharedApplication].applicationState != UIApplicationStateActive);
-        if (self.enableAutoRevive && reviveDailyCount() < 6 && isAppInBackground) {
-            // 仅在后台循环中发起全量好友过期能量扫描，避免前台首页并发干扰用户交互
+        BOOL needsRankFetch = (self.friendsRank.count == 0) ||
+                              (self.enableAutoRevive && reviveDailyCount() < 6 && isAppInBackground) ||
+                              (!lastRankFetchedDate || [[NSDate date] timeIntervalSinceDate:lastRankFetchedDate] > 600);
+        if (self.enableAutoCollect && needsRankFetch && self.jsBridge) {
+            lastRankFetchedDate = [NSDate date];
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2500 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
-                if (self.enableAutoCollect && self.enableAutoRevive && cycle == collectionCycle && self.isScanRunning) {
+                if (self.enableAutoCollect && cycle == collectionCycle && self.isScanRunning) {
                     [self queryTotalRank];
                 }
             });
         }
-        if (selfPriorityPending) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                [self releaseSelfPriorityForCycle:cycle reason:@"本人首页回包超时"];
-            });
+        if (self.jsBridge) {
+            if (selfPriorityPending) {
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    [self releaseSelfPriorityForCycle:cycle reason:@"本人首页回包超时"];
+                });
+            } else {
+                // 未开启本人收取时，延迟 800ms 直接转入找能量巡检
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(800 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+                    if (self.enableAutoCollect && cycle == collectionCycle && self.isScanRunning) {
+                        [self startTakeLookContinuation];
+                    }
+                });
+            }
         } else {
-            // 未开启本人收取时，延迟 800ms 直接转入找能量巡检
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(800 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
-                if (self.enableAutoCollect && cycle == collectionCycle && self.isScanRunning) {
-                    [self startTakeLookContinuation];
+            // 当前停留在非森林页面（如神奇海洋页面），无森林首页桥接，完成海洋轮次后自动释放
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                if (self.isScanRunning && cycle == collectionCycle) {
+                    self.isScanRunning = NO;
+                    [self recordStage:@"本轮海洋扫描完成"];
                 }
             });
         }
@@ -7240,6 +7316,13 @@ static BOOL oceanPlanLoggedThisRound = NO;
                     } else {
                         // 用户手动在 H5 榜单点击（如日榜、周榜、黄金PK榜、收我最多榜等）：保持前端视图独立，绝不触发后台自动翻页覆盖！
                         [self recordStage:@"诊断 · 捕获用户手动榜单交互回包，保持前端视图独立，跳过自动翻页覆盖"];
+                        if (self.enableCleanOcean && fr.allKeys.count > 0) {
+                            [self scanOceanForFriends:fr.allKeys];
+                        }
+                    }
+                } else {
+                    if (self.enableCleanOcean && fr.allKeys.count > 0) {
+                        [self scanOceanForFriends:fr.allKeys];
                     }
                 }
             }
