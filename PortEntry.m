@@ -2311,6 +2311,12 @@ static void portViewDidAppear(id self, SEL _cmd, BOOL animated) {
                 [manager queryOceanTaskListWithForce:YES];
             });
         }
+        if (manager.enableCleanOcean) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(800 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+                [manager cleanMyOceanThoroughly];
+                [manager queryOceanFriendList];
+            });
+        }
     }
     if (isAIFishURL(url)) {
         id bridge = rewardBridgeFromController(self) ?: forestBridgeFromController(self);
