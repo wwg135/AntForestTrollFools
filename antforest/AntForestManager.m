@@ -3632,13 +3632,13 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
         
         // 2. 收集任务列表
         NSMutableArray<NSDictionary *> *allTaskList = [NSMutableArray array];
-        NSArray *candidateGroupKeys = @[@"forestTasksNew", @"stageTaskList", @"stageInfoList", @"stagePrizeList", @"stageAwards", @"accumulateTasks", @"ladderTasks", @"taskGroupList", @"forestTasks", @"taskList"];
+        NSArray *candidateGroupKeys = @[@"forestTasksNew", @"stageTaskList", @"stageInfoList", @"stagePrizeList", @"stageAwards", @"accumulateTasks", @"ladderTasks", @"taskGroupList", @"forestTasks", @"challengeTasks", @"challengeTaskList", @"pkTaskList", @"pkTasks", @"subTaskList", @"taskList"];
         for (NSString *key in candidateGroupKeys) {
             NSArray *arr = [data[key] isKindOfClass:NSArray.class] ? data[key] : nil;
             if (arr.count > 0) {
                 for (id g in arr) {
                     if ([g isKindOfClass:NSDictionary.class]) {
-                        NSArray *subList = g[@"taskInfoList"] ?: g[@"taskList"] ?: g[@"subTaskList"];
+                        NSArray *subList = g[@"taskInfoList"] ?: g[@"taskList"] ?: g[@"subTaskList"] ?: g[@"tasks"];
                         if ([subList isKindOfClass:NSArray.class]) [allTaskList addObjectsFromArray:subList];
                         else if (g[@"taskBaseInfo"] || g[@"taskType"] || g[@"taskId"]) [allTaskList addObject:g];
                     }
@@ -6770,9 +6770,9 @@ static BOOL oceanPlanLoggedThisRound = NO;
             NSString *signStr = [dict[@"data"] isKindOfClass:NSString.class] ? dict[@"data"] : ([resData[@"data"] isKindOfClass:NSString.class] ? resData[@"data"] : nil);
             BOOL isSignDateStr = (signStr.length >= 8 && signStr.length <= 15 && [signStr containsString:@"-"]);
             BOOL isSignResp = (([opType containsString:@"antiep.sign"] || [self.lastRpcOperationType containsString:@"antiep.sign"]) && isSignDateStr);
-            BOOL isPkOrSeasonContext = (resData[@"currentSeasonInfo"] || dict[@"currentSeasonInfo"] || resData[@"seasonInfo"] || dict[@"seasonInfo"] || resData[@"pkRanking"] || dict[@"pkRanking"] || resData[@"pkRankList"] || dict[@"pkRankList"] || resData[@"challengeRank"] || dict[@"challengeRank"] || resData[@"userPkInfo"] || dict[@"userPkInfo"]);
-            BOOL hasExplicitVitalitySign = (resData[@"forestTasksNew"] || resData[@"energySignVO"] || resData[@"forestSignVOList"] || dict[@"forestSignVOList"] || resData[@"forestSignVO"] || dict[@"forestSignVO"] || resData[@"signModel"] || dict[@"signModel"]);
-            if (![AntForestManager isManorResponse:args] && ![opType containsString:@"antocean"] && (!isPkOrSeasonContext || hasExplicitVitalitySign)) {
+            BOOL isPurePkRankRpc = ([opType containsString:@"queryPk"] || [opType containsString:@"pkRank"] || [opType containsString:@"Ranking"]) && !taskInfoList && !resData[@"taskList"] && !dict[@"taskList"] && ![opType containsString:@"antiep"] && ![opType containsString:@"queryTaskList"] && ![opType containsString:@"queryCommonSign"];
+            BOOL hasTaskOrSignPayload = (taskInfoList.count > 0 || resData[@"taskList"] || dict[@"taskList"] || resData[@"forestTasksNew"] || resData[@"energySignVO"] || resData[@"forestSignVOList"] || dict[@"forestSignVOList"] || resData[@"forestSignVO"] || dict[@"forestSignVO"] || resData[@"signModel"] || dict[@"signModel"] || [opType containsString:@"antiep"] || [opType containsString:@"queryTaskList"] || [opType containsString:@"queryCommonSign"] || [opType containsString:@"finishTask"] || [opType containsString:@"receiveTaskAward"]);
+            if (![AntForestManager isManorResponse:args] && ![opType containsString:@"antocean"] && (!isPurePkRankRpc || hasTaskOrSignPayload)) {
                 if (resData[@"forestTasksNew"] || resData[@"energySignVO"] || resData[@"forestSignVOList"] || dict[@"forestSignVOList"] || resData[@"forestSignVO"] || dict[@"forestSignVO"] || resData[@"signModel"] || dict[@"signModel"] || taskInfoList || resData[@"taskList"] || dict[@"taskList"] || resData[@"drawAsset"] || resData[@"drawEntranceVO"] || resData[@"drawActivity"] || resData[@"drawPrize"] || resData[@"drawPrizes"] || resData[@"finishAwardResultVO"] || resData[@"receiveAwardResultVO"] || resData[@"awardResultVO"] || resData[@"finishVO"] || isSignResp || [opType containsString:@"antiep"] || [opType containsString:@"queryTaskList"] || [opType containsString:@"queryCommonSign"] || [opType containsString:@"finishTask"] || [opType containsString:@"receiveTaskAward"] || [opType containsString:@"draw"] || [opType containsString:@"exchangeVitality"] || [resData[@"code"] isEqualToString:@"400000040"] || [resData[@"code"] isEqualToString:@"400000004"] || [resData[@"code"] isEqualToString:@"400000030"] || [resData[@"code"] isEqualToString:@"B000000008"] || [resData[@"desc"] containsString:@"不支持rpc调用"] || [resData[@"desc"] containsString:@"无法领取"] || [dict[@"error"] integerValue] == 3000) {
                     [self handleVitalityTaskListResponse:dict];
                 }
