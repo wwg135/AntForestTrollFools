@@ -33,7 +33,7 @@ grep -Fq 'scanOceanForFriends:fr.allKeys' "$source_file"
 grep -Fq 'cleanFriendOcean' "$entry_file"
 grep -Fq 'lastCleanedOceanUserId' "$entry_file"
 
-grep -Fq 'AntForestPort-Ocean.dylib' "$makefile"
-grep -Fq 'AntForestPort-Ocean-iOS14.dylib' "$makefile"
+grep -Fq '$(VERSION)-beta.dylib' "$makefile"
+grep -Fq '$(VERSION)-beta-iOS14.dylib' "$makefile"
 
 echo "✅ All Ocean automation checks passed successfully!"

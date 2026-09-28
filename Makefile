@@ -1,30 +1,14 @@
 SDK := $(shell xcrun --sdk iphoneos --show-sdk-path)
 CLANG := $(shell xcrun --sdk iphoneos --find clang)
 LIPO := $(shell xcrun --sdk iphoneos --find lipo)
-TARGET := build/AntForestPort-Ocean.dylib
-IOS14_TARGET := build/AntForestPort-Ocean-iOS14.dylib
-ARM64_TARGET := build/AntForestPort-arm64.dylib
-V32_TARGET := build/AntForestPort-v3.2-beta.dylib
-V32_IOS14_TARGET := build/AntForestPort-v3.2-beta-iOS14.dylib
-V321_TARGET := build/AntForestPort-v3.2-1-beta.dylib
-V321_IOS14_TARGET := build/AntForestPort-v3.2-1-beta-iOS14.dylib
-V322_TARGET := build/AntForestPort-v3.2-2-beta.dylib
-V322_IOS14_TARGET := build/AntForestPort-v3.2-2-beta-iOS14.dylib
-V323_TARGET := build/AntForestPort-v3.2-3-beta.dylib
-V323_IOS14_TARGET := build/AntForestPort-v3.2-3-beta-iOS14.dylib
+VERSION := v3.2-3
+TARGET := build/AntForestPort-$(VERSION)-beta.dylib
+IOS14_TARGET := build/AntForestPort-$(VERSION)-beta-iOS14.dylib
 SOURCES := PortEntry.m antforest/AntForestManager.m antforest/StepSimulator.m antforest/DebugTool/Tool.m antforest/DebugTool/UIView+Toast.m
 
 .PHONY: all clean test ios14
 
 all: $(TARGET) $(IOS14_TARGET)
-	@cp -f $(TARGET) $(V32_TARGET)
-	@cp -f $(IOS14_TARGET) $(V32_IOS14_TARGET)
-	@cp -f $(TARGET) $(V321_TARGET)
-	@cp -f $(IOS14_TARGET) $(V321_IOS14_TARGET)
-	@cp -f $(TARGET) $(V322_TARGET)
-	@cp -f $(IOS14_TARGET) $(V322_IOS14_TARGET)
-	@cp -f $(TARGET) $(V323_TARGET)
-	@cp -f $(IOS14_TARGET) $(V323_IOS14_TARGET)
 
 test:
 	sh tests/check_water_gift_recheck.sh

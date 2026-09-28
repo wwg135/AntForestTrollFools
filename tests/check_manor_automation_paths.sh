@@ -69,7 +69,7 @@ grep -Fq 'handleManorResponse:' "$entry_file"
 grep -Fq 'ManorProbe-RPC-REQ' "$entry_file"
 
 echo "[4/4] Checking dylib build outputs..."
-test -f "$(dirname "$0")/../build/AntForestPort-Ocean.dylib"
-test -f "$(dirname "$0")/../build/AntForestPort-Ocean-iOS14.dylib"
+test -n "$(ls "$(dirname "$0")/../build"/AntForestPort-*-beta.dylib 2>/dev/null)"
+test -n "$(ls "$(dirname "$0")/../build"/AntForestPort-*-beta-iOS14.dylib 2>/dev/null)"
 
 echo "✅ All Manor automation checks passed successfully!"
