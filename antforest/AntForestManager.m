@@ -63,6 +63,13 @@ static NSMutableSet<NSString *> *todayCollectedAnimalKeys = nil;
 static NSMutableDictionary<NSString *, NSNumber *> *lastAnimalCollectAttemptTimes = nil;
 static NSMutableSet<NSString *> *shieldReportedFriendsInRound = nil;
 
+// 活跃时间窗口：00:00 ~ 06:59:59 凌晨静默期（任务做任务、好友过期复活、海洋垃圾清理等静默等待早7点，保护阶梯奖励与风控安全）；07:00 ~ 23:59:59 活跃期
+static BOOL isWithinTaskActiveHours(void) {
+    NSCalendar *calendar = [NSCalendar currentCalendar];
+    NSInteger hour = [calendar component:NSCalendarUnitHour fromDate:[NSDate date]];
+    return (hour >= 7);
+}
+
 // 定义一个全局串行队列
 dispatch_queue_t globalSerialQueueQuery;
 dispatch_queue_t globalSerialQueueCollect;
@@ -352,6 +359,12 @@ static NSInteger reviveDailyCount(void) {
 }
 
 - (void)reviveSendNext {
+    if (!isWithinTaskActiveHours()) {
+        reviveRunning = NO;
+        reviveCurrentUserId = nil;
+        [reviveQueue removeAllObjects];
+        return;
+    }
     if (!self.enableAutoRevive || !self.jsBridge) {
         if (reviveRunning) [self reviveStopWithReason:@"任务已停止或桥接不可用"];
         return;
@@ -384,6 +397,7 @@ static NSInteger reviveDailyCount(void) {
 }
 
 - (void)queueAutoReviveForUser:(NSString *)userId {
+    if (!isWithinTaskActiveHours()) return;
     if (!self.enableAutoRevive || !userId.length || [userId isEqualToString:self.myUserId]) return;
     if (reviveDailyCount() >= 6) return;
     if (reviveRunning && [reviveCurrentUserId isEqualToString:userId]) return;
@@ -1021,13 +1035,6 @@ NSString* getCurrentDateTimeString() {
     return [formatter stringFromDate:currentDate];
 }
 
-// 任务活跃时间窗口：00:00 ~ 06:59:59 凌晨静默期（不做任务，静默等待早7点，保护阶梯奖励与风控安全）；07:00 ~ 23:59:59 活跃期
-static BOOL isWithinTaskActiveHours(void) {
-    NSCalendar *calendar = [NSCalendar currentCalendar];
-    NSInteger hour = [calendar component:NSCalendarUnitHour fromDate:[NSDate date]];
-    return (hour >= 7);
-}
-
 
 +(NSString*)getNumberRandom:(int)count
 {
@@ -1458,6 +1465,7 @@ static NSInteger myOceanCleanCount = 0;
 static NSMutableDictionary *friendOceanCleanCounts = nil;
 
 -(void)cleanMyOceanThoroughly {
+    if (!isWithinTaskActiveHours()) return;
     if (!self.enableCleanOcean || (!self.jsBridge && !self.oceanBridge)) return;
     myOceanCleanCount = 0;
     [self cleanMyOcean];
@@ -1465,6 +1473,7 @@ static NSMutableDictionary *friendOceanCleanCounts = nil;
 
 //清理自己的海域
 -(void)cleanMyOcean{
+    if (!isWithinTaskActiveHours()) return;
     if (!self.myUserId.length) return;
     self.lastCleanedOceanUserId = self.myUserId;
     NSString *timeStamp = [NSString stringWithFormat:@"%ld",(long)[[NSDate  date] timeIntervalSince1970]*1000];
@@ -1484,6 +1493,7 @@ static NSMutableDictionary *friendOceanCleanCounts = nil;
 
 //清理朋友的海域
 -(void)cleanFriendsOcean:(NSString*)uid{
+    if (!isWithinTaskActiveHours()) return;
     if (!uid.length) return;
     self.lastCleanedOceanUserId = uid;
     NSString *timeStamp = [NSString stringWithFormat:@"%ld",(long)[[NSDate  date] timeIntervalSince1970]*1000];
@@ -1504,6 +1514,15 @@ static NSMutableDictionary *friendOceanCleanCounts = nil;
 }
 
 -(void)queryOceanFriendList {
+    if (!isWithinTaskActiveHours()) {
+        static NSTimeInterval sLastSilentOceanLog = 0;
+        NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+        if (now - sLastSilentOceanLog > 1800.0) {
+            sLastSilentOceanLog = now;
+            [self recordStage:@"神奇海洋：当前处于凌晨静默期（00:00~07:00），海域垃圾拾取与清理等待早7点刷新后执行"];
+        }
+        return;
+    }
     if (!self.enableCleanOcean) return;
     NSString *today = getCurrentDateString();
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
@@ -6077,6 +6096,12 @@ static const NSUInteger kOceanMaxCleanPerRound = 5;
 }
 
 - (void)oceanSendNext {
+    if (!isWithinTaskActiveHours()) {
+        oceanRunning = NO;
+        oceanCurrentUserId = nil;
+        [oceanQueue removeAllObjects];
+        return;
+    }
     id bridge = self.oceanBridge ?: self.jsBridge;
     if (!self.enableCleanOcean || !bridge) {
         if (oceanRunning) [self oceanStopWithReason:@"任务已停止或桥接不可用"];
@@ -6303,7 +6328,13 @@ static BOOL oceanPlanLoggedThisRound = NO;
                 [[AntForestManager sharedInstance] queryMyBubbles];
             });
         }
-        if (self.enableCleanOcean) {
+        NSString *today = getCurrentDateString();
+        if (self.enableCleanOcean && isWithinTaskActiveHours()) {
+            static NSString *sLastDayOceanActiveHoursTriggered = nil;
+            if (![sLastDayOceanActiveHoursTriggered isEqualToString:today]) {
+                sLastDayOceanActiveHoursTriggered = today;
+                [self recordStage:@"神奇海洋：早间7点海域垃圾已刷新，正在拉取海洋好友列表与清理海域..."];
+            }
             [self cleanMyOceanThoroughly];
             [self queryOceanFriendList];
         }
@@ -6312,7 +6343,6 @@ static BOOL oceanPlanLoggedThisRound = NO;
         }
         if (self.enableAutoRewardTasks) {
             static NSString *sLastDayActiveHoursTriggered = nil;
-            NSString *today = getCurrentDateString();
             if (isWithinTaskActiveHours() && ![sLastDayActiveHoursTriggered isEqualToString:today]) {
                 sLastDayActiveHoursTriggered = today;
                 [self recordStage:@"领奖励：早间7点活跃期开启，正在刷新拉取今日全新任务与能量签到..."];
@@ -6326,7 +6356,7 @@ static BOOL oceanPlanLoggedThisRound = NO;
         static NSDate *lastRankFetchedDate = nil;
         BOOL isAppInBackground = ([UIApplication sharedApplication].applicationState != UIApplicationStateActive);
         BOOL needsRankFetch = (self.friendsRank.count == 0) ||
-                              (self.enableAutoRevive && reviveDailyCount() < 6 && isAppInBackground) ||
+                              (self.enableAutoRevive && isWithinTaskActiveHours() && reviveDailyCount() < 6 && isAppInBackground) ||
                               (!lastRankFetchedDate || [[NSDate date] timeIntervalSinceDate:lastRankFetchedDate] > 600);
         if (self.enableAutoCollect && needsRankFetch && self.jsBridge) {
             lastRankFetchedDate = [NSDate date];
