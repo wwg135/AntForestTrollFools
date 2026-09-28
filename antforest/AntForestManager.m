@@ -1021,6 +1021,13 @@ NSString* getCurrentDateTimeString() {
     return [formatter stringFromDate:currentDate];
 }
 
+// 任务活跃时间窗口：00:00 ~ 06:59:59 凌晨静默期（不做任务，静默等待早7点，保护阶梯奖励与风控安全）；07:00 ~ 23:59:59 活跃期
+static BOOL isWithinTaskActiveHours(void) {
+    NSCalendar *calendar = [NSCalendar currentCalendar];
+    NSInteger hour = [calendar component:NSCalendarUnitHour fromDate:[NSDate date]];
+    return (hour >= 7);
+}
+
 
 +(NSString*)getNumberRandom:(int)count
 {
@@ -2158,6 +2165,15 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
 }
 
 -(void)queryVitalityTaskListWithForce:(BOOL)force {
+    if (!isWithinTaskActiveHours()) {
+        static NSTimeInterval sLastSilentLogTime = 0;
+        NSTimeInterval nowTime = [[NSDate date] timeIntervalSince1970];
+        if (nowTime - sLastSilentLogTime > 1800.0) {
+            sLastSilentLogTime = nowTime;
+            [self recordStage:@"领奖励：当前处于凌晨静默期（00:00~07:00），做任务已挂起，早7点后自动唤醒执行"];
+        }
+        return;
+    }
     if (!self.rewardTaskBridge && self.jsBridge) {
         self.rewardTaskBridge = self.jsBridge;
     }
@@ -2228,6 +2244,7 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
 }
 
 -(void)queryLotteryTaskListWithForce:(BOOL)force {
+    if (!isWithinTaskActiveHours()) return;
     if (!self.enableAutoRewardTasks) return;
     PSDJsBridge *bridge = self.lotteryBridge ?: self.rewardTaskBridge ?: self.jsBridge;
     if (!bridge) {
@@ -2262,6 +2279,7 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
 }
 
 -(void)queryMonopolyTaskListWithForce:(BOOL)force {
+    if (!isWithinTaskActiveHours()) return;
     if (!self.enableAutoPatrolNew) return;
     PSDJsBridge *bridge = self.monopolyBridge;
     if (!bridge) return;
@@ -2288,6 +2306,7 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
 }
 
 -(void)queryOceanTaskListWithForce:(BOOL)force {
+    if (!isWithinTaskActiveHours()) return;
     if (!self.enableAutoOceanTasks) return;
     if (!self.oceanBridge || self.oceanBridge == self.jsBridge) return;
     PSDJsBridge *bridge = self.oceanBridge;
@@ -2336,6 +2355,7 @@ static NSString *sLastQueriedSceneCode = nil;
 }
 
 -(void)queryAIFishTaskListWithForce:(BOOL)force {
+    if (!isWithinTaskActiveHours()) return;
     if (!self.enableAutoAIFish) return;
     PSDJsBridge *bridge = self.aiFishBridge ?: self.rewardTaskBridge ?: self.jsBridge;
     if (!bridge) return;
@@ -2364,6 +2384,7 @@ static NSString *sLastQueriedSceneCode = nil;
 }
 
 -(void)queryFarmTaskListWithForce:(BOOL)force {
+    if (!isWithinTaskActiveHours()) return;
     if (!self.enableAutoFarmTasks) return;
     PSDJsBridge *bridge = self.farmBridge;
     if (!bridge) return;
@@ -2702,6 +2723,15 @@ static NSInteger sVitalityAutoRefreshRounds = 0;
 - (void)executeNextVitalityTask {
     dispatch_async(dispatch_get_main_queue(), ^{
         @try {
+            if (!isWithinTaskActiveHours()) {
+                @synchronized(self) {
+                    [vitalityTaskQueue removeAllObjects];
+                    vitalityTaskRunning = NO;
+                    gCurrentExecutingTaskKey = nil;
+                    gCurrentExecutingTaskIsMultiStage = NO;
+                }
+                return;
+            }
             if (!self.rewardTaskBridge && self.jsBridge) {
                 self.rewardTaskBridge = self.jsBridge;
             }
@@ -2926,7 +2956,18 @@ static NSInteger sVitalityAutoRefreshRounds = 0;
                         });
                         return;
                     }
+                    // 超过重试上限仍未完成签到：严禁穿透强行执行常规任务！
                     sSignWaitAttempts = 0;
+                    [self recordStage:@"领奖励：签到尚未就绪，为防止消耗任务次数导致阶梯奖励被吞，已清空待执行任务队列，等待签到完成后自动重拉..."];
+                    @synchronized(self) {
+                        [vitalityTaskQueue removeAllObjects];
+                        vitalityTaskRunning = NO;
+                    }
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                        [self signVitalityTask:@"" sceneCode:@"ANTFOREST_ENERGY_TASK_SIGN"];
+                        [self queryVitalityTaskListWithForce:YES];
+                    });
+                    return;
                 }
             }
             
@@ -4020,21 +4061,14 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
                 }
                 if (hasVitalityTask && !hasSignAction) {
                     NSString *validSignId = [signVO[@"signId"] isKindOfClass:NSString.class] ? signVO[@"signId"] : @"";
-                    if (validSignId.length) {
-                        [self recordStage:@"领奖励：检测到今日尚未签到，优先执行能量签到以激活今日累计阶梯奖励..."];
-                        [vitalityTaskQueue insertObject:@{
-                            @"action": @"sign",
-                            @"signId": validSignId,
-                            @"sceneCode": @"ANTFOREST_ENERGY_TASK_SIGN",
-                            @"title": @"每日签到",
-                            @"awardName": @"能量"
-                        } atIndex:0];
-                    } else {
-                        dispatch_async(dispatch_get_main_queue(), ^{
-                            [self signVitalityTask:@"" sceneCode:@"ANTFOREST_ENERGY_TASK_SIGN"];
-                            [self queryVitalityTaskListWithForce:YES];
-                        });
-                    }
+                    [self recordStage:@"领奖励：检测到今日尚未签到，优先执行能量签到以激活今日累计阶梯奖励..."];
+                    [vitalityTaskQueue insertObject:@{
+                        @"action": @"sign",
+                        @"signId": validSignId ?: @"",
+                        @"sceneCode": @"ANTFOREST_ENERGY_TASK_SIGN",
+                        @"title": @"每日签到",
+                        @"awardName": @"能量"
+                    } atIndex:0];
                 }
             }
             
@@ -4943,6 +4977,7 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
 }
 
 - (void)queryManorFarmTasks {
+    if (!isWithinTaskActiveHours()) return;
     if (!self.enableAutoManor) return;
     PSDJsBridge *bridge = (self.manorBridge && self.manorBridge != self.jsBridge) ? self.manorBridge : nil;
     if (!bridge) return;
@@ -4980,6 +5015,7 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
 }
 
 - (void)handleManorTaskList:(NSArray *)taskList {
+    if (!isWithinTaskActiveHours()) return;
     if (!self.enableAutoManor || !taskList.count) return;
     
     static NSTimeInterval lastProcessTime = 0;
@@ -6275,7 +6311,16 @@ static BOOL oceanPlanLoggedThisRound = NO;
             [self queryOceanTaskListWithForce:NO];
         }
         if (self.enableAutoRewardTasks) {
-            [self queryVitalityTaskList];
+            static NSString *sLastDayActiveHoursTriggered = nil;
+            NSString *today = getCurrentDateString();
+            if (isWithinTaskActiveHours() && ![sLastDayActiveHoursTriggered isEqualToString:today]) {
+                sLastDayActiveHoursTriggered = today;
+                [self recordStage:@"领奖励：早间7点活跃期开启，正在刷新拉取今日全新任务与能量签到..."];
+                [self notifyActiveH5PageToRefresh];
+                [self queryVitalityTaskListWithForce:YES];
+            } else {
+                [self queryVitalityTaskList];
+            }
         }
         
         static NSDate *lastRankFetchedDate = nil;
