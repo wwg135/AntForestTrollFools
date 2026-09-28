@@ -2686,16 +2686,32 @@ static NSString *sLastQueriedSceneCode = nil;
     NSString *url = [self urlForSceneCode:scene bridge:bridge];
     NSString *source = isManorScene ? @"antfarm" : ((isRescueScene || isAIFishScene) ? @"ANT_OCEAN" : (isOceanScene ? @"ANT_FOREST" : (isFarmScene ? @"BABA_FARM" : @"ANTFOREST")));
     
+    NSString *pureTaskType = taskType;
+    if ([taskType containsString:@"#"]) {
+        NSArray *parts = [taskType componentsSeparatedByString:@"#"];
+        if (parts.count > 1 && [parts.lastObject length] > 0) {
+            pureTaskType = parts.lastObject;
+        }
+    }
+    
     // 寻宝、保护地、神奇海洋、AI摸鱼与芭芭农场专属 OpenGreen 任务网关领奖（避免向不支持的旧版 antiep 发送导致 3000 / 400000040 报错）
     if (isOpenGreenScene) {
         NSString *argOpenGreen = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antieptask.receiveTaskAwardopengreen\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"ags-source\":\"chInfo_ch_appcenter__chsub_9patch\"},\"requestData\":[{\"sceneCode\":\"%@\",\"taskType\":\"%@\",\"ignoreLimit\":false,\"requestType\":\"RPC\",\"source\":\"%@\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", scene, taskType, source, timeStamp, randNum];
         [bridge _doFlushMessageQueue:argOpenGreen url:url];
+        if (![pureTaskType isEqualToString:taskType]) {
+            NSString *argOpenPure = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antieptask.receiveTaskAwardopengreen\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"ags-source\":\"chInfo_ch_appcenter__chsub_9patch\"},\"requestData\":[{\"sceneCode\":\"%@\",\"taskType\":\"%@\",\"ignoreLimit\":false,\"requestType\":\"RPC\",\"source\":\"%@\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", scene, pureTaskType, source, timeStamp, [AntForestManager getNumberRandom:15]];
+            [bridge _doFlushMessageQueue:argOpenPure url:url];
+        }
         return;
     }
     
     // 1. 标准 antiep.receiveTaskAward
     NSString *argGreen = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antiep.receiveTaskAward\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"ags-source\":\"chInfo_ch_appcenter__chsub_9patch\"},\"requestData\":[{\"sceneCode\":\"%@\",\"taskType\":\"%@\",\"ignoreLimit\":false,\"requestType\":\"RPC\",\"source\":\"%@\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", scene, taskType, source, timeStamp, randNum];
     [bridge _doFlushMessageQueue:argGreen url:url];
+    if (![pureTaskType isEqualToString:taskType]) {
+        NSString *argPure = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antiep.receiveTaskAward\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"ags-source\":\"chInfo_ch_appcenter__chsub_9patch\"},\"requestData\":[{\"sceneCode\":\"%@\",\"taskType\":\"%@\",\"ignoreLimit\":false,\"requestType\":\"RPC\",\"source\":\"%@\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", scene, pureTaskType, source, timeStamp, [AntForestManager getNumberRandom:15]];
+        [bridge _doFlushMessageQueue:argPure url:url];
+    }
     
     // 2. 农场非主场景同时发送主场景领奖确认
     if (isFarmScene && ![scene isEqualToString:@"ANTFARM_ORCHARD_TASK_V2"]) {
@@ -2706,6 +2722,10 @@ static NSString *sLastQueriedSceneCode = nil;
     // 3. 补充 antieptask.receiveTaskAwardopengreen（全场景支持）
     NSString *argOpenGreen = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antieptask.receiveTaskAwardopengreen\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"ags-source\":\"chInfo_ch_appcenter__chsub_9patch\"},\"requestData\":[{\"sceneCode\":\"%@\",\"taskType\":\"%@\",\"ignoreLimit\":false,\"requestType\":\"RPC\",\"source\":\"%@\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", scene, taskType, source, timeStamp, [AntForestManager getNumberRandom:15]];
     [bridge _doFlushMessageQueue:argOpenGreen url:url];
+    if (![pureTaskType isEqualToString:taskType]) {
+        NSString *argOpenPure = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antieptask.receiveTaskAwardopengreen\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"ags-source\":\"chInfo_ch_appcenter__chsub_9patch\"},\"requestData\":[{\"sceneCode\":\"%@\",\"taskType\":\"%@\",\"ignoreLimit\":false,\"requestType\":\"RPC\",\"source\":\"%@\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", scene, pureTaskType, source, timeStamp, [AntForestManager getNumberRandom:15]];
+        [bridge _doFlushMessageQueue:argOpenPure url:url];
+    }
 }
 
 -(void)receiveOceanTaskAward:(NSString *)taskType sceneCode:(NSString *)sceneCode taskTitle:(NSString *)title awardName:(NSString *)awardName {
@@ -2853,7 +2873,8 @@ static NSInteger sVitalityAutoRefreshRounds = 0;
                     } else {
                         BOOL didWork = sHasPerformedWorkInCurrentVitalityRound;
                         sHasPerformedWorkInCurrentVitalityRound = NO;
-                        sVitalityAutoRefreshRounds = 0;
+                        // 严禁在此立即清零 sVitalityAutoRefreshRounds！保持上限状态，交由 autoCollectBubbles 新一轮扫描重置，彻底杜绝同周期自旋死循环
+                        sVitalityAutoRefreshRounds = 5;
                         if (didWork) {
                             if ([executedScenes containsObject:@"FARM"]) {
                                 [self recordStage:@"芭芭农场：当前所有任务奖励已全部领取完毕"];
@@ -3874,14 +3895,14 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
                 continue;
             }
             
-            // 如果存在待领奖且之前在失败列表中，撤销失败与重试计数
+            // 如果存在待领奖且之前在失败列表中，仅在重试未超限时给予机会，绝不无限制抹除重试计数
             if (hasPendingAward) {
                 @synchronized(self) {
                     if ([gDailyFailedTasks containsObject:taskKey]) {
-                        [gDailyFailedTasks removeObject:taskKey];
-                    }
-                    if (gVitalityTaskRetryCounts[taskKey]) {
-                        [gVitalityTaskRetryCounts removeObjectForKey:taskKey];
+                        NSInteger currRetries = [gVitalityTaskRetryCounts[taskKey] integerValue];
+                        if (currRetries < 3) {
+                            [gDailyFailedTasks removeObject:taskKey];
+                        }
                     }
                     saveDailyTaskCache();
                 }
@@ -3908,12 +3929,12 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
                 continue;
             }
             
-            // 针对失败任务，只要非待领奖则坚决跳过，杜绝重复排队重试导致死循环
-            if ([gDailyFailedTasks containsObject:taskKey] && !hasPendingAward) {
+            // 针对失败任务，坚决跳过，杜绝重复排队重试导致死循环
+            if ([gDailyFailedTasks containsObject:taskKey]) {
                 continue;
             }
 
-            // 阶梯大奖 (阶段宝箱 / 额外累计奖励) 优先提取处理，坚决排除出普通任务熔断与过滤体系
+            // 阶梯大奖 (阶段宝箱 / 额外累计奖励) 优先提取处理，坚决排除出普通任务过滤体系并设置独立防死循环
             NSDictionary *groupInfo = [t[@"taskGroupInfo"] isKindOfClass:NSDictionary.class] ? t[@"taskGroupInfo"] : nil;
             NSString *groupType = groupInfo[@"taskGroupType"] ?: @"";
             NSString *taskMode = baseInfo[@"taskMode"] ?: t[@"taskMode"] ?: @"";
@@ -3923,6 +3944,18 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
                               [taskType containsString:@"stage_"] || [taskType containsString:@"STAGE_"]);
             
             if (isAccTask) {
+                NSString *accTaskKey = [NSString stringWithFormat:@"%@:%@", sceneCode, taskType];
+                NSInteger accRetries = [gVitalityTaskRetryCounts[accTaskKey] integerValue];
+                if (accRetries >= 3 || [gDailyFailedTasks containsObject:accTaskKey]) {
+                    @synchronized(self) {
+                        if (![gDailyFailedTasks containsObject:accTaskKey]) {
+                            [gDailyFailedTasks addObject:accTaskKey];
+                            saveDailyTaskCache();
+                        }
+                    }
+                    continue;
+                }
+                
                 NSInteger awardCount = [rights[@"awardCount"] integerValue];
                 if (awardCount <= 0) {
                     awardCount = [bizInfo[@"awardCount"] integerValue];
@@ -3931,30 +3964,59 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
                     awardCount = [bizInfo[@"energy"] integerValue];
                 }
                 
+                BOOL isAccTodo = [taskStatus isEqualToString:@"TODO"] || [taskStatus isEqualToString:@"INIT"];
                 BOOL isProgressMet = (taskRequire > 0 && taskProgress >= taskRequire);
+                // 严禁将未达成门槛的锁死阶段误判为可领（杜绝 (alreadyReceive == 0 && rightsTimes > 0) 导致的虚假死循环领奖）
                 BOOL canClaim = (![taskStatus isEqualToString:@"RECEIVED"] &&
                                  ([taskStatus isEqualToString:@"FINISHED"] ||
                                   [taskStatus isEqualToString:@"CAN_RECEIVE"] ||
-                                  isProgressMet ||
-                                  (rightsTimesLimit > 0 && alreadyReceive < rightsTimesLimit && rightsTimes > alreadyReceive) ||
-                                  (alreadyReceive == 0 && rightsTimes > 0)));
+                                  [taskStatus isEqualToString:@"WAIT_AWARD"] ||
+                                  [taskStatus isEqualToString:@"WAIT_RECEIVE"] ||
+                                  (!isAccTodo && isProgressMet) ||
+                                  (!isAccTodo && rightsTimesLimit > 0 && alreadyReceive < rightsTimesLimit && rightsTimes > alreadyReceive)));
                 
                 if (canClaim) {
-                    [accTasks addObject:@{
-                        @"action": @"receive",
-                        @"taskType": taskType,
-                        @"sceneCode": sceneCode,
-                        @"title": taskTitle.length ? taskTitle : [NSString stringWithFormat:@"今日累计阶梯奖励（%ldg）", (long)awardCount],
-                        @"awardName": (awardCount > 0) ? [NSString stringWithFormat:@"%ldg 能量", (long)awardCount] : @"阶梯能量",
-                        @"isAcc": @YES
-                    }];
+                    BOOL alreadyInAccQueue = NO;
+                    @synchronized(self) {
+                        for (NSDictionary *q in vitalityTaskQueue) {
+                            if ([q[@"taskType"] isEqualToString:taskType] && [q[@"sceneCode"] isEqualToString:sceneCode]) {
+                                alreadyInAccQueue = YES;
+                                break;
+                            }
+                        }
+                    }
+                    if (!alreadyInAccQueue) {
+                        for (NSDictionary *q in accTasks) {
+                            if ([q[@"taskType"] isEqualToString:taskType] && [q[@"sceneCode"] isEqualToString:sceneCode]) {
+                                alreadyInAccQueue = YES;
+                                break;
+                            }
+                        }
+                    }
+                    if (!alreadyInAccQueue) {
+                        [accTasks addObject:@{
+                            @"action": @"receive",
+                            @"taskType": taskType,
+                            @"sceneCode": sceneCode,
+                            @"title": taskTitle.length ? taskTitle : [NSString stringWithFormat:@"今日累计阶梯奖励（%ldg）", (long)awardCount],
+                            @"awardName": (awardCount > 0) ? [NSString stringWithFormat:@"%ldg 能量", (long)awardCount] : @"阶梯能量",
+                            @"isAcc": @YES
+                        }];
+                    }
                 }
                 continue;
             }
 
-            // 防死循环熔断：如果该任务已连续尝试 3 次以上未成功，跳过本轮（防死循环，但有待领奖的任务绝不跳过）
+            // 防死循环熔断：如果该任务已连续尝试多次未成功，加入失败缓存并跳过（防死循环）
             NSInteger vRetries = [gVitalityTaskRetryCounts[taskKey] integerValue];
-            if (!hasPendingAward && (vRetries >= 3 || [gDailyFailedTasks containsObject:taskKey])) {
+            NSInteger maxRetries = hasPendingAward ? 3 : 2;
+            if (vRetries >= maxRetries || [gDailyFailedTasks containsObject:taskKey]) {
+                @synchronized(self) {
+                    if (![gDailyFailedTasks containsObject:taskKey]) {
+                        [gDailyFailedTasks addObject:taskKey];
+                        saveDailyTaskCache();
+                    }
+                }
                 NSString *moduleTag = @"森林寻宝/任务中心";
                 if ([sceneCode containsString:@"OCEAN"] || [sceneCode containsString:@"RESCUE"]) {
                     moduleTag = @"神奇海洋";
@@ -3965,7 +4027,7 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
                 } else if ([sceneCode containsString:@"MONOPOLY"] || [sceneCode containsString:@"HSDWY"]) {
                     moduleTag = @"新版保护地";
                 }
-                [self recordStage:[NSString stringWithFormat:@"%@：任务 [%@] 连续尝试多次未成功，跳过本轮", moduleTag, taskTitle]];
+                [self recordStage:[NSString stringWithFormat:@"%@：任务 [%@] 连续多次尝试未成功，判定需端内手动交互，跳过本轮", moduleTag, taskTitle]];
                 continue;
             }
             
@@ -4119,6 +4181,11 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
             
             totalQueuedCount = vitalityTaskQueue.count;
             if (totalQueuedCount > 0 && !vitalityTaskRunning) {
+                if (sVitalityAutoRefreshRounds >= 5) {
+                    vitalityTaskRunning = NO;
+                    [vitalityTaskQueue removeAllObjects];
+                    return;
+                }
                 shouldStartLoop = YES;
                 vitalityTaskRunning = YES;
             }
