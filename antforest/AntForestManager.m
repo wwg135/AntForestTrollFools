@@ -2184,12 +2184,19 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
 }
 
 -(void)queryVitalityTaskListWithForce:(BOOL)force {
-    if (!isWithinTaskActiveHours()) {
+    BOOL isWithinActive = isWithinTaskActiveHours();
+    BOOL isSignedToday = NO;
+    @synchronized(self) {
+        isSignedToday = [gDailyCompletedTasks containsObject:@"SIGN_TODAY"];
+    }
+    
+    // 零点后支持自动签到；若今日签到已完成且处于凌晨时段（00:00~07:00），常规做任务静默挂起等待早7点执行
+    if (!isWithinActive && isSignedToday) {
         static NSTimeInterval sLastSilentLogTime = 0;
         NSTimeInterval nowTime = [[NSDate date] timeIntervalSince1970];
         if (nowTime - sLastSilentLogTime > 1800.0) {
             sLastSilentLogTime = nowTime;
-            [self recordStage:@"领奖励：当前处于凌晨静默期（00:00~07:00），做任务已挂起，早7点后自动唤醒执行"];
+            [self recordStage:@"领奖励：今日签到已完成，常规做任务处于凌晨静默期（00:00~07:00），早7点后自动唤醒执行"];
         }
         return;
     }
@@ -2218,7 +2225,11 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
     NSString *urlDynamic = [self effectiveUrlForBridge:bridge];
     NSString *urlVitality = urlDynamic ?: [self effectiveUrlForSceneCode:@"ANTFOREST_VITALITY_TASK"];
     
-    NSLog(@"[AntForestPort] 任务中心：正在拉取最新任务列表与阶段奖励...");
+    if (isWithinActive) {
+        NSLog(@"[AntForestPort] 任务中心：正在拉取最新任务列表与阶段奖励...");
+    } else {
+        NSLog(@"[AntForestPort] 任务中心：正在拉取今日能量签到 (零点后自动签到，常规任务将在早7点开启)...");
+    }
     
     BOOL isForestHomeUrl = (bridge == self.jsBridge) || (urlVitality.length > 0 && ([urlVitality containsString:@"180020010001247580"] || [urlVitality containsString:@"home.html"]) && ![urlVitality containsString:@"180020010001293606"]);
     BOOL isLotteryPage = (urlVitality.length > 0 && ([urlVitality containsString:@"180020010001279274"] || [urlVitality.lowercaseString containsString:@"lotterymachine"] || [urlVitality.lowercaseString containsString:@"draw"]));
@@ -2233,12 +2244,12 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
     }
     
     if (isLotteryPage) {
-        // 当前桥接处于寻宝机页面，直接派发至寻宝专属查询通道
-        [self queryLotteryTaskListWithForce:force];
+        // 当前桥接处于寻宝机页面，仅在活跃期派发至寻宝专属查询通道
+        if (isWithinActive) [self queryLotteryTaskListWithForce:force];
         return;
     }
     
-    // 1. 主线日常任务列表与每日能量签到 (仅在森林主页有效，保护地或其他页面严禁调用避免 100000008 非法请求报错)
+    // 1. 主线日常任务列表与每日能量签到 (仅在森林主页有效，零点后即可自动签到以激活阶梯大奖)
     if (isForestHomeUrl) {
         // 1.1 主线日常任务列表与每日能量签到（必须携带 fromAct: home_task_list 与版本 20250821，服务端方会下发完整 forestSignVOList 与 signId）
         NSString *forestArg1 = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"alipay.antforest.forest.h5.queryTaskList\",\"showError\":false,\"showLoading\":false,\"requestData\":[{\"version\":\"20250821\",\"fromAct\":\"home_task_list\",\"source\":\"ANTFOREST\"}],\"appName\":\"antforest\",\"getResponse\":true},\"callbackId\":\"rpc_%@.%@_htl\"}]", timeStamp, randNum2];
@@ -2253,9 +2264,11 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
         [bridge _doFlushMessageQueue:forestArgCommonSign url:urlVitality];
     }
     
-    // 2. 现代任务中心领奖励任务 (ANTFOREST_VITALITY_TASK，在森林主页或领奖励专区执行)
-    NSString *argVitality1 = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antieptask.listTaskopengreen\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"ags-source\":\"chInfo_ch_appcenter__chsub_9patch\"},\"requestData\":[{\"sceneCode\":\"ANTFOREST_VITALITY_TASK\",\"source\":\"ANTFOREST\",\"requestType\":\"RPC\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", timeStamp, [AntForestManager getNumberRandom:15]];
-    [bridge _doFlushMessageQueue:argVitality1 url:urlVitality];
+    // 2. 现代任务中心领奖励任务 (ANTFOREST_VITALITY_TASK，仅在早 07:00 活跃期执行，凌晨静默期严禁发送常规做任务 RPC)
+    if (isWithinActive) {
+        NSString *argVitality1 = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antieptask.listTaskopengreen\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"ags-source\":\"chInfo_ch_appcenter__chsub_9patch\"},\"requestData\":[{\"sceneCode\":\"ANTFOREST_VITALITY_TASK\",\"source\":\"ANTFOREST\",\"requestType\":\"RPC\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", timeStamp, [AntForestManager getNumberRandom:15]];
+        [bridge _doFlushMessageQueue:argVitality1 url:urlVitality];
+    }
 }
 
 -(void)queryLotteryTaskList {
@@ -2743,13 +2756,20 @@ static NSInteger sVitalityAutoRefreshRounds = 0;
     dispatch_async(dispatch_get_main_queue(), ^{
         @try {
             if (!isWithinTaskActiveHours()) {
+                // 凌晨 00:00 ~ 07:00 期间：仅允许执行每日签到（action == sign），常规做任务坚决挂起等待早7点
+                NSDictionary *headItem = nil;
                 @synchronized(self) {
-                    [vitalityTaskQueue removeAllObjects];
-                    vitalityTaskRunning = NO;
-                    gCurrentExecutingTaskKey = nil;
-                    gCurrentExecutingTaskIsMultiStage = NO;
+                    headItem = vitalityTaskQueue.firstObject;
                 }
-                return;
+                if (!headItem || ![headItem[@"action"] isEqualToString:@"sign"]) {
+                    @synchronized(self) {
+                        [vitalityTaskQueue removeAllObjects];
+                        vitalityTaskRunning = NO;
+                        gCurrentExecutingTaskKey = nil;
+                        gCurrentExecutingTaskIsMultiStage = NO;
+                    }
+                    return;
+                }
             }
             if (!self.rewardTaskBridge && self.jsBridge) {
                 self.rewardTaskBridge = self.jsBridge;
@@ -2817,13 +2837,17 @@ static NSInteger sVitalityAutoRefreshRounds = 0;
                         }
                         if ([executedScenes containsObject:@"VITALITY"] || !executedScenes.count) {
                             if (self.enableAutoRewardTasks) {
-                                [self claimVitalityStageAwardsIfNeeded];
-                                [self recordStage:@"领奖励：本批次任务已执行完毕，2.5秒后自动刷新拉取新解锁任务与阶梯大奖..."];
-                                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                                    [self queryVitalityTaskListWithForce:YES];
-                                    [self claimAllVisibleRewardTaskRewardsOnWebView];
-                                    [self notifyActiveH5PageToRefresh];
-                                });
+                                if (isWithinTaskActiveHours()) {
+                                    [self claimVitalityStageAwardsIfNeeded];
+                                    [self recordStage:@"领奖励：本批次任务已执行完毕，2.5秒后自动刷新拉取新解锁任务与阶梯大奖..."];
+                                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                                        [self queryVitalityTaskListWithForce:YES];
+                                        [self claimAllVisibleRewardTaskRewardsOnWebView];
+                                        [self notifyActiveH5PageToRefresh];
+                                    });
+                                } else {
+                                    [self recordStage:@"领奖励：今日能量签到已完成，常规做任务已挂起等待早7点后执行"];
+                                }
                             }
                         }
                     } else {
@@ -2848,8 +2872,12 @@ static NSInteger sVitalityAutoRefreshRounds = 0;
                             }
                             if ([executedScenes containsObject:@"VITALITY"] || !executedScenes.count) {
                                 if (self.enableAutoRewardTasks) {
-                                    [self claimVitalityStageAwardsIfNeeded];
-                                    [self recordStage:@"领奖励：本轮常规任务与阶梯大奖已全部调度执行完毕"];
+                                    if (isWithinTaskActiveHours()) {
+                                        [self claimVitalityStageAwardsIfNeeded];
+                                        [self recordStage:@"领奖励：本轮常规任务与阶梯大奖已全部调度执行完毕"];
+                                    } else {
+                                        [self recordStage:@"领奖励：今日能量签到已完成，常规做任务已挂起等待早7点后执行"];
+                                    }
                                 }
                             }
                         }
@@ -4050,7 +4078,8 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
         BOOL shouldStartLoop = NO;
         NSUInteger totalQueuedCount = 0;
         @synchronized(self) {
-            if (newlyParsedTasks.count > 0) {
+            BOOL isWithinActive = isWithinTaskActiveHours();
+            if (newlyParsedTasks.count > 0 && isWithinActive) {
                 BOOL isMainVitality = [newlyParsedTasks.firstObject[@"sceneCode"] isEqualToString:@"ANTFOREST_VITALITY_TASK"];
                 if (isMainVitality && vitalityTaskQueue.count > 0) {
                     // 主线领奖励任务优先插入队列前方执行（若队首为每日签到，保持签到在第 0 位优先执行）
@@ -4064,21 +4093,18 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
                     [vitalityTaskQueue addObjectsFromArray:newlyParsedTasks];
                 }
             }
-            if (accTasks.count > 0) {
+            if (accTasks.count > 0 && isWithinActive) {
                 [vitalityTaskQueue addObjectsFromArray:accTasks];
             }
             
-            // 核心防抢跑保障：若开启领奖励且今日尚未完成签到，必须确保签到任务位于第 0 位优先执行，杜绝常规任务提前做完而阶梯大奖未激活
+            // 核心防抢跑保障：若开启领奖励且今日尚未完成签到，必须确保签到任务位于第 0 位优先执行（零点后即可自动签到）
             if (self.enableAutoRewardTasks && ![gDailyCompletedTasks containsObject:@"SIGN_TODAY"]) {
-                BOOL hasVitalityTask = NO;
                 BOOL hasSignAction = NO;
                 for (NSDictionary *q in vitalityTaskQueue) {
                     NSString *act = q[@"action"];
-                    NSString *sc = q[@"sceneCode"];
-                    if ([act isEqualToString:@"sign"]) hasSignAction = YES;
-                    if ([sc isEqualToString:@"ANTFOREST_VITALITY_TASK"] || [sc isEqualToString:@"ANTFOREST_ENERGY_TASK_SIGN"]) hasVitalityTask = YES;
+                    if ([act isEqualToString:@"sign"]) { hasSignAction = YES; break; }
                 }
-                if (hasVitalityTask && !hasSignAction) {
+                if (!hasSignAction) {
                     NSString *validSignId = [signVO[@"signId"] isKindOfClass:NSString.class] ? signVO[@"signId"] : @"";
                     [self recordStage:@"领奖励：检测到今日尚未签到，优先执行能量签到以激活今日累计阶梯奖励..."];
                     [vitalityTaskQueue insertObject:@{
