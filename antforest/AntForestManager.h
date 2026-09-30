@@ -24,6 +24,8 @@ NS_ASSUME_NONNULL_BEGIN
 // 领奖励/寻宝页专用桥接；若未独立打开则兜底复用森林首页桥接。
 @property(nonatomic,strong) PSDJsBridge* rewardTaskBridge;
 @property(nonatomic,copy) NSString* rewardTaskH5Url;
+@property(nonatomic,copy,nullable) void (^bridgeProbeHandler)(void);
+-(void)probeAndRestoreBridges;
 @property(nonatomic,strong,nullable) WKWebView *silentBrowseWebView;
 @property(nonatomic,strong) NSMutableDictionary *friendsBubbles; //存储的是未到时间的能量球
 @property(nonatomic,strong) NSMutableDictionary *friendsName; //

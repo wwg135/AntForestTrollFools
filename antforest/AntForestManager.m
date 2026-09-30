@@ -2179,6 +2179,15 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
     return bridgeUrl ?: [self effectiveUrlForSceneCode:scene];
 }
 
+-(void)probeAndRestoreBridges {
+    if (self.bridgeProbeHandler) {
+        self.bridgeProbeHandler();
+    }
+    if (!self.rewardTaskBridge && self.jsBridge) {
+        self.rewardTaskBridge = self.jsBridge;
+    }
+}
+
 -(void)queryVitalityTaskList {
     [self queryVitalityTaskListWithForce:NO];
 }
@@ -2186,6 +2195,7 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
 -(void)queryVitalityTaskListWithForce:(BOOL)force {
     BOOL isWithinActive = isWithinTaskActiveHours();
     BOOL isSignedToday = NO;
+    initDailyTaskCache();
     @synchronized(self) {
         isSignedToday = [gDailyCompletedTasks containsObject:@"SIGN_TODAY"];
     }
@@ -2200,10 +2210,14 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
         }
         return;
     }
+    [self probeAndRestoreBridges];
     if (!self.rewardTaskBridge && self.jsBridge) {
         self.rewardTaskBridge = self.jsBridge;
     }
     PSDJsBridge *bridge = self.rewardTaskBridge;
+    if (!bridge) {
+        bridge = self.jsBridge ?: self.oceanBridge ?: self.aiFishBridge ?: self.farmBridge ?: self.monopolyBridge ?: self.lotteryBridge;
+    }
     if (!self.enableAutoRewardTasks || !bridge) {
         if (self.enableAutoRewardTasks) [self recordStage:@"首页后台：等待领奖励任务桥接"];
         return;
@@ -2222,8 +2236,14 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
     
     NSString *timeStamp = [NSString stringWithFormat:@"%ld",(long)[[NSDate date] timeIntervalSince1970]*1000];
     NSString *randNum2 = [AntForestManager getNumberRandom:15];
+    
+    // 严格使用森林原生 URL 派发任务 RPC，彻底杜绝跨 AppId 污染或被子页面误拦截
+    NSString *fixedForestHomeUrl = @"https://render.alipay.com/p/yuyan/180020010001247580/home.html";
     NSString *urlDynamic = [self effectiveUrlForBridge:bridge];
-    NSString *urlVitality = urlDynamic ?: [self effectiveUrlForSceneCode:@"ANTFOREST_VITALITY_TASK"];
+    NSString *urlVitality = fixedForestHomeUrl;
+    if (urlDynamic.length && ([urlDynamic containsString:@"180020010001247580"] || [urlDynamic containsString:@"home.html"]) && ![urlDynamic containsString:@"180020010001293606"]) {
+        urlVitality = urlDynamic;
+    }
     
     if (isWithinActive) {
         NSLog(@"[AntForestPort] 任务中心：正在拉取最新任务列表与阶段奖励...");
@@ -2231,38 +2251,18 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
         NSLog(@"[AntForestPort] 任务中心：正在拉取今日能量签到 (零点后自动签到，常规任务将在早7点开启)...");
     }
     
-    BOOL isForestHomeUrl = (bridge == self.jsBridge) || (urlVitality.length > 0 && ([urlVitality containsString:@"180020010001247580"] || [urlVitality containsString:@"home.html"]) && ![urlVitality containsString:@"180020010001293606"]);
-    BOOL isLotteryPage = (urlVitality.length > 0 && ([urlVitality containsString:@"180020010001279274"] || [urlVitality.lowercaseString containsString:@"lotterymachine"] || [urlVitality.lowercaseString containsString:@"draw"]));
-    BOOL isMonopolyPage = (urlVitality.length > 0 && ([urlVitality containsString:@"180020010001293606"] || [urlVitality.lowercaseString containsString:@"monopoly"]));
-    BOOL isFarmPage = (urlVitality.length > 0 && ([urlVitality containsString:@"180020010001263018"] || [urlVitality.lowercaseString containsString:@"farm"] || [urlVitality.lowercaseString containsString:@"orchard"]));
-    BOOL isOceanPage = (urlVitality.length > 0 && ([urlVitality containsString:@"2021003115672468"] || [urlVitality.lowercaseString containsString:@"ocean"]));
-    BOOL isAIFishPage = (urlVitality.length > 0 && ([urlVitality containsString:@"180020010001290531"] || [urlVitality.lowercaseString containsString:@"aifish"]));
-    
-    if (isMonopolyPage || isFarmPage || isOceanPage || isAIFishPage) {
-        // 当前桥接处于其他独立子页面，严禁向其发送森林主线日常任务与领奖励 RPC，避免 3000/跨 AppId 非法调用报错
-        return;
-    }
-    
-    if (isLotteryPage) {
-        // 当前桥接处于寻宝机页面，仅在活跃期派发至寻宝专属查询通道
-        if (isWithinActive) [self queryLotteryTaskListWithForce:force];
-        return;
-    }
-    
     // 1. 主线日常任务列表与每日能量签到 (仅在森林主页有效，零点后即可自动签到以激活阶梯大奖)
-    if (isForestHomeUrl) {
-        // 1.1 主线日常任务列表与每日能量签到（必须携带 fromAct: home_task_list 与版本 20250821，服务端方会下发完整 forestSignVOList 与 signId）
-        NSString *forestArg1 = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"alipay.antforest.forest.h5.queryTaskList\",\"showError\":false,\"showLoading\":false,\"requestData\":[{\"version\":\"20250821\",\"fromAct\":\"home_task_list\",\"source\":\"ANTFOREST\"}],\"appName\":\"antforest\",\"getResponse\":true},\"callbackId\":\"rpc_%@.%@_htl\"}]", timeStamp, randNum2];
-        [bridge _doFlushMessageQueue:forestArg1 url:urlVitality];
-        
-        // 1.2 签到专区任务列表（fromAct: home_sign_task_list，双通道确保签到实体百分之百下发）
-        NSString *forestArgSign = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"alipay.antforest.forest.h5.queryTaskList\",\"showError\":false,\"showLoading\":false,\"requestData\":[{\"version\":\"20250821\",\"fromAct\":\"home_sign_task_list\",\"source\":\"ANTFOREST\"}],\"appName\":\"antforest\",\"getResponse\":true},\"callbackId\":\"rpc_%@.%@_hst\"}]", timeStamp, [AntForestManager getNumberRandom:15]];
-        [bridge _doFlushMessageQueue:forestArgSign url:urlVitality];
-        
-        // 1.3 官方通用签到信息查询 (queryCommonSign，返回 forestSignVO)
-        NSString *forestArgCommonSign = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"alipay.antforest.forest.h5.queryCommonSign\",\"showError\":false,\"showLoading\":false,\"requestData\":[{\"bizType\":\"ANTFOREST_ENERGY_TASK_SIGN\",\"withEntity\":true}],\"appName\":\"antforest\",\"getResponse\":true},\"callbackId\":\"rpc_%@.%@_cs\"}]", timeStamp, [AntForestManager getNumberRandom:15]];
-        [bridge _doFlushMessageQueue:forestArgCommonSign url:urlVitality];
-    }
+    // 1.1 主线日常任务列表与每日能量签到（必须携带 fromAct: home_task_list 与版本 20250821，服务端方会下发完整 forestSignVOList 与 signId）
+    NSString *forestArg1 = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"alipay.antforest.forest.h5.queryTaskList\",\"showError\":false,\"showLoading\":false,\"requestData\":[{\"version\":\"20250821\",\"fromAct\":\"home_task_list\",\"source\":\"ANTFOREST\"}],\"appName\":\"antforest\",\"getResponse\":true},\"callbackId\":\"rpc_%@.%@_htl\"}]", timeStamp, randNum2];
+    [bridge _doFlushMessageQueue:forestArg1 url:urlVitality];
+    
+    // 1.2 签到专区任务列表（fromAct: home_sign_task_list，双通道确保签到实体百分之百下发）
+    NSString *forestArgSign = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"alipay.antforest.forest.h5.queryTaskList\",\"showError\":false,\"showLoading\":false,\"requestData\":[{\"version\":\"20250821\",\"fromAct\":\"home_sign_task_list\",\"source\":\"ANTFOREST\"}],\"appName\":\"antforest\",\"getResponse\":true},\"callbackId\":\"rpc_%@.%@_hst\"}]", timeStamp, [AntForestManager getNumberRandom:15]];
+    [bridge _doFlushMessageQueue:forestArgSign url:urlVitality];
+    
+    // 1.3 官方通用签到信息查询 (queryCommonSign，返回 forestSignVO)
+    NSString *forestArgCommonSign = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"alipay.antforest.forest.h5.queryCommonSign\",\"showError\":false,\"showLoading\":false,\"requestData\":[{\"bizType\":\"ANTFOREST_ENERGY_TASK_SIGN\",\"withEntity\":true}],\"appName\":\"antforest\",\"getResponse\":true},\"callbackId\":\"rpc_%@.%@_cs\"}]", timeStamp, [AntForestManager getNumberRandom:15]];
+    [bridge _doFlushMessageQueue:forestArgCommonSign url:urlVitality];
     
     // 2. 现代任务中心领奖励任务 (ANTFOREST_VITALITY_TASK，仅在早 07:00 活跃期执行，凌晨静默期严禁发送常规做任务 RPC)
     if (isWithinActive) {
@@ -6384,6 +6384,7 @@ static BOOL oceanPlanLoggedThisRound = NO;
 // 每隔300秒一次
 -(void)autoCollectBubbles {
     @try {
+        [self probeAndRestoreBridges];
         if (!self.enableAutoCollect || (!self.jsBridge && !self.oceanBridge)) {
             [self recordStage:[NSString stringWithFormat:@"诊断 · 收取未启动：自动收取=%d，森林桥接=%d，海洋桥接=%d", self.enableAutoCollect, self.jsBridge != nil, self.oceanBridge != nil]];
             return;
@@ -6436,11 +6437,15 @@ static BOOL oceanPlanLoggedThisRound = NO;
         }
         if (self.enableAutoRewardTasks) {
             static NSString *sLastDayActiveHoursTriggered = nil;
-            if (isWithinTaskActiveHours() && ![sLastDayActiveHoursTriggered isEqualToString:today]) {
-                sLastDayActiveHoursTriggered = today;
-                [self recordStage:@"领奖励：早间7点活跃期开启，正在刷新拉取今日全新任务与能量签到..."];
-                [self notifyActiveH5PageToRefresh];
-                [self queryVitalityTaskListWithForce:YES];
+            if (isWithinTaskActiveHours()) {
+                if (![sLastDayActiveHoursTriggered isEqualToString:today]) {
+                    sLastDayActiveHoursTriggered = today;
+                    [self recordStage:@"领奖励：早间7点活跃期开启，正在刷新拉取今日全新任务与能量签到..."];
+                    [self notifyActiveH5PageToRefresh];
+                    [self queryVitalityTaskListWithForce:YES];
+                } else {
+                    [self queryVitalityTaskListWithForce:YES];
+                }
             } else {
                 [self queryVitalityTaskList];
             }

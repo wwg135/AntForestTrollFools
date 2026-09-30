@@ -160,6 +160,76 @@ static id forestBridgeFromController(id controller) {
     return nil;
 }
 
+static __weak id currentForestHomeController = nil;
+
+static id forestControllerForBridge(id bridge) {
+    id contentView = [bridge respondsToSelector:@selector(contentView)] ? ((id (*)(id, SEL))objc_msgSend)(bridge, @selector(contentView)) : nil;
+    for (NSString *name in @[ @"rvkViewController", @"psdViewController" ]) {
+        SEL selector = NSSelectorFromString(name);
+        if ([contentView respondsToSelector:selector]) return ((id (*)(id, SEL))objc_msgSend)(contentView, selector);
+    }
+    return nil;
+}
+
+static id findAnyForestController(void) {
+    if (currentForestHomeController) return currentForestHomeController;
+    AntForestManager *manager = AntForestManager.sharedInstance;
+    for (id b in @[ manager.rewardTaskBridge ?: (id)[NSNull null], manager.jsBridge ?: (id)[NSNull null], manager.oceanBridge ?: (id)[NSNull null] ]) {
+        if (b != (id)[NSNull null]) {
+            id c = forestControllerForBridge(b);
+            if (c) return c;
+        }
+    }
+    NSArray *windows = nil;
+    if ([UIApplication.sharedApplication respondsToSelector:@selector(windows)]) {
+        windows = [UIApplication.sharedApplication windows];
+    }
+    for (UIWindow *w in windows) {
+        UIViewController *root = w.rootViewController;
+        if (!root) continue;
+        NSMutableArray *queue = [NSMutableArray arrayWithObject:root];
+        while (queue.count) {
+            UIViewController *vc = queue.firstObject;
+            [queue removeObjectAtIndex:0];
+            if (!vc) continue;
+            NSURL *url = [vc respondsToSelector:@selector(url)] ? ((NSURL *(*)(id, SEL))objc_msgSend)(vc, @selector(url)) : nil;
+            if (url && isForestHomeURL(url)) return vc;
+            if ([vc isKindOfClass:NSClassFromString(@"RVKViewController")] ||
+                [vc isKindOfClass:NSClassFromString(@"H5WebViewController")]) {
+                id bridge = forestBridgeFromController(vc) ?: rewardBridgeFromController(vc);
+                if (bridge) return vc;
+            }
+            if (vc.presentedViewController) [queue addObject:vc.presentedViewController];
+            if ([vc isKindOfClass:[UINavigationController class]]) {
+                [queue addObjectsFromArray:[(UINavigationController *)vc viewControllers]];
+            }
+            if ([vc isKindOfClass:[UITabBarController class]]) {
+                [queue addObjectsFromArray:[(UITabBarController *)vc viewControllers]];
+            }
+            [queue addObjectsFromArray:vc.childViewControllers];
+        }
+    }
+    return nil;
+}
+
+static void startSilentRewardContext(id forestController);
+
+static void probeAndRestoreForestBridge(void) {
+    AntForestManager *manager = AntForestManager.sharedInstance;
+    if (manager.rewardTaskBridge && manager.jsBridge) return;
+    id controller = findAnyForestController();
+    if (controller) {
+        if (!manager.jsBridge) {
+            id bridge = forestBridgeFromController(controller) ?: rewardBridgeFromController(controller);
+            if (bridge) {
+                manager.jsBridge = bridge;
+                [manager recordStage:@"诊断 · 后台探针绑定森林首页 H5 Bridge"];
+            }
+        }
+        startSilentRewardContext(controller);
+    }
+}
+
 static void startSilentRewardContext(id forestController) {
     AntForestManager *manager = AntForestManager.sharedInstance;
     if (!manager.enableAutoRewardTasks) return;
@@ -186,15 +256,6 @@ static void startSilentRewardContext(id forestController) {
         [manager recordStage:@"首页后台：后台会话奖励桥接已就绪"];
         [manager queryVitalityTaskList];
     }
-}
-
-static id forestControllerForBridge(id bridge) {
-    id contentView = [bridge respondsToSelector:@selector(contentView)] ? ((id (*)(id, SEL))objc_msgSend)(bridge, @selector(contentView)) : nil;
-    for (NSString *name in @[ @"rvkViewController", @"psdViewController" ]) {
-        SEL selector = NSSelectorFromString(name);
-        if ([contentView respondsToSelector:selector]) return ((id (*)(id, SEL))objc_msgSend)(contentView, selector);
-    }
-    return nil;
 }
 
 static void finishForestHomeStart(id controller, id bridge) {
@@ -422,8 +483,6 @@ static void simulateNativeTapOnView(UIView *view, CGPoint point) {
         } @catch (NSException *e) {}
     });
 }
-
-static __weak id currentForestHomeController = nil;
 
 static void dismissFriendAnimalPopup(id controller) {
     if (!controller) return;
@@ -2171,6 +2230,10 @@ static void initializeManager(void) {
     manager.waterFriendIds = [defaults arrayForKey:@"waterFriendIds"] ?: @[];
     manager.waterScheduledTimes = [defaults arrayForKey:@"waterScheduledTimes"] ?: @[];
     manager.collectInterval = MAX(1, [defaults integerForKey:@"backgroundIntervalMinutes"] ?: 5) * 60;
+    manager.bridgeProbeHandler = ^{
+        probeAndRestoreForestBridge();
+    };
+    probeAndRestoreForestBridge();
     [manager recordStage:[NSString stringWithFormat:@"诊断 · 初始化：自动=%d，循环=%d", manager.enableAutoCollect, manager.enableBackgroundLoop]];
     if (manager.enableAutoCollect && manager.enableBackgroundLoop) [manager startAutoCollectTimerWithInterval:manager.collectInterval];
     if (manager.enableAutoCollect && manager.enableScheduledCollect) [manager startScheduledCollectTimer];
@@ -2672,7 +2735,6 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
             if (manager.manorBridge == self) manager.manorBridge = nil;
         } else if (isManor) {
             if (manager.farmBridge == self) manager.farmBridge = nil;
-            if (manager.jsBridge == self) manager.jsBridge = nil;
         }
     }
 
@@ -2702,9 +2764,6 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
         }
         if (isManor && manager.enableAutoManor) {
             // ManorProbe-RPC-REQ: 庄园自动化由 handleManorResponse 与静默 RPC 驱动
-            if (manager.jsBridge == self) {
-                manager.jsBridge = nil;
-            }
             BOOL isFirstBind = (manager.manorBridge != self);
             if (isFirstBind) {
                 manager.manorBridge = self;
@@ -2787,7 +2846,7 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
             if (isLottery) {
                 manager.lotteryBridge = self;
             }
-            if (!isMonopoly && !isAIFish && !isOcean && !isFarm && !isLottery && !isManor && !isForest && self != manager.jsBridge) {
+            if (!isMonopoly && !isAIFish && !isOcean && !isFarm && !isLottery && !isManor) {
                 if (manager.rewardTaskBridge != self) {
                     manager.rewardTaskBridge = self;
                 }
