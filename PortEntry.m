@@ -2533,6 +2533,7 @@ static id portCallRPC(id self, SEL _cmd, id rpcConfig, id completeBlock) {
             str = [NSString stringWithFormat:@"{\"operationType\":\"%@\",\"requestData\":%@}", opType, reqDataStr];
         }
         
+#if ENABLE_PROBE_LOGS
         if (str.length && !isNoiseProbeLog(str)) {
             AFProbeLog(@"\n🔍 [PatrolProbe-RPC-REQ]\n📦 %@", str);
             [[AntForestManager sharedInstance] recordProbeLog:[NSString stringWithFormat:@"[RPC-REQ] %@", str]];
@@ -2547,6 +2548,7 @@ static id portCallRPC(id self, SEL _cmd, id rpcConfig, id completeBlock) {
                 [[AntForestManager sharedInstance] recordStage:[NSString stringWithFormat:@"🎯 探针捕获·原生RPC请求：\n方法：%@\n入参：%@", opType ?: @"-", preview]];
             }
         }
+#endif
     } @catch (NSException *e) {}
     
     IMP original = NULL;
@@ -2661,6 +2663,7 @@ static void portDoFlushMessageQueue(id self, SEL _cmd, id msg, id url) {
             }
         }
         
+#if ENABLE_PROBE_LOGS
         BOOL isSignRelated = [msgStr containsString:@"sign"] || [msgStr containsString:@"Sign"] || [msgStr containsString:@"SIGN"] ||
                              [msgStr containsString:@"antiep"] || [msgStr containsString:@"vitality"] || [msgStr containsString:@"ANTFOREST_ENERGY"] ||
                              [msgStr containsString:@"task"] || [msgStr containsString:@"Task"] || [msgStr containsString:@"taobao"] || [msgStr containsString:@"daoliu"];
@@ -2673,6 +2676,7 @@ static void portDoFlushMessageQueue(id self, SEL _cmd, id msg, id url) {
                 [[AntForestManager sharedInstance] recordStage:[NSString stringWithFormat:@"🎯 探针捕获·JSBridge调用：\n%@", preview]];
             }
         }
+#endif
     } @catch (NSException *e) {}
     
     if (originalDoFlushMessageQueue) {
