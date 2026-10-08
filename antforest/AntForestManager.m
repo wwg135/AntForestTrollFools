@@ -2189,11 +2189,18 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
 }
 
 -(void)probeAndRestoreBridges {
-    if (self.bridgeProbeHandler) {
-        self.bridgeProbeHandler();
-    }
-    if (!self.rewardTaskBridge && self.jsBridge) {
-        self.rewardTaskBridge = self.jsBridge;
+    static BOOL sIsProbingBridges = NO;
+    if (sIsProbingBridges) return;
+    sIsProbingBridges = YES;
+    @try {
+        if (self.bridgeProbeHandler) {
+            self.bridgeProbeHandler();
+        }
+        if (!self.rewardTaskBridge && self.jsBridge) {
+            self.rewardTaskBridge = self.jsBridge;
+        }
+    } @finally {
+        sIsProbingBridges = NO;
     }
 }
 
@@ -2219,6 +2226,12 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
         }
         return;
     }
+    
+    static NSTimeInterval lastQueryVitalityTaskListTime = 0;
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    if (!force && (now - lastQueryVitalityTaskListTime < 2.0)) return;
+    lastQueryVitalityTaskListTime = now;
+    
     [self probeAndRestoreBridges];
     if (!self.rewardTaskBridge && self.jsBridge) {
         self.rewardTaskBridge = self.jsBridge;
@@ -2237,11 +2250,6 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
             if (gVitalityTaskRetryCounts) [gVitalityTaskRetryCounts removeAllObjects];
         }
     }
-    
-    static NSTimeInterval lastQueryVitalityTaskListTime = 0;
-    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-    if (!force && (now - lastQueryVitalityTaskListTime < 2.0)) return;
-    lastQueryVitalityTaskListTime = now;
     
     NSString *timeStamp = [NSString stringWithFormat:@"%ld",(long)[[NSDate date] timeIntervalSince1970]*1000];
     NSString *randNum2 = [AntForestManager getNumberRandom:15];

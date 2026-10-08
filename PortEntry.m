@@ -215,37 +215,43 @@ static id findAnyForestController(void) {
 static void startSilentRewardContext(id forestController);
 
 static void probeAndRestoreForestBridge(void) {
-    AntForestManager *manager = AntForestManager.sharedInstance;
-    id controller = findAnyForestController();
-    if (controller) {
-        if (!manager.jsBridge) {
-            id bridge = forestBridgeFromController(controller) ?: rewardBridgeFromController(controller);
-            if (bridge) {
-                manager.jsBridge = bridge;
-                [manager recordStage:@"诊断 · 后台探针绑定森林首页 H5 Bridge"];
+    static BOOL sIsProbingForestBridge = NO;
+    if (sIsProbingForestBridge) return;
+    sIsProbingForestBridge = YES;
+    @try {
+        AntForestManager *manager = AntForestManager.sharedInstance;
+        id controller = findAnyForestController();
+        if (controller) {
+            if (!manager.jsBridge) {
+                id bridge = forestBridgeFromController(controller) ?: rewardBridgeFromController(controller);
+                if (bridge) {
+                    manager.jsBridge = bridge;
+                    [manager recordStage:@"诊断 · 后台探针绑定森林首页 H5 Bridge"];
+                }
             }
-        }
-        if (manager.rewardTaskBridge && manager.rewardTaskBridge != manager.jsBridge) {
-            id rcv = [manager.rewardTaskBridge respondsToSelector:@selector(contentView)] ? ((id (*)(id, SEL))objc_msgSend)(manager.rewardTaskBridge, @selector(contentView)) : nil;
-            BOOL isRcvAlive = [rcv isKindOfClass:[UIView class]] ? ([(UIView *)rcv window] != nil) : (rcv != nil);
-            if (!isRcvAlive) {
+            if (manager.rewardTaskBridge && manager.rewardTaskBridge != manager.jsBridge) {
+                id rcv = [manager.rewardTaskBridge respondsToSelector:@selector(contentView)] ? ((id (*)(id, SEL))objc_msgSend)(manager.rewardTaskBridge, @selector(contentView)) : nil;
+                BOOL isRcvAlive = [rcv isKindOfClass:[UIView class]] ? ([(UIView *)rcv window] != nil) : (rcv != nil);
+                if (!isRcvAlive) {
+                    manager.rewardTaskBridge = manager.jsBridge;
+                }
+            }
+            if (!manager.rewardTaskBridge && manager.jsBridge) {
                 manager.rewardTaskBridge = manager.jsBridge;
             }
+            if (!manager.rewardTaskBridge) {
+                startSilentRewardContext(controller);
+            }
         }
-        if (!manager.rewardTaskBridge && manager.jsBridge) {
-            manager.rewardTaskBridge = manager.jsBridge;
-        }
-        startSilentRewardContext(controller);
+    } @finally {
+        sIsProbingForestBridge = NO;
     }
 }
 
 static void startSilentRewardContext(id forestController) {
     AntForestManager *manager = AntForestManager.sharedInstance;
     if (!manager.enableAutoRewardTasks) return;
-    if (manager.rewardTaskBridge) {
-        [manager queryVitalityTaskList];
-        return;
-    }
+    if (manager.rewardTaskBridge) return;
     id session = nil;
     for (NSString *name in @[ @"rvkSession", @"session" ]) {
         SEL selector = NSSelectorFromString(name);
@@ -263,7 +269,9 @@ static void startSilentRewardContext(id forestController) {
     if (bridge) {
         manager.rewardTaskBridge = bridge;
         [manager recordStage:@"首页后台：后台会话奖励桥接已就绪"];
-        [manager queryVitalityTaskList];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [manager queryVitalityTaskList];
+        });
     }
 }
 
