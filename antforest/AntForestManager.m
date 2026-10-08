@@ -2245,11 +2245,9 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
         return;
     }
     initDailyTaskCache();
-    if (force) {
-        @synchronized(self) {
-            if (gVitalityTaskRetryCounts) [gVitalityTaskRetryCounts removeAllObjects];
-        }
-    }
+    // 严禁在此处清空 gVitalityTaskRetryCounts！force=YES 会在每批任务完成 2.5 秒后自动刷新调用，
+    // 若在此处清空会导致失败任务在 2.5 秒后重试计数归零，形成无限死循环重试。
+    // gVitalityTaskRetryCounts 仅在每轮 15 分钟定时全量扫描（autoCollectBubbles）启动时重置。
     
     NSString *timeStamp = [NSString stringWithFormat:@"%ld",(long)[[NSDate date] timeIntervalSince1970]*1000];
     NSString *randNum2 = [AntForestManager getNumberRandom:15];
@@ -2581,7 +2579,7 @@ static NSString *sLastQueriedSceneCode = nil;
     [self executeRewardTaskScriptOnWebView:jsSign];
 }
 
--(void)applyVitalityTask:(NSString *)taskType sceneCode:(NSString *)sceneCode {
+-(void)applyVitalityTask:(NSString *)taskType sceneCode:(NSString *)sceneCode taskTitle:(NSString *)title {
     NSString *scene = sceneCode.length ? sceneCode : @"ANTFOREST_VITALITY_TASK";
     BOOL isFarmScene = [scene containsString:@"FARM"] || [scene containsString:@"ORCHARD"] || [scene isEqualToString:@"10021"] || [scene isEqualToString:@"3646"] || [scene hasPrefix:@"BABA_"];
     BOOL isMonopolyScene = [scene containsString:@"MONOPOLY"] || [scene containsString:@"HSDWY"];
@@ -2617,7 +2615,10 @@ static NSString *sLastQueriedSceneCode = nil;
                         [taskType.lowercaseString containsString:@"kuaishou"] ||
                         [taskType.lowercaseString containsString:@"ks_"] ||
                         [taskType.lowercaseString containsString:@"xianyu"] ||
-                        [taskType.lowercaseString containsString:@"uc"];
+                        [taskType.lowercaseString containsString:@"uc"] ||
+                        [title containsString:@"淘宝"] ||
+                        [title containsString:@"逛"] ||
+                        [title containsString:@"搜"];
     if (isOpenGreenScene || isDaoliuTask) {
         if (isFarmScene) {
             // 芭芭农场全场景任务在服务端不支持 applyTask（调用必报 3000 系统出错），直接跳过申请
@@ -2639,8 +2640,12 @@ static NSString *sLastQueriedSceneCode = nil;
     }
 }
 
+-(void)applyVitalityTask:(NSString *)taskType sceneCode:(NSString *)sceneCode {
+    [self applyVitalityTask:taskType sceneCode:sceneCode taskTitle:@""];
+}
+
 -(void)applyOceanTask:(NSString *)taskType sceneCode:(NSString *)sceneCode taskTitle:(NSString *)title {
-    [self applyVitalityTask:taskType sceneCode:sceneCode.length ? sceneCode : @"ANTOCEAN_TASK"];
+    [self applyVitalityTask:taskType sceneCode:sceneCode.length ? sceneCode : @"ANTOCEAN_TASK" taskTitle:title];
 }
 
 -(void)exchangeVitalityTaskAsset:(NSString *)taskType sceneCode:(NSString *)sceneCode taskTitle:(NSString *)title caQuotaId:(NSString *)caQuotaId {
@@ -3197,7 +3202,7 @@ static void silentlyPrefetchTaskUrl(NSString *jumpUrl) {
                 NSString *jumpUrl = [item[@"jumpUrl"] isKindOfClass:NSString.class] ? [item[@"jumpUrl"] copy] : @"";
                 NSInteger seconds = [item[@"browseSeconds"] respondsToSelector:@selector(integerValue)] ? [item[@"browseSeconds"] integerValue] : 15;
                 if (seconds <= 0) seconds = 15;
-                [self recordStage:[NSString stringWithFormat:@"%@：正在后台自动执行“%@”（保持运行 %ld 秒）...", scenePrefix, title, (long)seconds]];
+                [self recordStage:[NSString stringWithFormat:@"%@：正在后台自动执行“%@”（type=%@, 保持运行 %ld 秒）...", scenePrefix, title, taskType, (long)seconds]];
                 
                 if (taskKey.length) {
                     @synchronized(self) {
@@ -3217,7 +3222,7 @@ static void silentlyPrefetchTaskUrl(NSString *jumpUrl) {
                 
                 // 1. 优先调用 applyTask 注册“去完成”激活状态（仅限非农场场景，农场场景不支持该 RPC）
                 if (!isFarmScene) {
-                    [self applyVitalityTask:taskType sceneCode:sceneCode];
+                    [self applyVitalityTask:taskType sceneCode:sceneCode taskTitle:title];
                 }
                 
                 // 2. 如果有 jumpUrl，进行后台真实预取以满足服务端激活校验
@@ -3279,7 +3284,7 @@ static void silentlyPrefetchTaskUrl(NSString *jumpUrl) {
                     silentlyPrefetchTaskUrl(targetJumpUrl);
                 }
                 if (!isFarmScene) {
-                    [self applyVitalityTask:taskType sceneCode:sceneCode];
+                    [self applyVitalityTask:taskType sceneCode:sceneCode taskTitle:title];
                 }
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                     [self finishVitalityTask:taskType sceneCode:sceneCode taskTitle:title];
@@ -3610,6 +3615,15 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
         NSString *respTaskType = [NSString stringWithFormat:@"%@", finishVO[@"taskType"] ?: (receiveVO[@"taskType"] ?: (data[@"taskType"] ?: (args[@"taskType"] ?: @"")))];
         NSString *respSceneCode = [NSString stringWithFormat:@"%@", finishVO[@"sceneCode"] ?: (receiveVO[@"sceneCode"] ?: (data[@"sceneCode"] ?: (args[@"sceneCode"] ?: @"")))];
         NSString *resolvedKey = (respTaskType.length && respSceneCode.length) ? [NSString stringWithFormat:@"%@:%@", respSceneCode, respTaskType] : gCurrentExecutingTaskKey;
+        
+        BOOL isTaskExecOp = [opType containsString:@"finishTask"] || [opType containsString:@"receiveTaskAward"] || [opType containsString:@"applyTask"] || [opType containsString:@"antieptask."];
+        if (isTaskExecOp) {
+            BOOL isSuccess = [resCode isEqualToString:@"100000000"] || [resCode isEqualToString:@"SUCCESS"] || [data[@"success"] boolValue] || [args[@"success"] boolValue] || [resDesc containsString:@"处理成功"] || [resDesc containsString:@"成功"];
+            if (!isSuccess && ![resCode isEqualToString:@"400000040"] && resCode.length) {
+                [self recordStage:[NSString stringWithFormat:@"领奖励·执行回包：%@ (code=%@, desc=%@)", opType, resCode ?: @"-", resDesc ?: @"-"]];
+            }
+        }
+        
         if (receiveVO != nil || [opType containsString:@"receiveTaskAward"] || [opType containsString:@"receive"] || [resDesc containsString:@"任务已完结"] || [resDesc containsString:@"已完结"] || [resDesc containsString:@"已领取"] || [resDesc containsString:@"无法重复领取"] || finishHasNoNextStage) {
             if ([resCode isEqualToString:@"100000000"] || [resCode isEqualToString:@"400000030"] || [resCode isEqualToString:@"400000005"] || [resCode isEqualToString:@"400000012"] || [resCode isEqualToString:@"B000000008"] || [resCode isEqualToString:@"SUCCESS"] || [data[@"success"] boolValue] || [args[@"success"] boolValue] ||
                 [resDesc containsString:@"处理成功"] || [resDesc containsString:@"成功"] || [resDesc containsString:@"超过上限"] || [resDesc containsString:@"无法重复领取"] || [resDesc containsString:@"已完结"] || [resDesc containsString:@"已领取"]) {
@@ -3985,10 +3999,9 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
             // 如果存在待领奖且之前在失败列表中，仅在重试未超限时给予机会，绝不无限制抹除重试计数
             BOOL isTaobaoTask = [taskTitle containsString:@"淘宝"] || [taskType.lowercaseString containsString:@"taobao"] || [taskType.lowercaseString containsString:@"tb_"];
             if (isTaobaoTask && !isAllFinished) {
-                // 淘宝任务只要服务端非已完结状态，立即清除历史已完成与失败误缓存，确保稳定执行
+                // 淘宝任务只要服务端非已完结状态，立即清除历史已完成误缓存，确保稳定执行（失败缓存交由轮次熔断控制，严禁实时清除导致死循环）
                 @synchronized(self) {
                     [gDailyCompletedTasks removeObject:taskKey];
-                    [gDailyFailedTasks removeObject:taskKey];
                     saveDailyTaskCache();
                 }
             } else if (hasPendingAward) {
@@ -4024,8 +4037,8 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
                 continue;
             }
             
-            // 针对失败任务，坚决跳过，杜绝重复排队重试导致死循环（未完结的淘宝任务除外）
-            if ([gDailyFailedTasks containsObject:taskKey] && !isTaobaoTask) {
+            // 针对失败任务，坚决跳过，杜绝重复排队重试导致死循环
+            if ([gDailyFailedTasks containsObject:taskKey]) {
                 continue;
             }
 
@@ -6505,6 +6518,11 @@ static BOOL oceanPlanLoggedThisRound = NO;
         @synchronized(self) {
             if (gVitalityTaskRetryCounts) [gVitalityTaskRetryCounts removeAllObjects];
             if (gFarmTaskRetryCounts) [gFarmTaskRetryCounts removeAllObjects];
+            for (NSString *key in [gDailyFailedTasks allObjects]) {
+                if ([key.lowercaseString containsString:@"taobao"] || [key.lowercaseString containsString:@"tb_"]) {
+                    [gDailyFailedTasks removeObject:key];
+                }
+            }
         }
         NSUInteger cycle = collectionCycle;
         selfPriorityPending = self.enableSelfCollect && (self.jsBridge != nil);

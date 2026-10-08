@@ -2491,7 +2491,7 @@ static inline BOOL isRelevantPluginURL(NSString *urlStr) {
 }
 
 #ifndef ENABLE_PROBE_LOGS
-#define ENABLE_PROBE_LOGS 0
+#define ENABLE_PROBE_LOGS 1
 #endif
 #define AFProbeLog(...) do { if (ENABLE_PROBE_LOGS) NSLog(__VA_ARGS__); } while(0)
 
@@ -2538,10 +2538,13 @@ static id portCallRPC(id self, SEL _cmd, id rpcConfig, id completeBlock) {
             [[AntForestManager sharedInstance] recordProbeLog:[NSString stringWithFormat:@"[RPC-REQ] %@", str]];
             
             BOOL isSignRelated = [str containsString:@"sign"] || [str containsString:@"Sign"] || [str containsString:@"SIGN"] ||
-                                 (opType.length && ([opType containsString:@"sign"] || [opType containsString:@"Sign"] || [opType containsString:@"antiep"])) ||
-                                 (reqDataStr.length && ([reqDataStr containsString:@"sign"] || [reqDataStr containsString:@"Sign"] || [reqDataStr containsString:@"antiep"]));
+                                 [str containsString:@"antiep"] || [str containsString:@"task"] || [str containsString:@"Task"] ||
+                                 [str containsString:@"taobao"] || [str containsString:@"daoliu"] ||
+                                 (opType.length && ([opType containsString:@"sign"] || [opType containsString:@"antiep"] || [opType containsString:@"task"] || [opType containsString:@"taobao"]));
             if (isSignRelated) {
-                [[AntForestManager sharedInstance] recordStage:[NSString stringWithFormat:@"🎯 探针捕获·原生RPC请求：\n方法：%@\n入参：%@", opType ?: @"-", reqDataStr ?: str]];
+                NSString *preview = (reqDataStr ?: str);
+                if (preview.length > 500) preview = [preview substringToIndex:500];
+                [[AntForestManager sharedInstance] recordStage:[NSString stringWithFormat:@"🎯 探针捕获·原生RPC请求：\n方法：%@\n入参：%@", opType ?: @"-", preview]];
             }
         }
     } @catch (NSException *e) {}
@@ -2659,7 +2662,8 @@ static void portDoFlushMessageQueue(id self, SEL _cmd, id msg, id url) {
         }
         
         BOOL isSignRelated = [msgStr containsString:@"sign"] || [msgStr containsString:@"Sign"] || [msgStr containsString:@"SIGN"] ||
-                             [msgStr containsString:@"antiep"] || [msgStr containsString:@"vitality"] || [msgStr containsString:@"ANTFOREST_ENERGY"];
+                             [msgStr containsString:@"antiep"] || [msgStr containsString:@"vitality"] || [msgStr containsString:@"ANTFOREST_ENERGY"] ||
+                             [msgStr containsString:@"task"] || [msgStr containsString:@"Task"] || [msgStr containsString:@"taobao"] || [msgStr containsString:@"daoliu"];
         if (msgStr.length && (isSignRelated || !isNoiseProbeLog(msgStr))) {
             AFProbeLog(@"\n🔍 [PatrolProbe-REQ]\n📍 URL: %@\n📦 Request: %@\n", urlStr, msgStr);
             [[AntForestManager sharedInstance] recordProbeLog:[NSString stringWithFormat:@"[REQ] URL: %@\nData: %@", urlStr, msgStr]];
@@ -2695,7 +2699,9 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
         if (!resStr) resStr = [value description];
         
         BOOL isSignRelated = [resStr containsString:@"sign"] || [resStr containsString:@"Sign"] || [resStr containsString:@"SIGN"] ||
-                             [resStr containsString:@"antiep"] || [resStr containsString:@"vitality"] || [resStr containsString:@"ANTFOREST_ENERGY"];
+                             [resStr containsString:@"antiep"] || [resStr containsString:@"vitality"] || [resStr containsString:@"ANTFOREST_ENERGY"] ||
+                             [resStr containsString:@"task"] || [resStr containsString:@"Task"] || [resStr containsString:@"taobao"] ||
+                             [resStr containsString:@"finishTask"] || [resStr containsString:@"receiveTask"];
         if (resStr.length && (isSignRelated || !isNoiseProbeLog(resStr))) {
             [[AntForestManager sharedInstance] recordProbeLog:[NSString stringWithFormat:@"[RES] %@", resStr]];
             
