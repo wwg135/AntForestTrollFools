@@ -2856,7 +2856,19 @@ static NSString *sLastQueriedSceneCode = nil;
 static BOOL sHasPerformedWorkInCurrentVitalityRound = NO;
 static NSInteger sVitalityAutoRefreshRounds = 0;
 
+- (void)webView:(WKWebView *)webView decidePolicyForNavigationAction:(WKNavigationAction *)navigationAction decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
+    NSURL *url = navigationAction.request.URL;
+    NSString *scheme = url.scheme.lowercaseString;
+    if ([scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"]) {
+        decisionHandler(WKNavigationActionPolicyAllow);
+    } else {
+        // 阻止拉起外部 App，保持前台稳定
+        decisionHandler(WKNavigationActionPolicyCancel);
+    }
+}
+
 static WKWebView *sSilentTaskWebView = nil;
+
 static void silentlyPrefetchTaskUrl(NSString *jumpUrl) {
     if (!jumpUrl.length) return;
     NSString *cleanUrl = jumpUrl;
@@ -2880,7 +2892,8 @@ static void silentlyPrefetchTaskUrl(NSString *jumpUrl) {
         NSURL *reqUrl = [NSURL URLWithString:cleanUrl];
         if (reqUrl) {
             NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:reqUrl cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:8.0];
-            [req setValue:@"Mozilla/5.0 (iPhone; CPU iPhone OS 16_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Nebula AlipayDefined(nt:WIFI,ws:393|759,fx:393|852) AliApp(AP/12.12.16.6000) AlipayClient/12.12.16.6000 Language/zh-Hans" forHTTPHeaderField:@"User-Agent"];
+            NSString *ua = @"Mozilla/5.0 (iPhone; CPU iPhone OS 16_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Nebula AlipayDefined(nt:WIFI,ws:393|759,fx:393|852) AliApp(AP/12.12.16.6000) AlipayClient/12.12.16.6000 Language/zh-Hans";
+            [req setValue:ua forHTTPHeaderField:@"User-Agent"];
             [[[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:^(__unused NSData *d, __unused NSURLResponse *res, __unused NSError *err){}] resume];
             
             // 针对淘宝等需要执行前端 JS (mtop 鉴权) 的外链，在静默离屏 WebView 中加载以自动达成完成状态
@@ -2890,8 +2903,16 @@ static void silentlyPrefetchTaskUrl(NSString *jumpUrl) {
                     @try {
                         if (!sSilentTaskWebView) {
                             WKWebViewConfiguration *config = [[WKWebViewConfiguration alloc] init];
+                            config.applicationNameForUserAgent = @"Nebula AlipayDefined(nt:WIFI,ws:393|759,fx:393|852) AliApp(AP/12.12.16.6000) AlipayClient/12.12.16.6000 Language/zh-Hans";
                             sSilentTaskWebView = [[WKWebView alloc] initWithFrame:CGRectMake(0, 0, 1, 1) configuration:config];
-                            sSilentTaskWebView.hidden = YES;
+                            sSilentTaskWebView.customUserAgent = ua;
+                            sSilentTaskWebView.alpha = 0.01;
+                            sSilentTaskWebView.navigationDelegate = [AntForestManager sharedInstance];
+                        }
+                        UIWindow *window = [UIApplication sharedApplication].keyWindow ?: [UIApplication sharedApplication].windows.firstObject;
+                        if (window && sSilentTaskWebView.superview != window) {
+                            [window addSubview:sSilentTaskWebView];
+                            [window sendSubviewToBack:sSilentTaskWebView];
                         }
                         [sSilentTaskWebView loadRequest:req];
                     } @catch (NSException *e) {}
@@ -3595,8 +3616,11 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
         return 15;
     }
     
-    // 7. 无明确倒计时要求时，外链任务与导流任务需保持运行 2 秒以满足外部服务端的唤起与有效激活校验
-    if ([taskType containsString:@"XIANYU"] || [taskType containsString:@"BBNC"] || [taskType containsString:@"shenqiyutang"] || [taskType containsString:@"SQYT"] || [taskType containsString:@"XLIGHT"] || [taskType containsString:@"TAOBAO"] || [taskType containsString:@"TB"] || [title containsString:@"UC"] || [title containsString:@"芭芭农场"] || [title containsString:@"施肥"] || [title containsString:@"闲置"] || [title containsString:@"闲鱼"] || [title containsString:@"循环"] || [title containsString:@"市集"] || [title containsString:@"集市"] || [title containsString:@"鱼塘"] || [title containsString:@"淘宝"] || [title containsString:@"去淘宝"] || [title containsString:@"逛一逛"] || [title containsString:@"去看看"]) {
+    // 7. 淘宝/导流外链任务明确需要静默加载并触发前端 mtop 鉴权，保留 6 秒确保后台脚本执行完毕
+    if ([taskType containsString:@"TAOBAO"] || [taskType containsString:@"TB"] || [title containsString:@"淘宝"] || [title containsString:@"去淘宝"]) {
+        return 6;
+    }
+    if ([taskType containsString:@"XIANYU"] || [taskType containsString:@"BBNC"] || [taskType containsString:@"shenqiyutang"] || [taskType containsString:@"SQYT"] || [taskType containsString:@"XLIGHT"] || [title containsString:@"UC"] || [title containsString:@"芭芭农场"] || [title containsString:@"施肥"] || [title containsString:@"闲置"] || [title containsString:@"闲鱼"] || [title containsString:@"循环"] || [title containsString:@"市集"] || [title containsString:@"集市"] || [title containsString:@"鱼塘"] || [title containsString:@"逛一逛"] || [title containsString:@"去看看"]) {
         return 2;
     }
     

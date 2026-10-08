@@ -13,7 +13,7 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-@interface AntForestManager : NSObject
+@interface AntForestManager : NSObject <WKNavigationDelegate>
 
 +(AntForestManager *)sharedInstance;
 + (NSLock*)sharedLock;
