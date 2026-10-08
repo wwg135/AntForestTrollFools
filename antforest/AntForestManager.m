@@ -2278,31 +2278,36 @@ static BOOL isSafeFarmTask(NSString *taskType, NSString *title) {
     // 1. 主线日常任务列表与每日能量签到 (主通道必须派发至森林首页 Bridge: forestHomeBridge，确保零点跨天100%成功拉取)
     // 1.1 主线日常任务列表与每日能量签到（必须携带 fromAct: home_task_list 与版本 20250821，服务端方会下发完整 forestSignVOList 与 signId）
     NSString *forestArg1 = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"alipay.antforest.forest.h5.queryTaskList\",\"showError\":false,\"showLoading\":false,\"requestData\":[{\"version\":\"20250821\",\"fromAct\":\"home_task_list\",\"source\":\"ANTFOREST\"}],\"appName\":\"antforest\",\"getResponse\":true},\"callbackId\":\"rpc_%@.%@_htl\"}]", timeStamp, randNum2];
-    [forestHomeBridge _doFlushMessageQueue:forestArg1 url:urlForestHome];
+    [self safeFlushBridge:forestHomeBridge message:forestArg1 url:urlForestHome];
     if (bridge && bridge != forestHomeBridge) {
-        [bridge _doFlushMessageQueue:forestArg1 url:urlVitality];
+        [self safeFlushBridge:bridge message:forestArg1 url:urlVitality];
     }
     
     // 1.2 签到专区任务列表（fromAct: home_sign_task_list，双通道确保签到实体百分之百下发）
     NSString *forestArgSign = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"alipay.antforest.forest.h5.queryTaskList\",\"showError\":false,\"showLoading\":false,\"requestData\":[{\"version\":\"20250821\",\"fromAct\":\"home_sign_task_list\",\"source\":\"ANTFOREST\"}],\"appName\":\"antforest\",\"getResponse\":true},\"callbackId\":\"rpc_%@.%@_hst\"}]", timeStamp, [AntForestManager getNumberRandom:15]];
-    [forestHomeBridge _doFlushMessageQueue:forestArgSign url:urlForestHome];
+    [self safeFlushBridge:forestHomeBridge message:forestArgSign url:urlForestHome];
     if (bridge && bridge != forestHomeBridge) {
-        [bridge _doFlushMessageQueue:forestArgSign url:urlVitality];
+        [self safeFlushBridge:bridge message:forestArgSign url:urlVitality];
     }
     
     // 1.3 官方通用签到信息查询 (queryCommonSign，返回 forestSignVO)
     NSString *forestArgCommonSign = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"alipay.antforest.forest.h5.queryCommonSign\",\"showError\":false,\"showLoading\":false,\"requestData\":[{\"bizType\":\"ANTFOREST_ENERGY_TASK_SIGN\",\"withEntity\":true}],\"appName\":\"antforest\",\"getResponse\":true},\"callbackId\":\"rpc_%@.%@_cs\"}]", timeStamp, [AntForestManager getNumberRandom:15]];
-    [forestHomeBridge _doFlushMessageQueue:forestArgCommonSign url:urlForestHome];
+    [self safeFlushBridge:forestHomeBridge message:forestArgCommonSign url:urlForestHome];
     if (bridge && bridge != forestHomeBridge) {
-        [bridge _doFlushMessageQueue:forestArgCommonSign url:urlVitality];
+        [self safeFlushBridge:bridge message:forestArgCommonSign url:urlVitality];
+    }
+    
+    // 1.4 若今日尚未完成签到，主动发送一次默认签到 RPC（双发保障：即使 queryTaskList 回包慢，也能直接签到成功）
+    if (!isSignedToday) {
+        [self signVitalityTask:@"" sceneCode:@"ANTFOREST_ENERGY_TASK_SIGN"];
     }
     
     // 2. 现代任务中心领奖励任务 (ANTFOREST_VITALITY_TASK，仅在早 07:00 活跃期执行，凌晨静默期严禁发送常规做任务 RPC)
     if (isWithinActive) {
         NSString *argVitality1 = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antieptask.listTaskopengreen\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"ags-source\":\"chInfo_ch_appcenter__chsub_9patch\"},\"requestData\":[{\"sceneCode\":\"ANTFOREST_VITALITY_TASK\",\"source\":\"ANTFOREST\",\"requestType\":\"RPC\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", timeStamp, [AntForestManager getNumberRandom:15]];
-        [bridge _doFlushMessageQueue:argVitality1 url:urlVitality];
+        [self safeFlushBridge:bridge message:argVitality1 url:urlVitality];
         if (forestHomeBridge && forestHomeBridge != bridge) {
-            [forestHomeBridge _doFlushMessageQueue:argVitality1 url:urlForestHome];
+            [self safeFlushBridge:forestHomeBridge message:argVitality1 url:urlForestHome];
         }
     }
 }
@@ -2605,25 +2610,32 @@ static NSString *sLastQueriedSceneCode = nil;
     NSString *url = [self urlForSceneCode:scene bridge:bridge];
     NSString *source = (isRescueScene || isAIFishScene) ? @"ANT_OCEAN" : (isOceanScene ? @"ANT_FOREST" : (isFarmScene ? @"BABA_FARM" : @"ANTFOREST"));
     
-    // 寻宝、保护地、神奇海洋、AI摸鱼与芭芭农场专属 OpenGreen 任务网关申请
-    if (isOpenGreenScene) {
+    // 寻宝、保护地、神奇海洋、AI摸鱼与芭芭农场专属 OpenGreen 任务网关申请，以及导流/淘宝类任务
+    BOOL isDaoliuTask = [taskType.lowercaseString containsString:@"daoliu"] ||
+                        [taskType.lowercaseString containsString:@"taobao"] ||
+                        [taskType.lowercaseString containsString:@"tb_"] ||
+                        [taskType.lowercaseString containsString:@"kuaishou"] ||
+                        [taskType.lowercaseString containsString:@"ks_"] ||
+                        [taskType.lowercaseString containsString:@"xianyu"] ||
+                        [taskType.lowercaseString containsString:@"uc"];
+    if (isOpenGreenScene || isDaoliuTask) {
         if (isFarmScene) {
             // 芭芭农场全场景任务在服务端不支持 applyTask（调用必报 3000 系统出错），直接跳过申请
             return;
         }
         NSString *argOg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antieptask.applyTaskopengreen\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"ags-source\":\"chInfo_ch_appcenter__chsub_9patch\"},\"requestData\":[{\"sceneCode\":\"%@\",\"taskType\":\"%@\",\"requestType\":\"RPC\",\"source\":\"%@\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", scene, taskType, source, timeStamp, randNum];
-        [bridge _doFlushMessageQueue:argOg url:url];
+        [self safeFlushBridge:bridge message:argOg url:url];
         return;
     }
     
     // 1. 标准 antiep.applyTask
     NSString *arg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antiep.applyTask\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"ags-source\":\"chInfo_ch_appcenter__chsub_9patch\"},\"requestData\":[{\"sceneCode\":\"%@\",\"taskType\":\"%@\",\"requestType\":\"RPC\",\"source\":\"%@\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", scene, taskType, source, timeStamp, randNum];
-    [bridge _doFlushMessageQueue:arg url:url];
+    [self safeFlushBridge:bridge message:arg url:url];
     
     // 2. OpenGreen 任务网关同步申请
     if ([scene containsString:@"VITALITY"] || [scene containsString:@"FOREST"]) {
         NSString *argOg = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antieptask.applyTaskopengreen\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"ags-source\":\"chInfo_ch_appcenter__chsub_9patch\"},\"requestData\":[{\"sceneCode\":\"%@\",\"taskType\":\"%@\",\"requestType\":\"RPC\",\"source\":\"%@\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", scene, taskType, source, timeStamp, [AntForestManager getNumberRandom:15]];
-        [bridge _doFlushMessageQueue:argOg url:url];
+        [self safeFlushBridge:bridge message:argOg url:url];
     }
 }
 
@@ -2680,26 +2692,35 @@ static NSString *sLastQueriedSceneCode = nil;
     NSString *source = isManorScene ? @"antfarm" : ((isRescueScene || isAIFishScene) ? @"ANT_OCEAN" : (isOceanScene ? @"ANT_FOREST" : (isFarmScene ? @"BABA_FARM" : @"ANTFOREST")));
     
     // 寻宝、保护地、神奇海洋、AI摸鱼与芭芭农场专属 OpenGreen 任务网关完成，以及淘宝、导流、外链类任务，仅派发 OpenGreen，避免向不支持的旧版 antiep 发送导致 3000 / 400000040 报错
-    BOOL isDaoliuTask = [taskType.lowercaseString containsString:@"daoliu"] || [taskType.lowercaseString containsString:@"taobao"] || [taskType.lowercaseString containsString:@"tb_"] || [taskType.lowercaseString containsString:@"kuaishou"] || [taskType.lowercaseString containsString:@"ks_"] || [taskType.lowercaseString containsString:@"xianyu"] || [taskType.lowercaseString containsString:@"uc"];
+    BOOL isDaoliuTask = [taskType.lowercaseString containsString:@"daoliu"] ||
+                        [taskType.lowercaseString containsString:@"taobao"] ||
+                        [taskType.lowercaseString containsString:@"tb_"] ||
+                        [taskType.lowercaseString containsString:@"kuaishou"] ||
+                        [taskType.lowercaseString containsString:@"ks_"] ||
+                        [taskType.lowercaseString containsString:@"xianyu"] ||
+                        [taskType.lowercaseString containsString:@"uc"] ||
+                        [title containsString:@"淘宝"] ||
+                        [title containsString:@"逛"] ||
+                        [title containsString:@"搜"];
     if (isOpenGreenScene || isDaoliuTask) {
         NSString *argOpenGreen = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antieptask.finishTaskopengreen\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"ags-source\":\"chInfo_ch_appcenter__chsub_9patch\"},\"requestData\":[{\"sceneCode\":\"%@\",\"taskType\":\"%@\",\"outBizNo\":\"%@_og\",\"requestType\":\"RPC\",\"source\":\"%@\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", scene, taskType, outBizNo, source, timeStamp, randNum];
-        [bridge _doFlushMessageQueue:argOpenGreen url:url];
+        [self safeFlushBridge:bridge message:argOpenGreen url:url];
         return;
     }
     
     // 1. 标准 antiep.finishTask
     NSString *argGreen = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antiep.finishTask\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"ags-source\":\"chInfo_ch_appcenter__chsub_9patch\"},\"requestData\":[{\"sceneCode\":\"%@\",\"taskType\":\"%@\",\"outBizNo\":\"%@\",\"requestType\":\"RPC\",\"source\":\"%@\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", scene, taskType, outBizNo, source, timeStamp, randNum];
-    [bridge _doFlushMessageQueue:argGreen url:url];
+    [self safeFlushBridge:bridge message:argGreen url:url];
     
     // 2. 农场非主场景（如 10021、BABA_FARM_TASK）同时补充主场景 ANTFARM_ORCHARD_TASK_V2 双向确认
     if (isFarmScene && ![scene isEqualToString:@"ANTFARM_ORCHARD_TASK_V2"] && ![scene isEqualToString:@"ORCHARD_LIMITED_TIME_CHALLENGE"]) {
         NSString *argGreenV2 = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antiep.finishTask\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"ags-source\":\"chInfo_ch_appcenter__chsub_9patch\"},\"requestData\":[{\"sceneCode\":\"ANTFARM_ORCHARD_TASK_V2\",\"taskType\":\"%@\",\"outBizNo\":\"%@_v2\",\"requestType\":\"RPC\",\"source\":\"BABA_FARM\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", taskType, outBizNo, timeStamp, [AntForestManager getNumberRandom:15]];
-        [bridge _doFlushMessageQueue:argGreenV2 url:url];
+        [self safeFlushBridge:bridge message:argGreenV2 url:url];
     }
     
     // 3. 补充 antieptask.finishTaskopengreen 兼容 OpenGreen 任务网关（全场景支持）
     NSString *argOpenGreen = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antieptask.finishTaskopengreen\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"ags-source\":\"chInfo_ch_appcenter__chsub_9patch\"},\"requestData\":[{\"sceneCode\":\"%@\",\"taskType\":\"%@\",\"outBizNo\":\"%@_og\",\"requestType\":\"RPC\",\"source\":\"%@\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", scene, taskType, outBizNo, source, timeStamp, [AntForestManager getNumberRandom:15]];
-    [bridge _doFlushMessageQueue:argOpenGreen url:url];
+    [self safeFlushBridge:bridge message:argOpenGreen url:url];
 }
 
 -(void)receiveVitalityTaskAward:(NSString *)taskType sceneCode:(NSString *)sceneCode taskTitle:(NSString *)title awardName:(NSString *)awardName {
@@ -2742,13 +2763,23 @@ static NSString *sLastQueriedSceneCode = nil;
         }
     }
     
-    // 寻宝、保护地、神奇海洋、AI摸鱼与芭芭农场专属 OpenGreen 任务网关领奖（避免向不支持的旧版 antiep 发送导致 3000 / 400000040 报错）
-    if (isOpenGreenScene) {
+    // 寻宝、保护地、神奇海洋、AI摸鱼与芭芭农场专属 OpenGreen 任务网关领奖，以及淘宝、导流、外链类任务（仅派发 OpenGreen，避免向不支持的旧版 antiep 发送导致 400000040 报错）
+    BOOL isDaoliuTask = [taskType.lowercaseString containsString:@"daoliu"] ||
+                        [taskType.lowercaseString containsString:@"taobao"] ||
+                        [taskType.lowercaseString containsString:@"tb_"] ||
+                        [taskType.lowercaseString containsString:@"kuaishou"] ||
+                        [taskType.lowercaseString containsString:@"ks_"] ||
+                        [taskType.lowercaseString containsString:@"xianyu"] ||
+                        [taskType.lowercaseString containsString:@"uc"] ||
+                        [title containsString:@"淘宝"] ||
+                        [title containsString:@"逛"] ||
+                        [title containsString:@"搜"];
+    if (isOpenGreenScene || isDaoliuTask) {
         NSString *argOpenGreen = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antieptask.receiveTaskAwardopengreen\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"ags-source\":\"chInfo_ch_appcenter__chsub_9patch\"},\"requestData\":[{\"sceneCode\":\"%@\",\"taskType\":\"%@\",\"ignoreLimit\":false,\"requestType\":\"RPC\",\"source\":\"%@\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", scene, taskType, source, timeStamp, randNum];
-        [bridge _doFlushMessageQueue:argOpenGreen url:url];
+        [self safeFlushBridge:bridge message:argOpenGreen url:url];
         if (![pureTaskType isEqualToString:taskType]) {
             NSString *argOpenPure = [NSString stringWithFormat:@"[{\"handlerName\":\"rpc\",\"data\":{\"operationType\":\"com.alipay.antieptask.receiveTaskAwardopengreen\",\"showError\":false,\"showLoading\":false,\"headers\":{\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"ags-source\":\"chInfo_ch_appcenter__chsub_9patch\"},\"requestData\":[{\"sceneCode\":\"%@\",\"taskType\":\"%@\",\"ignoreLimit\":false,\"requestType\":\"RPC\",\"source\":\"%@\"}],\"getResponse\":true},\"callbackId\":\"rpc_%@.%@\"}]", scene, pureTaskType, source, timeStamp, [AntForestManager getNumberRandom:15]];
-            [bridge _doFlushMessageQueue:argOpenPure url:url];
+            [self safeFlushBridge:bridge message:argOpenPure url:url];
         }
         return;
     }
@@ -3663,9 +3694,10 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
                 }
             }
         } else if ([resCode isEqualToString:@"400000040"] || [resDesc containsString:@"不支持rpc调用"] || [resCode isEqualToString:@"400000001"] || [resDesc containsString:@"任务全局配置不存在"]) {
-            BOOL isLegacyAntiepFinish = [opType isEqualToString:@"com.alipay.antiep.finishTask"];
-            if (isLegacyAntiepFinish) {
-                // 旧版 antiep.finishTask 对导流/浏览类任务不支持 RPC 调用属于正常回包，已被 OpenGreen 或真实浏览覆盖，严禁误将任务加入失败黑名单
+            BOOL isLegacyAntiepRpc = [opType hasPrefix:@"com.alipay.antiep."] && ![opType containsString:@"antieptask"];
+            BOOL isDaoliuTaskKey = [resolvedKey.lowercaseString containsString:@"taobao"] || [resolvedKey.lowercaseString containsString:@"daoliu"] || [resolvedKey.lowercaseString containsString:@"tb_"] || [resolvedKey.lowercaseString containsString:@"uc"];
+            if (isLegacyAntiepRpc || isDaoliuTaskKey) {
+                // 旧版 antiep RPC 对导流/浏览/淘宝类任务不支持直接调用属于正常回包，已被 OpenGreen 覆盖，严禁误将任务加入失败黑名单
                 return;
             }
             NSString *moduleTag = ([resolvedKey containsString:@"FARM"] || [resolvedKey containsString:@"ORCHARD"]) ? @"芭芭农场" : (([resolvedKey containsString:@"DRAW"] || [resolvedKey containsString:@"LOTTERY"]) ? @"森林寻宝" : (([resolvedKey containsString:@"MONOPOLY"] || [resolvedKey containsString:@"HSDWY"]) ? @"新版保护地" : (([resolvedKey containsString:@"RESCUE"] || [resolvedKey containsString:@"OCEAN"]) ? @"神奇海洋" : ([resolvedKey containsString:@"AIFISH"] ? @"AI摸鱼" : @"任务中心"))));
@@ -3897,7 +3929,12 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
             // 3. 严禁将 TODO 或 INIT 状态的任务判定为待领取（TODO任务尚未完成，绝不能直接领奖，必须作为 browse 或 finish 执行）；
             // 4. 严禁使用 finishedBtnText！finishedBtnText 仅为任务完结后展示的静态文案模板，未完成时服务端也会下发。
             //    只有当前 active 按钮 btnText 明确表示可领取且 taskStatus 非 TODO 时，才作为待领依据。
-            BOOL isTodoStatus = [taskStatus isEqualToString:@"TODO"] || [taskStatus isEqualToString:@"INIT"];
+            BOOL isTodoStatus = [taskStatus isEqualToString:@"TODO"] ||
+                                [taskStatus isEqualToString:@"INIT"] ||
+                                [taskStatus isEqualToString:@"WAIT_TODO"] ||
+                                [taskStatus isEqualToString:@"NOT_START"] ||
+                                [taskStatus isEqualToString:@"DOING"] ||
+                                [taskStatus isEqualToString:@"IN_PROGRESS"];
             
             NSString *btnText = bizInfo[@"btnText"] ?: bizInfo[@"buttonText"] ?: baseInfo[@"btnText"] ?: t[@"btnText"] ?: @"";
             if (!btnText.length && [t[@"taskDisplayConfig"] isKindOfClass:NSDictionary.class]) {
@@ -3946,7 +3983,15 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
             }
             
             // 如果存在待领奖且之前在失败列表中，仅在重试未超限时给予机会，绝不无限制抹除重试计数
-            if (hasPendingAward) {
+            BOOL isTaobaoTask = [taskTitle containsString:@"淘宝"] || [taskType.lowercaseString containsString:@"taobao"] || [taskType.lowercaseString containsString:@"tb_"];
+            if (isTaobaoTask && !isAllFinished) {
+                // 淘宝任务只要服务端非已完结状态，立即清除历史已完成与失败误缓存，确保稳定执行
+                @synchronized(self) {
+                    [gDailyCompletedTasks removeObject:taskKey];
+                    [gDailyFailedTasks removeObject:taskKey];
+                    saveDailyTaskCache();
+                }
+            } else if (hasPendingAward) {
                 @synchronized(self) {
                     if ([gDailyFailedTasks containsObject:taskKey]) {
                         NSInteger currRetries = [gVitalityTaskRetryCounts[taskKey] integerValue];
@@ -3956,8 +4001,8 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
                     }
                     saveDailyTaskCache();
                 }
-            } else if ([taskStatus isEqualToString:@"TODO"]) {
-                // 服务端明确为 TODO 状态，必须清除旧版残留的已完成误缓存，但严禁清除失败缓存避免死循环重试
+            } else if (isTodoStatus) {
+                // 服务端明确为待完成状态，必须清除旧版残留的已完成误缓存，但严禁清除失败缓存避免死循环重试
                 @synchronized(self) {
                     if ([gDailyCompletedTasks containsObject:taskKey]) {
                         [gDailyCompletedTasks removeObject:taskKey];
@@ -3974,13 +4019,13 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
                 }
             }
             
-            // 如果今日已完成且服务端状态非 TODO，坚决跳过，绝不重复排队
-            if ([gDailyCompletedTasks containsObject:taskKey] && !isMultiIncomplete && ![taskStatus isEqualToString:@"TODO"]) {
+            // 如果今日已完成且服务端状态非待完成，坚决跳过，绝不重复排队
+            if ([gDailyCompletedTasks containsObject:taskKey] && !isMultiIncomplete && !isTodoStatus && !isTaobaoTask) {
                 continue;
             }
             
-            // 针对失败任务，坚决跳过，杜绝重复排队重试导致死循环
-            if ([gDailyFailedTasks containsObject:taskKey]) {
+            // 针对失败任务，坚决跳过，杜绝重复排队重试导致死循环（未完结的淘宝任务除外）
+            if ([gDailyFailedTasks containsObject:taskKey] && !isTaobaoTask) {
                 continue;
             }
 
@@ -4153,7 +4198,7 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
                     @"awardName": awardName,
                     @"isMultiStage": @(isMultiIncomplete)
                 }];
-            } else if ([taskStatus isEqualToString:@"TODO"] || (rightsTimesLimit > 0 && rightsTimes < rightsTimesLimit) || isMultiIncomplete) {
+            } else if (isTodoStatus || (rightsTimesLimit > 0 && rightsTimes < rightsTimesLimit) || isMultiIncomplete) {
                 if (requiresTimedBrowse) {
                     // 仅对明确要求倒计时/停留指定时长的任务进行定时停留
                     [newlyParsedTasks addObject:@{
@@ -6500,10 +6545,17 @@ static BOOL oceanPlanLoggedThisRound = NO;
                     [self queryVitalityTaskListWithForce:YES];
                 }
             } else {
-                static NSString *sLastDayMidnightSignTriggered = nil;
-                if (![sLastDayMidnightSignTriggered isEqualToString:today]) {
-                    sLastDayMidnightSignTriggered = today;
-                    [self recordStage:@"领奖励：零点跨天开启，正在刷新拉取今日能量签到..."];
+                BOOL isSignedToday = NO;
+                @synchronized(self) {
+                    isSignedToday = [gDailyCompletedTasks containsObject:@"SIGN_TODAY"];
+                }
+                if (!isSignedToday) {
+                    static NSTimeInterval sLastMidnightLogTime = 0;
+                    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+                    if (now - sLastMidnightLogTime > 60.0) {
+                        sLastMidnightLogTime = now;
+                        [self recordStage:@"领奖励：零点跨天检测到今日尚未签到，正在刷新拉取并执行能量签到..."];
+                    }
                     [self notifyActiveH5PageToRefresh];
                     [self queryVitalityTaskListWithForce:YES];
                 } else {
@@ -7155,14 +7207,7 @@ static BOOL oceanPlanLoggedThisRound = NO;
             NSDictionary *daysVO = [contSignVO[@"continuousSignDaysVO"] isKindOfClass:NSDictionary.class] ? contSignVO[@"continuousSignDaysVO"] : nil;
             if (daysVO) {
                 BOOL isSigned = [daysVO[@"signed"] boolValue];
-                if (isSigned) {
-                    @synchronized(self) {
-                        if (![gDailyCompletedTasks containsObject:@"SIGN_TODAY"]) {
-                            [gDailyCompletedTasks addObject:@"SIGN_TODAY"];
-                            saveDailyTaskCache();
-                        }
-                    }
-                } else {
+                if (!isSigned) {
                     @synchronized(self) {
                         if ([gDailyCompletedTasks containsObject:@"SIGN_TODAY"]) {
                             [gDailyCompletedTasks removeObject:@"SIGN_TODAY"];
