@@ -2856,6 +2856,7 @@ static NSString *sLastQueriedSceneCode = nil;
 static BOOL sHasPerformedWorkInCurrentVitalityRound = NO;
 static NSInteger sVitalityAutoRefreshRounds = 0;
 
+static WKWebView *sSilentTaskWebView = nil;
 static void silentlyPrefetchTaskUrl(NSString *jumpUrl) {
     if (!jumpUrl.length) return;
     NSString *cleanUrl = jumpUrl;
@@ -2881,6 +2882,21 @@ static void silentlyPrefetchTaskUrl(NSString *jumpUrl) {
             NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:reqUrl cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:8.0];
             [req setValue:@"Mozilla/5.0 (iPhone; CPU iPhone OS 16_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Nebula AlipayDefined(nt:WIFI,ws:393|759,fx:393|852) AliApp(AP/12.12.16.6000) AlipayClient/12.12.16.6000 Language/zh-Hans" forHTTPHeaderField:@"User-Agent"];
             [[[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:^(__unused NSData *d, __unused NSURLResponse *res, __unused NSError *err){}] resume];
+            
+            // 针对淘宝等需要执行前端 JS (mtop 鉴权) 的外链，在静默离屏 WebView 中加载以自动达成完成状态
+            BOOL isTaobaoOrDaoliu = [cleanUrl containsString:@"taobao.com"] || [cleanUrl containsString:@"starlink"] || [cleanUrl containsString:@"tmall.com"] || [cleanUrl containsString:@"goofish.com"];
+            if (isTaobaoOrDaoliu) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    @try {
+                        if (!sSilentTaskWebView) {
+                            WKWebViewConfiguration *config = [[WKWebViewConfiguration alloc] init];
+                            sSilentTaskWebView = [[WKWebView alloc] initWithFrame:CGRectMake(0, 0, 1, 1) configuration:config];
+                            sSilentTaskWebView.hidden = YES;
+                        }
+                        [sSilentTaskWebView loadRequest:req];
+                    } @catch (NSException *e) {}
+                });
+            }
         }
     }
 }
@@ -3616,17 +3632,18 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
         NSString *respSceneCode = [NSString stringWithFormat:@"%@", finishVO[@"sceneCode"] ?: (receiveVO[@"sceneCode"] ?: (data[@"sceneCode"] ?: (args[@"sceneCode"] ?: @"")))];
         NSString *resolvedKey = (respTaskType.length && respSceneCode.length) ? [NSString stringWithFormat:@"%@:%@", respSceneCode, respTaskType] : gCurrentExecutingTaskKey;
         
-        BOOL isTaskExecOp = [opType containsString:@"finishTask"] || [opType containsString:@"receiveTaskAward"] || [opType containsString:@"applyTask"] || [opType containsString:@"antieptask."];
+        BOOL isTaskExecOp = ([opType containsString:@"finishTask"] || [opType containsString:@"receiveTaskAward"] || [opType containsString:@"applyTask"] || [opType containsString:@"exchangeVitality"]) && ![opType containsString:@"listTask"] && ![opType containsString:@"query"];
         if (isTaskExecOp) {
-            BOOL isSuccess = [resCode isEqualToString:@"100000000"] || [resCode isEqualToString:@"SUCCESS"] || [data[@"success"] boolValue] || [args[@"success"] boolValue] || [resDesc containsString:@"处理成功"] || [resDesc containsString:@"成功"];
+            BOOL isSuccess = [resCode isEqualToString:@"100000000"] || [resCode isEqualToString:@"1000"] || [resCode isEqualToString:@"SUCCESS"] || [data[@"success"] boolValue] || [args[@"success"] boolValue] || [resDesc containsString:@"处理成功"] || [resDesc containsString:@"成功"];
             if (!isSuccess && ![resCode isEqualToString:@"400000040"] && resCode.length) {
                 [self recordStage:[NSString stringWithFormat:@"领奖励·执行回包：%@ (code=%@, desc=%@)", opType, resCode ?: @"-", resDesc ?: @"-"]];
             }
         }
         
-        if (receiveVO != nil || [opType containsString:@"receiveTaskAward"] || [opType containsString:@"receive"] || [resDesc containsString:@"任务已完结"] || [resDesc containsString:@"已完结"] || [resDesc containsString:@"已领取"] || [resDesc containsString:@"无法重复领取"] || finishHasNoNextStage) {
-            if ([resCode isEqualToString:@"100000000"] || [resCode isEqualToString:@"400000030"] || [resCode isEqualToString:@"400000005"] || [resCode isEqualToString:@"400000012"] || [resCode isEqualToString:@"B000000008"] || [resCode isEqualToString:@"SUCCESS"] || [data[@"success"] boolValue] || [args[@"success"] boolValue] ||
-                [resDesc containsString:@"处理成功"] || [resDesc containsString:@"成功"] || [resDesc containsString:@"超过上限"] || [resDesc containsString:@"无法重复领取"] || [resDesc containsString:@"已完结"] || [resDesc containsString:@"已领取"]) {
+        BOOL isRightsSuccess = [data[@"provideRightsSuccess"] boolValue] || [args[@"provideRightsSuccess"] boolValue] || [data[@"incAwardCount"] integerValue] > 0 || [args[@"incAwardCount"] integerValue] > 0 || (data[@"taskConfigResultVO"] != nil && [data[@"success"] boolValue]);
+        if (receiveVO != nil || isRightsSuccess || [opType containsString:@"receiveTaskAward"] || [opType containsString:@"receive"] || [resDesc containsString:@"任务已完结"] || [resDesc containsString:@"已完结"] || [resDesc containsString:@"已领取"] || [resDesc containsString:@"无法重复领取"] || finishHasNoNextStage) {
+            if ([resCode isEqualToString:@"100000000"] || [resCode isEqualToString:@"1000"] || [resCode isEqualToString:@"400000030"] || [resCode isEqualToString:@"400000005"] || [resCode isEqualToString:@"400000012"] || [resCode isEqualToString:@"B000000008"] || [resCode isEqualToString:@"SUCCESS"] || [data[@"success"] boolValue] || [args[@"success"] boolValue] ||
+                [resDesc containsString:@"处理成功"] || [resDesc containsString:@"成功"] || [resDesc containsString:@"超过上限"] || [resDesc containsString:@"无法重复领取"] || [resDesc containsString:@"已完结"] || [resDesc containsString:@"已领取"] || isRightsSuccess) {
                 if (resolvedKey.length) {
                     @synchronized(self) {
                         if (gCurrentExecutingTaskIsMultiStage && ![resDesc containsString:@"已完结"] && ![resDesc containsString:@"超过上限"] && !finishHasNoNextStage) {
@@ -3639,7 +3656,18 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
                         saveDailyTaskCache();
                     }
                     NSString *moduleTag = ([resolvedKey containsString:@"FARM"] || [resolvedKey containsString:@"ORCHARD"]) ? @"芭芭农场" : (([resolvedKey containsString:@"DRAW"] || [resolvedKey containsString:@"LOTTERY"]) ? @"森林寻宝" : (([resolvedKey containsString:@"MONOPOLY"] || [resolvedKey containsString:@"HSDWY"]) ? @"新版保护地" : (([resolvedKey containsString:@"RESCUE"] || [resolvedKey containsString:@"OCEAN"]) ? @"神奇海洋" : ([resolvedKey containsString:@"AIFISH"] ? @"AI摸鱼" : @"领奖励"))));
-                    [self recordStage:[NSString stringWithFormat:@"%@：服务端已确认领取成功", moduleTag]];
+                    if (isRightsSuccess) {
+                        NSDictionary *tcVO = [data[@"taskConfigResultVO"] isKindOfClass:NSDictionary.class] ? data[@"taskConfigResultVO"] : ([args[@"taskConfigResultVO"] isKindOfClass:NSDictionary.class] ? args[@"taskConfigResultVO"] : nil);
+                        NSString *awardType = tcVO[@"awardType"] ?: @"";
+                        NSInteger count = [data[@"incAwardCount"] integerValue] ?: [args[@"incAwardCount"] integerValue];
+                        if ([awardType isEqualToString:@"LUCKY_DRAW"] || [awardType containsString:@"DRAW"]) {
+                            [self recordStage:[NSString stringWithFormat:@"%@：服务端已确认领取成功（获得 %ld 次抽奖机会）", moduleTag, (long)(count > 0 ? count : 1)]];
+                        } else {
+                            [self recordStage:[NSString stringWithFormat:@"%@：服务端已确认领取成功", moduleTag]];
+                        }
+                    } else {
+                        [self recordStage:[NSString stringWithFormat:@"%@：服务端已确认领取成功", moduleTag]];
+                    }
                 }
             }
         } else if (isAntiepSignOp || hasSignModel || isSignResp) {

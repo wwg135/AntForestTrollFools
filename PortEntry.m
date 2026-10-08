@@ -2491,7 +2491,7 @@ static inline BOOL isRelevantPluginURL(NSString *urlStr) {
 }
 
 #ifndef ENABLE_PROBE_LOGS
-#define ENABLE_PROBE_LOGS 1
+#define ENABLE_PROBE_LOGS 0
 #endif
 #define AFProbeLog(...) do { if (ENABLE_PROBE_LOGS) NSLog(__VA_ARGS__); } while(0)
 
