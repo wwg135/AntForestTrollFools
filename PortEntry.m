@@ -216,7 +216,6 @@ static void startSilentRewardContext(id forestController);
 
 static void probeAndRestoreForestBridge(void) {
     AntForestManager *manager = AntForestManager.sharedInstance;
-    if (manager.rewardTaskBridge && manager.jsBridge) return;
     id controller = findAnyForestController();
     if (controller) {
         if (!manager.jsBridge) {
@@ -225,6 +224,16 @@ static void probeAndRestoreForestBridge(void) {
                 manager.jsBridge = bridge;
                 [manager recordStage:@"诊断 · 后台探针绑定森林首页 H5 Bridge"];
             }
+        }
+        if (manager.rewardTaskBridge && manager.rewardTaskBridge != manager.jsBridge) {
+            id rcv = [manager.rewardTaskBridge respondsToSelector:@selector(contentView)] ? ((id (*)(id, SEL))objc_msgSend)(manager.rewardTaskBridge, @selector(contentView)) : nil;
+            BOOL isRcvAlive = [rcv isKindOfClass:[UIView class]] ? ([(UIView *)rcv window] != nil) : (rcv != nil);
+            if (!isRcvAlive) {
+                manager.rewardTaskBridge = manager.jsBridge;
+            }
+        }
+        if (!manager.rewardTaskBridge && manager.jsBridge) {
+            manager.rewardTaskBridge = manager.jsBridge;
         }
         startSilentRewardContext(controller);
     }
