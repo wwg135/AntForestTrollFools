@@ -1090,8 +1090,8 @@ NSString* getCurrentDateTimeString() {
 
 -(void)requestNextTakeLook {
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-    if (self.lastPkInteractionTime > 0 && now - self.lastPkInteractionTime < 8.0) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    if (self.lastPkInteractionTime > 0 && now - self.lastPkInteractionTime < 25.0) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [self requestNextTakeLook];
         });
         return;
@@ -1349,6 +1349,10 @@ NSString* getCurrentDateTimeString() {
 
 - (void)safeFlushBridge:(id)bridge message:(NSString *)msg url:(NSString *)url {
     if (!bridge || !msg.length) return;
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    if (bridge == self.jsBridge && self.lastPkInteractionTime > 0 && (now - self.lastPkInteractionTime < 25.0)) {
+        return;
+    }
     if ([NSThread isMainThread]) {
         if ([bridge respondsToSelector:@selector(_doFlushMessageQueue:url:)]) {
             [bridge _doFlushMessageQueue:msg url:url];
@@ -1389,6 +1393,11 @@ static NSTimeInterval lastMyBubblesQueryTime = 0;
 
 //查询能量球
 -(void)queryFriendsBubbles:(NSString*)friendId {
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    if (self.lastPkInteractionTime > 0 && now - self.lastPkInteractionTime < 25.0) {
+        [self recordStage:@"诊断 · 气泡查询跳过：用户正在浏览PK榜"];
+        return;
+    }
     [[AntForestManager sharedLock] lock];
     
     NSString *version = @"20241025";
@@ -6529,6 +6538,11 @@ static BOOL oceanPlanLoggedThisRound = NO;
 
 //查询总排行 可以获取所有人的ID
 -(void)queryTotalRank{
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    if (self.lastPkInteractionTime > 0 && now - self.lastPkInteractionTime < 25.0) {
+        [self recordStage:@"诊断 · 好友榜查询延后：用户正在浏览PK榜"];
+        return;
+    }
     NSString *version = @"20230501";
     NSString *timeStamp = [NSString stringWithFormat:@"%ld",(long)[[NSDate  date] timeIntervalSince1970]*1000];
     NSString *randNum=[AntForestManager getNumberRandom:16];
@@ -6608,9 +6622,9 @@ static BOOL oceanPlanLoggedThisRound = NO;
             return;
         }
         NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-        if (self.lastPkInteractionTime > 0 && now - self.lastPkInteractionTime < 8.0) {
-            [self recordStage:@"诊断 · 收取延后：用户正在浏览PK榜，5秒后自动重试"];
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (self.lastPkInteractionTime > 0 && now - self.lastPkInteractionTime < 25.0) {
+            [self recordStage:@"诊断 · 收取延后：用户正在浏览PK榜，10秒后自动重试"];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 if (self.enableAutoCollect && !self.isScanRunning && self.jsBridge) {
                     [self autoCollectBubbles];
                 }
@@ -7185,7 +7199,32 @@ static BOOL oceanPlanLoggedThisRound = NO;
                                       resData[@"bubbles"] != nil || dict[@"bubbles"] != nil ||
                                       resData[@"wateringBubbles"] != nil || dict[@"wateringBubbles"] != nil);
 
+            BOOL isFillUserRobFlag = NO;
+            NSArray *friendRankingList = [resData[@"friendRanking"] isKindOfClass:NSArray.class] ? resData[@"friendRanking"] : ([dict[@"friendRanking"] isKindOfClass:NSArray.class] ? dict[@"friendRanking"] : nil);
+            if (friendRankingList.count > 0 && !resData[@"totalDatas"] && !dict[@"totalDatas"]) {
+                NSDictionary *firstItem = [friendRankingList.firstObject isKindOfClass:NSDictionary.class] ? friendRankingList.firstObject : nil;
+                if (firstItem) {
+                    if (firstItem[@"challengeExpectedSettlementResult"] != nil ||
+                        firstItem[@"canProtectBubble"] != nil ||
+                        firstItem[@"userRobFlagList"] != nil ||
+                        firstItem[@"userRobFlags"] != nil ||
+                        firstItem[@"robFlags"] != nil ||
+                        firstItem[@"canGrabPacket"] != nil ||
+                        firstItem[@"robFlag"] != nil ||
+                        firstItem[@"challengeRankLevel"] != nil) {
+                        isFillUserRobFlag = YES;
+                    }
+                }
+                NSTimeInterval nowSec = [[NSDate date] timeIntervalSince1970];
+                if (self.lastPkInteractionTime > 0 && (nowSec - self.lastPkInteractionTime < 60.0)) {
+                    if (!isHomePagePayload) {
+                        isFillUserRobFlag = YES;
+                    }
+                }
+            }
+
             BOOL isPkOrPvp = !isHomePagePayload && (
+                              isFillUserRobFlag ||
                               resData[@"rankDisplayParamsVO"] != nil || dict[@"rankDisplayParamsVO"] != nil ||
                               resData[@"dynamicPromoteVO"] != nil || dict[@"dynamicPromoteVO"] != nil ||
                               resData[@"promoteLineEnergy"] != nil || dict[@"promoteLineEnergy"] != nil ||

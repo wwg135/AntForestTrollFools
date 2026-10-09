@@ -1725,7 +1725,7 @@ static void installEarnEnergyCollector(id controller) {
 
     [self.view addSubview:grabber];
     UILabel *versionLabel = [[UILabel alloc] init];
-    versionLabel.text = @"当前版本：v3.2-4 测试版";
+    versionLabel.text = @"当前版本：v3.2 正式版";
     versionLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightRegular];
     versionLabel.textColor = [UIColor systemGray2Color];
     versionLabel.textAlignment = NSTextAlignmentCenter;
@@ -2701,6 +2701,10 @@ static void portDoFlushMessageQueue(id self, SEL _cmd, id msg, id url) {
                 if (extractedOp.length) {
                     gLastRpcOperationType = [extractedOp copy];
                     [AntForestManager sharedInstance].lastRpcOperationType = [extractedOp copy];
+                    NSString *opLower = [extractedOp lowercaseString];
+                    if ([opLower containsString:@"pk"] || [opLower containsString:@"pvp"] || [opLower containsString:@"challenge"] || [opLower containsString:@"arena"] || [opLower containsString:@"filluserrobflag"]) {
+                        [AntForestManager sharedInstance].lastPkInteractionTime = [[NSDate date] timeIntervalSince1970];
+                    }
                 }
             }
             
@@ -2964,6 +2968,7 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
         [manager matchFriendIdAndBubbles:value];
     }
     if (manager.enableAutoCollect && manager.enableSelfCollect && isMyHomeResponse(value, manager)) {
+        manager.lastPkInteractionTime = 0;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(700 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{ tryAutoCollectWaterGift(); });
     }
     
