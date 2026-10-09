@@ -7189,12 +7189,20 @@ static BOOL oceanPlanLoggedThisRound = NO;
                               [opType.lowercaseString containsString:@"pk"] ||
                               [opType.lowercaseString containsString:@"pvp"] ||
                               [opType.lowercaseString containsString:@"arena"] ||
-                              [opType.lowercaseString containsString:@"challenge"]);
+                              [opType.lowercaseString containsString:@"challenge"] ||
+                              [opType.lowercaseString containsString:@"filluserrobflag"]);
 
-            if (isPkOrPvp && !isOurSilentRpc) {
-                // 用户在前端 H5 手动点击 PK 榜 / 黄金PK赛 / 擂台赛：
-                // 保持前端视图完全独立，绝不触发后台气泡匹配、任务刷新、签到、巡护等一切侧链逻辑，彻底杜绝死锁与卡顿！
-                [self recordStage:@"诊断 · 捕获用户手动PK榜交互回包，保持前端视图独立，跳过自动化逻辑"];
+            BOOL isManualLeaderboardOrPk = (!isOurSilentRpc && (
+                isPkOrPvp ||
+                resData[@"friendRanking"] != nil || dict[@"friendRanking"] != nil ||
+                resData[@"totalDatas"] != nil || dict[@"totalDatas"] != nil ||
+                resData[@"totalData"] != nil || dict[@"totalData"] != nil
+            ));
+
+            if (isManualLeaderboardOrPk) {
+                // 用户在前端 H5 手动交互榜单（PK榜、段位赛、日榜、周榜、总榜及下滑分页加载）：
+                // 保持前端视图完全独立，绝不触发后台气泡匹配、任务刷新、签到、巡护等一切侧链逻辑，彻底杜绝死锁、卡顿与分页卡加载！
+                [self recordStage:@"诊断 · 捕获用户手动榜单/PK交互回包，保持前端视图独立，跳过自动化逻辑"];
                 return;
             }
 

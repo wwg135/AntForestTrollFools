@@ -331,7 +331,7 @@ static BOOL isPkOrPvpOrLeaderboardResponse(id value) {
     
     NSString *opType = [NSString stringWithFormat:@"%@", dict[@"operationType"] ?: (resData[@"operationType"] ?: @"")];
     NSString *opLower = [opType lowercaseString];
-    if ([opLower containsString:@"pk"] || [opLower containsString:@"pvp"] || [opLower containsString:@"arena"] || [opLower containsString:@"challenge"]) {
+    if ([opLower containsString:@"pk"] || [opLower containsString:@"pvp"] || [opLower containsString:@"arena"] || [opLower containsString:@"challenge"] || [opLower containsString:@"filluserrobflag"]) {
         return YES;
     }
     
@@ -357,6 +357,7 @@ static BOOL isPkOrPvpOrLeaderboardResponse(id value) {
     if (resData[@"pkTasks"] || dict[@"pkTasks"]) return YES;
     if (resData[@"friendRanking"] || dict[@"friendRanking"]) return YES;
     if (resData[@"totalDatas"] || dict[@"totalDatas"]) return YES;
+    if (resData[@"totalData"] || dict[@"totalData"]) return YES;
     if (resData[@"myself"] && [resData[@"myself"][@"rank"] integerValue] > 0 && !resData[@"bubbles"] && !resData[@"wateringBubbles"] && !resData[@"userBaseInfo"]) return YES;
     
     return NO;
