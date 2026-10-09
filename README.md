@@ -10,7 +10,7 @@
 
 ## 效果图
 
-| 收取记录面板（v3.2 正式版） | 功能设置面板 |
+| 收取记录面板（v3.2.1 正式版） | 功能设置面板 |
 | :---: | :---: |
 | ![收取记录面板](docs/ui-preview.png) | ![功能设置面板](docs/ui-settings.png) |
 
@@ -38,7 +38,16 @@
 - 收取日志：最新记录显示在顶部；保留开关状态、本轮扫描开始/结束、浇水赠能、好友浇水和成功收取结果，并区分自己与好友能量。
 - 能量统计：今日显示 g；累计满 1,000 g 后按两位小数换算为 kg；收取成功回包会去重计入统计。
 
-> v3.2 正式版：iOS 15 及以上请使用 [`AntForestPort-v3.2.dylib`](build/AntForestPort-v3.2.dylib)；iOS 14 请使用独立兼容包 [`AntForestPort-v3.2-iOS14.dylib`](build/AntForestPort-v3.2-iOS14.dylib)。包含淘宝等复杂导流任务后台静默离屏 WebView 自动达成、零点真后台自动签到防提前加锁、排行榜死锁与递归栈溢出崩溃根治、芭芭农场新刷新游戏多轮连续执行、日志与探针彻底清爽去噪等关键升级。产物均为 `arm64 + arm64e` 通用 dylib。
+> v3.2.1 正式版：iOS 15 及以上请使用 [`AntForestPort-v3.2.1.dylib`](build/AntForestPort-v3.2.1.dylib)；iOS 14 请使用独立兼容包 [`AntForestPort-v3.2.1-iOS14.dylib`](build/AntForestPort-v3.2.1-iOS14.dylib)。包含 PK 榜触底分页“加载中 ···”无限转圈彻底根治、PK 浏览全链路静默保护与首页即时恢复等关键修复。产物均为 `arm64 + arm64e` 通用 dylib。
+
+## v3.2.1 正式版更新说明
+
+- **🎯 PK 榜/排位挑战赛触底分页加载无限挂起彻底解决**：
+  - **精准捕获 `fillUserRobFlag` 回包特征**：攻克了支付宝原生 RPC 回包字典缺失 `operationType` 的底层问题，通过 `friendRanking` 中挑战结算状态 `challengeExpectedSettlementResult`、保护罩 `canProtectBubble`、偷取标记 `userRobFlagList`/`robFlags` 及时间窗口等多重指纹，100% 精确识别 PK 分页；
+  - **彻底阻断分页误入常规榜单**：杜绝了将 PK 触底加载的好友误当做常规好友榜并激进派发 20 个气泡与海洋并发查询的问题，完全保持前端 H5 视图独立；
+  - **请求端即时感应与 JSBridge 避让**：在 WebKit 消息队列层拦截 `fillUserRobFlag` 等请求，并延长静默保护时间至 25 秒，防止后台循环扫描打满单线程 WebKit JSBridge 通道导致前端 Promise 超时；
+  - **关闭 PK 榜返回首页瞬间恢复**：返回森林首页（识别本人首页响应）瞬间解除避让，好友能量自动收取与今日能量累计统计秒级响应，不受任何影响。
+- **🏷️ 控制板版本号规范更新**：控制板主标题下正式更新为 `当前版本：v3.2.1 正式版`。
 
 ## v3.2 正式版更新说明
 
