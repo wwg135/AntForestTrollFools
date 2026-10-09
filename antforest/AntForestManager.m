@@ -2823,9 +2823,15 @@ static NSString *sLastQueriedSceneCode = nil;
 
 - (void)notifyActiveH5PageToRefresh {
     dispatch_async(dispatch_get_main_queue(), ^{
+        static NSTimeInterval lastRefreshTime = 0;
+        NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+        if (now - lastRefreshTime < 3.0) return; // 频率限制，避免狂刷
+        lastRefreshTime = now;
+        
         NSMutableSet *targets = [NSMutableSet set];
-        for (PSDJsBridge *b in @[self.jsBridge ?: (id)[NSNull null], self.farmBridge ?: (id)[NSNull null], self.oceanBridge ?: (id)[NSNull null], self.aiFishBridge ?: (id)[NSNull null], self.rewardTaskBridge ?: (id)[NSNull null], self.lotteryBridge ?: (id)[NSNull null], self.monopolyBridge ?: (id)[NSNull null]]) {
-            if (b != (id)[NSNull null] && [b respondsToSelector:@selector(contentView)]) {
+        // 关键保护：绝不向森林首页 bridge (self.jsBridge) 乱发刷新事件，避免导致首页排行榜或PK榜重新渲染/重置死锁！
+        for (PSDJsBridge *b in @[self.farmBridge ?: (id)[NSNull null], self.oceanBridge ?: (id)[NSNull null], self.aiFishBridge ?: (id)[NSNull null], self.rewardTaskBridge ?: (id)[NSNull null], self.lotteryBridge ?: (id)[NSNull null], self.monopolyBridge ?: (id)[NSNull null]]) {
+            if (b != (id)[NSNull null] && b != self.jsBridge && [b respondsToSelector:@selector(contentView)]) {
                 id cv = [b contentView];
                 if (cv) [targets addObject:cv];
                 if ([cv respondsToSelector:@selector(webView)]) {
@@ -2836,7 +2842,9 @@ static NSString *sLastQueriedSceneCode = nil;
         }
         if (!targets.count) return;
         
-        NSString *js = @"(()=>{try{const evs=['pullRefresh','resume','pageResume','pageshow','visibilitychange'];evs.forEach(t=>{try{document.dispatchEvent(new CustomEvent(t,{bubbles:true,cancelable:true,data:{}}));}catch(_){try{const e=document.createEvent('HTMLEvents');e.initEvent(t,true,true);document.dispatchEvent(e);}catch(__){}}try{window.dispatchEvent(new Event(t));}catch(_){}});}catch(_){}try{if(window.AlipayJSBridge){if(window.AlipayJSBridge.fireEvent){try{window.AlipayJSBridge.fireEvent('pullRefresh');}catch(_){}try{window.AlipayJSBridge.fireEvent('resume');}catch(_){}try{window.AlipayJSBridge.fireEvent('pageResume');}catch(_){}}if(window.AlipayJSBridge.call){try{window.AlipayJSBridge.call('pullRefresh');}catch(_){}try{window.AlipayJSBridge.call('pageResume');}catch(_){}}}}catch(_){}})();";
+        // 关键修复：坚决移除 'pullRefresh'！严禁模拟下拉刷新重置页面视图与 Tab 选中状态！
+        // 仅派发轻量级 pageResume / resume 事件通知任务抽屉列表更新
+        NSString *js = @"(()=>{try{const evs=['pageResume','resume'];evs.forEach(t=>{try{document.dispatchEvent(new CustomEvent(t,{bubbles:true,cancelable:true,data:{}}));}catch(_){try{const e=document.createEvent('HTMLEvents');e.initEvent(t,true,true);document.dispatchEvent(e);}catch(__){}}try{window.dispatchEvent(new Event(t));}catch(_){}});}catch(_){}try{if(window.AlipayJSBridge){if(window.AlipayJSBridge.fireEvent){try{window.AlipayJSBridge.fireEvent('pageResume');}catch(_){}try{window.AlipayJSBridge.fireEvent('resume');}catch(_){}}if(window.AlipayJSBridge.call){try{window.AlipayJSBridge.call('pageResume');}catch(_){}}}}catch(_){}})();";
         SEL evalSel = @selector(evaluateJavaScript:completionHandler:);
         
         SEL resumeSel = NSSelectorFromString(@"contentViewDidResume");
@@ -2869,6 +2877,28 @@ static NSInteger sVitalityAutoRefreshRounds = 0;
 
 static WKWebView *sSilentTaskWebView = nil;
 
+static void triggerSilentTaskPushWindow(NSString *jumpUrl) {
+    if (!jumpUrl.length) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        AntForestManager *manager = [AntForestManager sharedInstance];
+        manager.lastSilentTaskTransitTimestamp = [[NSDate date] timeIntervalSince1970];
+        NSDictionary *params = @{
+            @"url": jumpUrl,
+            @"param": @{
+                @"transparent": @YES,
+                @"showTitleBar": @NO,
+                @"showLoading": @NO
+            }
+        };
+        NSData *data = [NSJSONSerialization dataWithJSONObject:params options:0 error:nil];
+        if (data) {
+            NSString *jsonStr = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+            NSString *js = [NSString stringWithFormat:@"try{if(window.AlipayJSBridge&&window.AlipayJSBridge.call){window.AlipayJSBridge.call('pushWindow',%@);}}catch(e){}", jsonStr];
+            [manager executeRewardTaskScriptOnWebView:js];
+        }
+    });
+}
+
 static void silentlyPrefetchTaskUrl(NSString *jumpUrl) {
     if (!jumpUrl.length) return;
     NSString *cleanUrl = jumpUrl;
@@ -2896,9 +2926,10 @@ static void silentlyPrefetchTaskUrl(NSString *jumpUrl) {
             [req setValue:ua forHTTPHeaderField:@"User-Agent"];
             [[[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:^(__unused NSData *d, __unused NSURLResponse *res, __unused NSError *err){}] resume];
             
-            // 针对淘宝等需要执行前端 JS (mtop 鉴权) 的外链，在静默离屏 WebView 中加载以自动达成完成状态
-            BOOL isTaobaoOrDaoliu = [cleanUrl containsString:@"taobao.com"] || [cleanUrl containsString:@"starlink"] || [cleanUrl containsString:@"tmall.com"] || [cleanUrl containsString:@"goofish.com"];
+            // 针对淘宝等需要执行前端 JS (mtop 鉴权) 的外链，在真实端内容器全透明静默 pushWindow 加载达成完成状态
+            BOOL isTaobaoOrDaoliu = [cleanUrl containsString:@"taobao.com"] || [cleanUrl containsString:@"starlink"] || [cleanUrl containsString:@"tmall.com"] || [cleanUrl containsString:@"goofish.com"] || [cleanUrl containsString:@"qiandao"] || [jumpUrl containsString:@"taobao"] || [jumpUrl containsString:@"starlink"];
             if (isTaobaoOrDaoliu) {
+                triggerSilentTaskPushWindow(cleanUrl);
                 dispatch_async(dispatch_get_main_queue(), ^{
                     @try {
                         if (!sSilentTaskWebView) {
@@ -2966,7 +2997,7 @@ static void silentlyPrefetchTaskUrl(NSString *jumpUrl) {
                     NSSet<NSString *> *executedScenes = [sExecutedScenesInCurrentRound copy];
                     [sExecutedScenesInCurrentRound removeAllObjects];
                     
-                    if (sHasPerformedWorkInCurrentVitalityRound && sVitalityAutoRefreshRounds < 5) {
+                    if (sHasPerformedWorkInCurrentVitalityRound && sVitalityAutoRefreshRounds < 2) {
                         sHasPerformedWorkInCurrentVitalityRound = NO;
                         sVitalityAutoRefreshRounds++;
                         
@@ -3024,7 +3055,7 @@ static void silentlyPrefetchTaskUrl(NSString *jumpUrl) {
                         BOOL didWork = sHasPerformedWorkInCurrentVitalityRound;
                         sHasPerformedWorkInCurrentVitalityRound = NO;
                         // 严禁在此立即清零 sVitalityAutoRefreshRounds！保持上限状态，交由 autoCollectBubbles 新一轮扫描重置，彻底杜绝同周期自旋死循环
-                        sVitalityAutoRefreshRounds = 5;
+                        sVitalityAutoRefreshRounds = 2;
                         if (didWork) {
                             if ([executedScenes containsObject:@"FARM"]) {
                                 [self recordStage:@"芭芭农场：当前所有任务奖励已全部领取完毕"];
@@ -3483,7 +3514,16 @@ static BOOL isMultiStageTaskFromDict(NSDictionary *taskDict, NSDictionary *baseI
 
 static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *bizInfo, NSString *taskTitle) {
     NSString *title = taskTitle ?: @"";
-    NSString *taskType = [baseInfo[@"taskType"] isKindOfClass:NSString.class] ? baseInfo[@"taskType"] : @"";
+    NSString *taskType = @"";
+    if ([baseInfo isKindOfClass:NSDictionary.class]) {
+        taskType = baseInfo[@"taskType"] ?: baseInfo[@"taskId"] ?: @"";
+        if (!taskType.length && [baseInfo[@"taskBaseInfo"] isKindOfClass:NSDictionary.class]) {
+            taskType = baseInfo[@"taskBaseInfo"][@"taskType"] ?: baseInfo[@"taskBaseInfo"][@"taskId"] ?: @"";
+        }
+        if (!taskType.length && [baseInfo[@"taobaoTaskParams"] isKindOfClass:NSDictionary.class]) {
+            taskType = baseInfo[@"taobaoTaskParams"][@"deliveryId"] ?: baseInfo[@"taobaoTaskParams"][@"implId"] ?: @"";
+        }
+    }
     
     // 1. 优先从文案中动态正则扫描明确秒数要求 (如 "15s", "15秒", "30秒", "5秒", "10秒" 等)
     NSMutableArray<NSString *> *textCandidates = [NSMutableArray array];
@@ -3617,10 +3657,11 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
     }
     
     // 7. 淘宝/导流外链任务明确需要静默加载并触发前端 mtop 鉴权，保留 6 秒确保后台脚本执行完毕
-    if ([taskType containsString:@"TAOBAO"] || [taskType containsString:@"TB"] || [title containsString:@"淘宝"] || [title containsString:@"去淘宝"]) {
+    NSString *upperTitle = [title uppercaseString];
+    if ([upperType containsString:@"TAOBAO"] || [upperType containsString:@"TB_"] || [upperType containsString:@"TB"] || [upperTitle containsString:@"淘宝"] || [upperTitle containsString:@"去淘宝"] || [upperType containsString:@"QIANDAO"] || [upperTitle containsString:@"签到领红包"]) {
         return 6;
     }
-    if ([taskType containsString:@"XIANYU"] || [taskType containsString:@"BBNC"] || [taskType containsString:@"shenqiyutang"] || [taskType containsString:@"SQYT"] || [taskType containsString:@"XLIGHT"] || [title containsString:@"UC"] || [title containsString:@"芭芭农场"] || [title containsString:@"施肥"] || [title containsString:@"闲置"] || [title containsString:@"闲鱼"] || [title containsString:@"循环"] || [title containsString:@"市集"] || [title containsString:@"集市"] || [title containsString:@"鱼塘"] || [title containsString:@"逛一逛"] || [title containsString:@"去看看"]) {
+    if ([upperType containsString:@"XIANYU"] || [upperType containsString:@"BBNC"] || [upperType containsString:@"SHENQIYUTANG"] || [upperType containsString:@"SQYT"] || [upperType containsString:@"XLIGHT"] || [upperTitle containsString:@"UC"] || [upperTitle containsString:@"芭芭农场"] || [upperTitle containsString:@"施肥"] || [upperTitle containsString:@"闲置"] || [upperTitle containsString:@"闲鱼"] || [upperTitle containsString:@"循环"] || [upperTitle containsString:@"市集"] || [upperTitle containsString:@"集市"] || [upperTitle containsString:@"鱼塘"] || [upperTitle containsString:@"逛一逛"] || [upperTitle containsString:@"去看看"]) {
         return 2;
     }
     
@@ -4240,10 +4281,13 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
             }
             if (alreadyQueued) continue;
             
-            NSString *jumpUrl = baseInfo[@"taskJumpUrl"] ?: bizInfo[@"taskJumpUrl"] ?: bizInfo[@"targetUrl"] ?: t[@"taskJumpUrl"] ?: bizInfo[@"url"] ?: @"";
+            NSString *jumpUrl = baseInfo[@"taskJumpUrl"] ?: bizInfo[@"taskJumpUrl"] ?: bizInfo[@"jumpUrl"] ?: bizInfo[@"targetUrl"] ?: t[@"taskJumpUrl"] ?: t[@"jumpUrl"] ?: t[@"targetUrl"] ?: bizInfo[@"url"] ?: bizInfo[@"actionUrl"] ?: bizInfo[@"h5Url"] ?: bizInfo[@"taskSchema"] ?: bizInfo[@"schema"] ?: bizInfo[@"jumpScheme"] ?: @"";
             if (![jumpUrl isKindOfClass:NSString.class]) jumpUrl = @"";
             
             NSInteger explicitBrowseSec = extractTaskBrowseSeconds(t ?: baseInfo, bizInfo, taskTitle);
+            if (isTaobaoTask && explicitBrowseSec < 6) {
+                explicitBrowseSec = 6;
+            }
             BOOL requiresTimedBrowse = (explicitBrowseSec > 0);
             
             if ([prodPlayType isEqualToString:@"EXCHANGE_ASSET"] || [taskType containsString:@"VITALITY_EXCHANGE"] || [taskType isEqualToString:@"NORMAL_DRAW_EXCHANGE_VITALITY"]) {
@@ -4342,7 +4386,7 @@ static NSInteger extractTaskBrowseSeconds(NSDictionary *baseInfo, NSDictionary *
             
             totalQueuedCount = vitalityTaskQueue.count;
             if (totalQueuedCount > 0 && !vitalityTaskRunning) {
-                if (sVitalityAutoRefreshRounds >= 5) {
+                if (sVitalityAutoRefreshRounds >= 2) {
                     vitalityTaskRunning = NO;
                     [vitalityTaskQueue removeAllObjects];
                     return;
@@ -7126,7 +7170,8 @@ static BOOL oceanPlanLoggedThisRound = NO;
             NSString *signStr = [dict[@"data"] isKindOfClass:NSString.class] ? dict[@"data"] : ([resData[@"data"] isKindOfClass:NSString.class] ? resData[@"data"] : nil);
             BOOL isSignDateStr = (signStr.length >= 8 && signStr.length <= 15 && [signStr containsString:@"-"]);
             BOOL isSignResp = (([opType containsString:@"antiep.sign"] || [self.lastRpcOperationType containsString:@"antiep.sign"]) && isSignDateStr);
-            BOOL isPurePkRankRpc = ([opType containsString:@"queryPk"] || [opType containsString:@"pkRank"] || [opType containsString:@"Ranking"]) && !taskInfoList && !resData[@"taskList"] && !dict[@"taskList"] && ![opType containsString:@"antiep"] && ![opType containsString:@"queryTaskList"] && ![opType containsString:@"queryCommonSign"];
+            BOOL isPkOrPvpPayload = (resData[@"combineHandlerVOMap"][@"energyPvpInfo"] != nil || [opType containsString:@"queryPk"] || [opType containsString:@"pkRank"] || [opType containsString:@"Ranking"] || [opType containsString:@"energyPvp"] || [opType containsString:@"pvp"] || [opType containsString:@"Pvp"] || [opType.lowercaseString containsString:@"pk"]);
+            BOOL isPurePkRankRpc = isPkOrPvpPayload && !taskInfoList && !resData[@"taskList"] && !dict[@"taskList"] && ![opType containsString:@"antiep"] && ![opType containsString:@"queryTaskList"] && ![opType containsString:@"queryCommonSign"];
             BOOL hasTaskOrSignPayload = (taskInfoList.count > 0 || resData[@"taskList"] || dict[@"taskList"] || resData[@"forestTasksNew"] || resData[@"energySignVO"] || resData[@"forestSignVOList"] || dict[@"forestSignVOList"] || resData[@"forestSignVO"] || dict[@"forestSignVO"] || resData[@"signModel"] || dict[@"signModel"] || [opType containsString:@"antiep"] || [opType containsString:@"queryTaskList"] || [opType containsString:@"queryCommonSign"] || [opType containsString:@"finishTask"] || [opType containsString:@"receiveTaskAward"]);
             if (![AntForestManager isManorResponse:args] && ![opType containsString:@"antocean"] && (!isPurePkRankRpc || hasTaskOrSignPayload)) {
                 if (resData[@"forestTasksNew"] || resData[@"energySignVO"] || resData[@"forestSignVOList"] || dict[@"forestSignVOList"] || resData[@"forestSignVO"] || dict[@"forestSignVO"] || resData[@"signModel"] || dict[@"signModel"] || taskInfoList || resData[@"taskList"] || dict[@"taskList"] || resData[@"drawAsset"] || resData[@"drawEntranceVO"] || resData[@"drawActivity"] || resData[@"drawPrize"] || resData[@"drawPrizes"] || resData[@"finishAwardResultVO"] || resData[@"receiveAwardResultVO"] || resData[@"awardResultVO"] || resData[@"finishVO"] || isSignResp || [opType containsString:@"antiep"] || [opType containsString:@"queryTaskList"] || [opType containsString:@"queryCommonSign"] || [opType containsString:@"finishTask"] || [opType containsString:@"receiveTaskAward"] || [opType containsString:@"draw"] || [opType containsString:@"exchangeVitality"] || [resData[@"code"] isEqualToString:@"400000040"] || [resData[@"code"] isEqualToString:@"400000004"] || [resData[@"code"] isEqualToString:@"400000030"] || [resData[@"code"] isEqualToString:@"B000000008"] || [resData[@"desc"] containsString:@"不支持rpc调用"] || [resData[@"desc"] containsString:@"无法领取"] || [dict[@"error"] integerValue] == 3000) {
@@ -7720,18 +7765,20 @@ static BOOL oceanPlanLoggedThisRound = NO;
                         }
                     }
                 }
-                NSData *rankData = [NSKeyedArchiver archivedDataWithRootObject:fr requiringSecureCoding:NO error:nil];
-                if (rankData) {
-                    [[NSUserDefaults standardUserDefaults] setObject:rankData forKey:@"cachedFriendsRank"];
-                    [[NSUserDefaults standardUserDefaults] synchronize];
-                }
-                if (nameUpdated) {
-                    NSData *data = [NSKeyedArchiver archivedDataWithRootObject:fn requiringSecureCoding:NO error:nil];
-                    if (data) {
-                        [[NSUserDefaults standardUserDefaults] setObject:data forKey:@"friendsName"];
-                        [[NSUserDefaults standardUserDefaults] synchronize];
+                NSDictionary *frSnapshot = [fr copy];
+                NSDictionary *fnSnapshot = nameUpdated ? [fn copy] : nil;
+                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+                    NSData *rankData = [NSKeyedArchiver archivedDataWithRootObject:frSnapshot requiringSecureCoding:NO error:nil];
+                    if (rankData) {
+                        [[NSUserDefaults standardUserDefaults] setObject:rankData forKey:@"cachedFriendsRank"];
                     }
-                }
+                    if (fnSnapshot) {
+                        NSData *data = [NSKeyedArchiver archivedDataWithRootObject:fnSnapshot requiringSecureCoding:NO error:nil];
+                        if (data) {
+                            [[NSUserDefaults standardUserDefaults] setObject:data forKey:@"friendsName"];
+                        }
+                    }
+                });
                 if (self.isScanRunning) {
                     if (isOurSilentRank) {
                         self.lastSilentRankCallbackId = nil;
@@ -7753,15 +7800,8 @@ static BOOL oceanPlanLoggedThisRound = NO;
                             }
                         }
                     } else {
-                        // 用户手动在 H5 榜单点击（如日榜、周榜、黄金PK榜、收我最多榜等）：保持前端视图独立，绝不触发后台自动翻页覆盖！
-                        [self recordStage:@"诊断 · 捕获用户手动榜单交互回包，保持前端视图独立，跳过自动翻页覆盖"];
-                        if (self.enableCleanOcean && fr.allKeys.count > 0) {
-                            [self scanOceanForFriends:fr.allKeys];
-                        }
-                    }
-                } else {
-                    if (self.enableCleanOcean && fr.allKeys.count > 0) {
-                        [self scanOceanForFriends:fr.allKeys];
+                        // 用户手动在 H5 榜单点击（如日榜、周榜、黄金PK榜、收我最多榜等）：保持前端视图独立，绝不触发后台自动翻页覆盖与海洋抢占！
+                        [self recordStage:@"诊断 · 捕获用户手动榜单交互回包，保持前端视图独立，跳过自动翻页与后台好友海洋并发扫描"];
                     }
                 }
             }

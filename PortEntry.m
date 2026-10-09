@@ -2257,16 +2257,60 @@ static void initializeManager(void) {
     if (manager.enableAutoWater) [manager startScheduledWaterTimer];
 }
 
+static BOOL isSilentTransitTaskURL(NSURL *url) {
+    if (!url) return NO;
+    NSString *urlStr = [url.absoluteString lowercaseString];
+    return [urlStr containsString:@"starlink"] ||
+           [urlStr containsString:@"market.m.taobao.com"] ||
+           [urlStr containsString:@"taobao.com"] ||
+           [urlStr containsString:@"tmall.com"] ||
+           [urlStr containsString:@"tb.cn"] ||
+           [urlStr containsString:@"wakeup-transit"] ||
+           [urlStr containsString:@"taobaoqiandao"] ||
+           [urlStr containsString:@"qiandao"] ||
+           [urlStr containsString:@"daoliu"];
+}
+
 static void portViewDidLoad(id self, SEL _cmd) {
     originalViewDidLoad(self, _cmd);
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{ initializeManager(); });
+    NSURL *url = urlFromController(self);
+    NSTimeInterval lastTrigger = [AntForestManager sharedInstance].lastSilentTaskTransitTimestamp;
+    BOOL isRecentSilent = (lastTrigger > 0 && [[NSDate date] timeIntervalSince1970] - lastTrigger < 10.0);
+    if (isRecentSilent && isSilentTransitTaskURL(url)) {
+        if ([self respondsToSelector:@selector(view)]) {
+            UIView *v = [self view];
+            v.alpha = 0.001;
+            v.hidden = YES;
+        }
+    }
 }
 
 static void portViewDidAppear(id self, SEL _cmd, BOOL animated) {
     originalViewDidAppear(self, _cmd, animated);
     [[AFStepSimulator shared] installAvailableHooks];
     NSURL *url = urlFromController(self);
+    
+    // 静默外链任务（如淘宝签到星链唤端中间页）：在真实端内容器全透明静默加载，并在完成鉴权归因后自动无感关闭
+    NSTimeInterval lastTrigger = [AntForestManager sharedInstance].lastSilentTaskTransitTimestamp;
+    BOOL isRecentSilent = (lastTrigger > 0 && [[NSDate date] timeIntervalSince1970] - lastTrigger < 10.0);
+    if (isRecentSilent && isSilentTransitTaskURL(url)) {
+        if ([self respondsToSelector:@selector(view)]) {
+            UIView *v = [self view];
+            v.alpha = 0.001;
+            v.hidden = YES;
+        }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if ([self respondsToSelector:@selector(navigationController)] && [self navigationController]) {
+                [[self navigationController] popViewControllerAnimated:NO];
+            } else if ([self respondsToSelector:@selector(dismissViewControllerAnimated:completion:)]) {
+                [self dismissViewControllerAnimated:NO completion:nil];
+            }
+        });
+        return;
+    }
+
     AntForestManager *manager = [AntForestManager sharedInstance];
     
     // 第一优先级：能量雨快速判定并彻底返回，绝不执行任何森林首页、巡护、寻宝逻辑
