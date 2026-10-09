@@ -324,13 +324,41 @@ static void startForestHomeWhenBridgeReady(id controller) {
     waitForBridge();
 }
 
+static BOOL isPkOrPvpOrLeaderboardResponse(id value) {
+    if (![value isKindOfClass:NSDictionary.class]) return NO;
+    NSDictionary *dict = (NSDictionary *)value;
+    NSDictionary *resData = [dict[@"resData"] isKindOfClass:NSDictionary.class] ? dict[@"resData"] : dict;
+    
+    NSString *opType = [NSString stringWithFormat:@"%@", dict[@"operationType"] ?: (resData[@"operationType"] ?: @"")];
+    NSString *opLower = [opType lowercaseString];
+    if ([opLower containsString:@"pk"] || [opLower containsString:@"pvp"] || [opLower containsString:@"arena"]) {
+        return YES;
+    }
+    
+    if (resData[@"combineHandlerVOMap"][@"energyPvpInfo"] || dict[@"combineHandlerVOMap"][@"energyPvpInfo"]) return YES;
+    if (resData[@"energyPvpInfo"] || dict[@"energyPvpInfo"]) return YES;
+    if (resData[@"userPkInfo"] || dict[@"userPkInfo"]) return YES;
+    if (resData[@"pkRanking"] || dict[@"pkRanking"]) return YES;
+    if (resData[@"pkRankList"] || dict[@"pkRankList"]) return YES;
+    if (resData[@"pkDatas"] || dict[@"pkDatas"]) return YES;
+    if (resData[@"currentSeasonInfo"] || dict[@"currentSeasonInfo"]) return YES;
+    if (resData[@"seasonInfo"] || dict[@"seasonInfo"]) return YES;
+    if (resData[@"challengeRank"] || dict[@"challengeRank"]) return YES;
+    if (resData[@"pkTaskList"] || dict[@"pkTaskList"]) return YES;
+    if (resData[@"pkTasks"] || dict[@"pkTasks"]) return YES;
+    if (resData[@"friendRanking"] || dict[@"friendRanking"]) return YES;
+    if (resData[@"totalDatas"] || dict[@"totalDatas"]) return YES;
+    
+    return NO;
+}
+
 static BOOL isForestResponse(id value) {
     if (![value isKindOfClass:NSDictionary.class]) return NO;
     NSDictionary *response = value;
     NSDictionary *data = [response[@"resData"] isKindOfClass:NSDictionary.class] ? response[@"resData"] : nil;
     BOOL hasBubbles = (response[@"bubbles"] || response[@"wateringBubbles"] || data[@"bubbles"] || data[@"wateringBubbles"]);
     BOOL hasUser = (response[@"userBaseInfo"] || response[@"loginUserBaseInfo"] || response[@"userEnergy"] || data[@"userBaseInfo"] || data[@"loginUserBaseInfo"] || data[@"userEnergy"] || data[@"combineHandlerVOMap"]);
-    BOOL isPkOrSeason = (data[@"currentSeasonInfo"] || response[@"currentSeasonInfo"] || data[@"seasonInfo"] || response[@"seasonInfo"] || data[@"pkRanking"] || response[@"pkRanking"] || data[@"pkRankList"] || response[@"pkRankList"] || data[@"pkDatas"] || response[@"pkDatas"] || data[@"challengeRank"] || response[@"challengeRank"] || data[@"userPkInfo"] || response[@"userPkInfo"]);
+    BOOL isPkOrSeason = isPkOrPvpOrLeaderboardResponse(value);
     return (hasBubbles && hasUser) || data[@"totalDatas"] || data[@"friendRanking"] || data[@"myself"] || data[@"friendId"] || data[@"combineHandlerVOMap"] || isPkOrSeason;
 }
 
@@ -338,10 +366,23 @@ static BOOL isMyHomeResponse(id value, AntForestManager *manager) {
     NSDictionary *response = [value isKindOfClass:NSDictionary.class] ? value : nil;
     if (!response) return NO;
     NSDictionary *resData = [response[@"resData"] isKindOfClass:NSDictionary.class] ? response[@"resData"] : response;
-    if (response[@"loginUserBaseInfo"] && !response[@"userBaseInfo"]) return YES;
-    NSDictionary *base = [response[@"loginUserBaseInfo"] isKindOfClass:NSDictionary.class] ? response[@"loginUserBaseInfo"] :
-                         ([response[@"userBaseInfo"] isKindOfClass:NSDictionary.class] ? response[@"userBaseInfo"] :
+    
+    // 1. 严禁将 PK 榜、排行榜、赛季、擂台等回包误判为本人森林首页
+    if (isPkOrPvpOrLeaderboardResponse(value)) return NO;
+    
+    // 2. 好友森林页面绝对不是本人森林首页
+    if ([resData[@"nextAction"] isEqualToString:@"Friend"] || [response[@"nextAction"] isEqualToString:@"Friend"]) return NO;
+    
+    // 3. 必须具备森林首页专属特征（如 userEnergy、或挂在主树上的气泡）
+    BOOL hasHomeFeatures = (resData[@"userEnergy"] != nil || response[@"userEnergy"] != nil ||
+                            resData[@"bubbles"] != nil || response[@"bubbles"] != nil ||
+                            resData[@"wateringBubbles"] != nil || response[@"wateringBubbles"] != nil);
+    if (!hasHomeFeatures) return NO;
+    
+    // 4. 严格校验本人 UID
+    NSDictionary *base = [response[@"userBaseInfo"] isKindOfClass:NSDictionary.class] ? response[@"userBaseInfo"] :
                          ([resData[@"userBaseInfo"] isKindOfClass:NSDictionary.class] ? resData[@"userBaseInfo"] :
+                         ([response[@"loginUserBaseInfo"] isKindOfClass:NSDictionary.class] ? response[@"loginUserBaseInfo"] :
                          ([resData[@"combineHandlerVOMap"][@"userInfo"][@"userBaseInfo"] isKindOfClass:NSDictionary.class] ? resData[@"combineHandlerVOMap"][@"userInfo"][@"userBaseInfo"] : nil)));
     return manager.myUserId.length && [base[@"userId"] isEqualToString:manager.myUserId];
 }

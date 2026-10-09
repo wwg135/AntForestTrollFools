@@ -7160,6 +7160,31 @@ static BOOL oceanPlanLoggedThisRound = NO;
             }
             NSString *opType = [NSString stringWithFormat:@"%@", dict[@"operationType"] ?: (resData[@"operationType"] ?: (self.lastRpcOperationType ?: @""))];
             NSString *respId = [NSString stringWithFormat:@"%@", dict[@"responseId"] ?: (dict[@"callbackId"] ?: @"")];
+            BOOL isOurSilentRpc = [respId containsString:@"af_silent_"];
+            
+            BOOL isPkOrPvp = (resData[@"combineHandlerVOMap"][@"energyPvpInfo"] != nil ||
+                              dict[@"combineHandlerVOMap"][@"energyPvpInfo"] != nil ||
+                              resData[@"energyPvpInfo"] != nil || dict[@"energyPvpInfo"] != nil ||
+                              resData[@"userPkInfo"] != nil || dict[@"userPkInfo"] != nil ||
+                              resData[@"pkRanking"] != nil || dict[@"pkRanking"] != nil ||
+                              resData[@"pkRankList"] != nil || dict[@"pkRankList"] != nil ||
+                              resData[@"pkDatas"] != nil || dict[@"pkDatas"] != nil ||
+                              resData[@"currentSeasonInfo"] != nil || dict[@"currentSeasonInfo"] != nil ||
+                              resData[@"seasonInfo"] != nil || dict[@"seasonInfo"] != nil ||
+                              resData[@"challengeRank"] != nil || dict[@"challengeRank"] != nil ||
+                              resData[@"pkTaskList"] != nil || dict[@"pkTaskList"] != nil ||
+                              resData[@"pkTasks"] != nil || dict[@"pkTasks"] != nil ||
+                              [opType.lowercaseString containsString:@"pk"] ||
+                              [opType.lowercaseString containsString:@"pvp"] ||
+                              [opType.lowercaseString containsString:@"arena"]);
+
+            if (isPkOrPvp && !isOurSilentRpc) {
+                // 用户在前端 H5 手动点击 PK 榜 / 黄金PK赛 / 擂台赛：
+                // 保持前端视图完全独立，绝不触发后台气泡匹配、任务刷新、签到、巡护等一切侧链逻辑，彻底杜绝死锁与卡顿！
+                [self recordStage:@"诊断 · 捕获用户手动PK榜交互回包，保持前端视图独立，跳过自动化逻辑"];
+                return;
+            }
+
             if ([respId containsString:@"revive_"] || [opType containsString:@"protectBubble"] || [dict[@"handlerName"] isEqualToString:@"protectBubble"] || resData[@"protectBubble"] || resData[@"userProtectResult"]) {
                 [self handleAutoReviveResponse:args];
             }
@@ -7170,10 +7195,8 @@ static BOOL oceanPlanLoggedThisRound = NO;
             NSString *signStr = [dict[@"data"] isKindOfClass:NSString.class] ? dict[@"data"] : ([resData[@"data"] isKindOfClass:NSString.class] ? resData[@"data"] : nil);
             BOOL isSignDateStr = (signStr.length >= 8 && signStr.length <= 15 && [signStr containsString:@"-"]);
             BOOL isSignResp = (([opType containsString:@"antiep.sign"] || [self.lastRpcOperationType containsString:@"antiep.sign"]) && isSignDateStr);
-            BOOL isPkOrPvpPayload = (resData[@"combineHandlerVOMap"][@"energyPvpInfo"] != nil || [opType containsString:@"queryPk"] || [opType containsString:@"pkRank"] || [opType containsString:@"Ranking"] || [opType containsString:@"energyPvp"] || [opType containsString:@"pvp"] || [opType containsString:@"Pvp"] || [opType.lowercaseString containsString:@"pk"]);
-            BOOL isPurePkRankRpc = isPkOrPvpPayload && !taskInfoList && !resData[@"taskList"] && !dict[@"taskList"] && ![opType containsString:@"antiep"] && ![opType containsString:@"queryTaskList"] && ![opType containsString:@"queryCommonSign"];
-            BOOL hasTaskOrSignPayload = (taskInfoList.count > 0 || resData[@"taskList"] || dict[@"taskList"] || resData[@"forestTasksNew"] || resData[@"energySignVO"] || resData[@"forestSignVOList"] || dict[@"forestSignVOList"] || resData[@"forestSignVO"] || dict[@"forestSignVO"] || resData[@"signModel"] || dict[@"signModel"] || [opType containsString:@"antiep"] || [opType containsString:@"queryTaskList"] || [opType containsString:@"queryCommonSign"] || [opType containsString:@"finishTask"] || [opType containsString:@"receiveTaskAward"]);
-            if (![AntForestManager isManorResponse:args] && ![opType containsString:@"antocean"] && (!isPurePkRankRpc || hasTaskOrSignPayload)) {
+            BOOL isManualRankRpc = (!isOurSilentRpc && (resData[@"friendRanking"] != nil || resData[@"totalDatas"] != nil || dict[@"friendRanking"] != nil || dict[@"totalDatas"] != nil));
+            if (![AntForestManager isManorResponse:args] && ![opType containsString:@"antocean"] && !isManualRankRpc) {
                 if (resData[@"forestTasksNew"] || resData[@"energySignVO"] || resData[@"forestSignVOList"] || dict[@"forestSignVOList"] || resData[@"forestSignVO"] || dict[@"forestSignVO"] || resData[@"signModel"] || dict[@"signModel"] || taskInfoList || resData[@"taskList"] || dict[@"taskList"] || resData[@"drawAsset"] || resData[@"drawEntranceVO"] || resData[@"drawActivity"] || resData[@"drawPrize"] || resData[@"drawPrizes"] || resData[@"finishAwardResultVO"] || resData[@"receiveAwardResultVO"] || resData[@"awardResultVO"] || resData[@"finishVO"] || isSignResp || [opType containsString:@"antiep"] || [opType containsString:@"queryTaskList"] || [opType containsString:@"queryCommonSign"] || [opType containsString:@"finishTask"] || [opType containsString:@"receiveTaskAward"] || [opType containsString:@"draw"] || [opType containsString:@"exchangeVitality"] || [resData[@"code"] isEqualToString:@"400000040"] || [resData[@"code"] isEqualToString:@"400000004"] || [resData[@"code"] isEqualToString:@"400000030"] || [resData[@"code"] isEqualToString:@"B000000008"] || [resData[@"desc"] containsString:@"不支持rpc调用"] || [resData[@"desc"] containsString:@"无法领取"] || [dict[@"error"] integerValue] == 3000) {
                     [self handleVitalityTaskListResponse:dict];
                 }
