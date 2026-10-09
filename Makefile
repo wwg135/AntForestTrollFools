@@ -1,9 +1,9 @@
 SDK := $(shell xcrun --sdk iphoneos --show-sdk-path)
 CLANG := $(shell xcrun --sdk iphoneos --find clang)
 LIPO := $(shell xcrun --sdk iphoneos --find lipo)
-VERSION := v3.2-4
-TARGET := build/AntForestPort-$(VERSION)-beta.dylib
-IOS14_TARGET := build/AntForestPort-$(VERSION)-beta-iOS14.dylib
+VERSION := v3.2
+TARGET := build/AntForestPort-$(VERSION).dylib
+IOS14_TARGET := build/AntForestPort-$(VERSION)-iOS14.dylib
 SOURCES := PortEntry.m antforest/AntForestManager.m antforest/StepSimulator.m antforest/DebugTool/Tool.m antforest/DebugTool/UIView+Toast.m
 
 .PHONY: all clean test ios14
