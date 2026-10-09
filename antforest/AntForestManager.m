@@ -262,6 +262,14 @@ static NSString *waterResponseSummary(id value) {
     return parts.count ? [parts componentsJoinedByString:@"，"] : @"未发现状态字段";
 }
 
+static BOOL isTotalRankingReply(NSDictionary *dict, NSDictionary *resData) {
+    NSString *joined = [NSString stringWithFormat:@"%@ %@ %@ %@", dict[@"operationType"] ?: @"", dict[@"requestData"] ?: @"", resData[@"relationType"] ?: @"", resData[@"rankType"] ?: @""];
+    for (NSString *token in @[@"PK", @"PVP", @"CHALLENGE", @"ROB_ME", @"TODAY", @"WEEK", @"DAY"]) {
+        if ([joined rangeOfString:token options:NSCaseInsensitiveSearch].location != NSNotFound) return NO;
+    }
+    return [joined rangeOfString:@"TOTAL" options:NSCaseInsensitiveSearch].location != NSNotFound || resData[@"totalDatas"] != nil;
+}
+
 static BOOL canReviveFriendBubble(NSDictionary *dictRank) {
     if (![dictRank isKindOfClass:NSDictionary.class]) return NO;
     
@@ -7802,7 +7810,8 @@ static BOOL oceanPlanLoggedThisRound = NO;
                 NSNumber *canCollectEnergy = [myDict objectForKey:@"canCollectEnergy"];
                 [self recordStage:[NSString stringWithFormat:@"诊断 · 本人能量状态：%@", [canCollectEnergy isEqualToNumber:@1] ? @"可收" : @"暂无成熟能量"]];
             }
-            if(resData && (resData[@"friendRanking"] || resData[@"totalDatas"])) {
+            BOOL totalRankReply = isTotalRankingReply(dict, resData);
+            if(totalRankReply && resData && (resData[@"friendRanking"] || resData[@"totalDatas"])) {
                 NSArray *rankArr = [resData[@"friendRanking"] isKindOfClass:NSArray.class] ? resData[@"friendRanking"] : resData[@"totalDatas"];
                 NSUInteger collectable = 0;
                 for (NSDictionary *dictRank in rankArr) if ([[dictRank objectForKey:@"canCollectEnergy"] isEqualToNumber:@1]) collectable++;
@@ -7829,7 +7838,7 @@ static BOOL oceanPlanLoggedThisRound = NO;
                 }
             }
             //匹配排行
-            NSArray *rankTotalArr = [resData[@"totalDatas"] isKindOfClass:NSArray.class] ? resData[@"totalDatas"] : ([resData[@"friendRanking"] isKindOfClass:NSArray.class] ? resData[@"friendRanking"] : nil);
+            NSArray *rankTotalArr = totalRankReply ? ([resData[@"totalDatas"] isKindOfClass:NSArray.class] ? resData[@"totalDatas"] : ([resData[@"friendRanking"] isKindOfClass:NSArray.class] ? resData[@"friendRanking"] : nil)) : nil;
             if (rankTotalArr.count > 0) {
                 NSMutableDictionary *fr = [[AntForestManager sharedInstance] friendsRank];
                 NSMutableDictionary *fn = [[AntForestManager sharedInstance] friendsName];
