@@ -91,6 +91,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) NSString *lastSilentRankCallbackId; // 最近一次后台发起的静默排行榜 callbackId
 @property (nonatomic, assign) NSInteger lastRankFetchedIndex; // 最近一次拉取的排行榜分页游标
 @property (nonatomic, assign) NSTimeInterval lastSilentTaskTransitTimestamp; // 最近一次静默打开外链任务的时间戳
+@property (nonatomic, assign) NSTimeInterval lastPkInteractionTime; // 最近一次用户交互PK榜的时间戳
 
 -(BOOL)isAnimalEnergyCollectedTodayForCode:(NSString *)code name:(NSString *)name;
 -(void)markAnimalEnergyCollectedTodayForCode:(NSString *)code name:(NSString *)name reason:(NSString *)reason;

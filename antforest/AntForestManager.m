@@ -1089,6 +1089,13 @@ NSString* getCurrentDateTimeString() {
 }
 
 -(void)requestNextTakeLook {
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    if (self.lastPkInteractionTime > 0 && now - self.lastPkInteractionTime < 15.0) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self requestNextTakeLook];
+        });
+        return;
+    }
     __block NSUInteger requestToken = 0;
     @synchronized (self) {
         if (!takeLookRunning || !self.enableAutoCollect || !self.jsBridge || takeLookTotalRounds >= kTakeLookMaxRounds) {
@@ -6600,6 +6607,11 @@ static BOOL oceanPlanLoggedThisRound = NO;
             [self recordStage:@"诊断 · 收取跳过：本轮扫描正在执行中"];
             return;
         }
+        NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+        if (self.lastPkInteractionTime > 0 && now - self.lastPkInteractionTime < 15.0) {
+            [self recordStage:@"诊断 · 收取跳过：用户正在浏览PK榜，延后本轮好友扫描"];
+            return;
+        }
         self.isScanRunning = YES;
         oceanCleanedInCurrentRound = 0;
         oceanPlanLoggedThisRound = NO;
@@ -7185,24 +7197,19 @@ static BOOL oceanPlanLoggedThisRound = NO;
                               resData[@"challengeRank"] != nil || dict[@"challengeRank"] != nil ||
                               resData[@"pkTaskList"] != nil || dict[@"pkTaskList"] != nil ||
                               resData[@"pkTasks"] != nil || dict[@"pkTasks"] != nil ||
-                              (resData[@"myself"] && [resData[@"myself"][@"rank"] integerValue] > 0 && !resData[@"bubbles"] && !resData[@"wateringBubbles"] && !resData[@"userBaseInfo"]) ||
+                              resData[@"totalData"] != nil || dict[@"totalData"] != nil ||
+                              (resData[@"myself"] && [resData[@"myself"][@"rank"] integerValue] > 0 && !resData[@"bubbles"] && !resData[@"wateringBubbles"] && !resData[@"userBaseInfo"] && !resData[@"totalDatas"] && !dict[@"totalDatas"] && (resData[@"rankDisplayParamsVO"] || resData[@"extendInfo"][@"rankHeadPortraitVOS"] || resData[@"totalData"])) ||
                               [opType.lowercaseString containsString:@"pk"] ||
                               [opType.lowercaseString containsString:@"pvp"] ||
                               [opType.lowercaseString containsString:@"arena"] ||
                               [opType.lowercaseString containsString:@"challenge"] ||
                               [opType.lowercaseString containsString:@"filluserrobflag"]);
 
-            BOOL isManualLeaderboardOrPk = (!isOurSilentRpc && (
-                isPkOrPvp ||
-                resData[@"friendRanking"] != nil || dict[@"friendRanking"] != nil ||
-                resData[@"totalDatas"] != nil || dict[@"totalDatas"] != nil ||
-                resData[@"totalData"] != nil || dict[@"totalData"] != nil
-            ));
-
-            if (isManualLeaderboardOrPk) {
-                // 用户在前端 H5 手动交互榜单（PK榜、段位赛、日榜、周榜、总榜及下滑分页加载）：
+            if (isPkOrPvp) {
+                self.lastPkInteractionTime = [[NSDate date] timeIntervalSince1970];
+                // 用户在前端 H5 手动交互 PK 榜/黄金PK赛/排位赛/挑战赛（含下滑分页与 fillUserRobFlag）：
                 // 保持前端视图完全独立，绝不触发后台气泡匹配、任务刷新、签到、巡护等一切侧链逻辑，彻底杜绝死锁、卡顿与分页卡加载！
-                [self recordStage:@"诊断 · 捕获用户手动榜单/PK交互回包，保持前端视图独立，跳过自动化逻辑"];
+                [self recordStage:@"诊断 · 捕获PK/排位赛交互回包，保持前端视图独立，跳过自动化逻辑"];
                 return;
             }
 
@@ -7750,18 +7757,12 @@ static BOOL oceanPlanLoggedThisRound = NO;
                 NSNumber *canCollectEnergy = [myDict objectForKey:@"canCollectEnergy"];
                 [self recordStage:[NSString stringWithFormat:@"诊断 · 本人能量状态：%@", [canCollectEnergy isEqualToNumber:@1] ? @"可收" : @"暂无成熟能量"]];
             }
-            NSString *rankRespId = [dict objectForKey:@"responseId"] ?: [dict objectForKey:@"callbackId"];
-            BOOL isOurSilentRank = NO;
-            if (rankRespId.length) {
-                isOurSilentRank = [rankRespId containsString:@"af_silent_rank"] ||
-                                  (self.lastSilentRankCallbackId.length && [rankRespId isEqualToString:self.lastSilentRankCallbackId]);
-            }
             if(resData && (resData[@"friendRanking"] || resData[@"totalDatas"])) {
                 NSArray *rankArr = [resData[@"friendRanking"] isKindOfClass:NSArray.class] ? resData[@"friendRanking"] : resData[@"totalDatas"];
                 NSUInteger collectable = 0;
                 for (NSDictionary *dictRank in rankArr) if ([[dictRank objectForKey:@"canCollectEnergy"] isEqualToNumber:@1]) collectable++;
                 [self recordStage:[NSString stringWithFormat:@"诊断 · 排行榜校验回包：%lu 位，可收 %lu 位", (unsigned long)rankArr.count, (unsigned long)collectable]];
-                if (self.isScanRunning && isOurSilentRank) {
+                if (self.isScanRunning) {
                     for(NSDictionary *dictRank in rankArr) {
                         NSString *userId = [AntForestManager extractUserIdFromDictionary:dictRank] ?: [dictRank objectForKey:@"userId"];
                         if (!userId.length) continue;
@@ -7780,8 +7781,6 @@ static BOOL oceanPlanLoggedThisRound = NO;
                             }
                         }
                     }
-                } else if (!isOurSilentRank) {
-                    [self recordStage:@"诊断 · 捕获用户手动榜单交互回包，保持前端视图独立，跳过后台好友气泡并发查询"];
                 }
             }
             //匹配排行
@@ -7793,7 +7792,7 @@ static BOOL oceanPlanLoggedThisRound = NO;
                 for(NSDictionary *dictTotalRank in rankTotalArr) {
                     NSString *userId = [AntForestManager extractUserIdFromDictionary:dictTotalRank] ?: [dictTotalRank objectForKey:@"userId"];
                     if (!userId.length) continue;
-                    if (self.isScanRunning && isOurSilentRank && canReviveFriendBubble(dictTotalRank)) {
+                    if (self.isScanRunning && canReviveFriendBubble(dictTotalRank)) {
                         [self queueAutoReviveForUser:userId];
                     }
                     NSString *rank = [dictTotalRank objectForKey:@"rank"];
@@ -7824,28 +7823,23 @@ static BOOL oceanPlanLoggedThisRound = NO;
                     }
                 });
                 if (self.isScanRunning) {
-                    if (isOurSilentRank) {
-                        self.lastSilentRankCallbackId = nil;
-                        if (self.enableCleanOcean && fr.allKeys.count > 0) {
-                            [self scanOceanForFriends:fr.allKeys];
-                        }
-                        // 仅在设置页手动刷新浇水列表时执行分页补全，日常自动扫描绝不自动翻页覆盖
-                        BOOL shouldPaginate = waterFriendRefreshPending;
-                        if (shouldPaginate) {
-                            BOOL hasMore = [resData[@"hasMore"] boolValue] || [resData[@"hasNext"] boolValue];
-                            NSInteger nextIndex = [resData[@"nextStartIndex"] integerValue] ?: [resData[@"startIndex"] integerValue] + rankTotalArr.count;
-                            if ((hasMore || rankTotalArr.count >= 200) && nextIndex > 0 && nextIndex < 1000) {
-                                if (nextIndex > self.lastRankFetchedIndex) {
-                                    self.lastRankFetchedIndex = nextIndex;
-                                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1000 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
-                                        [self queryRankPage:nextIndex];
-                                    });
-                                }
+                    self.lastSilentRankCallbackId = nil;
+                    if (self.enableCleanOcean && fr.allKeys.count > 0) {
+                        [self scanOceanForFriends:fr.allKeys];
+                    }
+                    // 仅在设置页手动刷新浇水列表时执行分页补全，日常自动扫描绝不自动翻页覆盖
+                    BOOL shouldPaginate = waterFriendRefreshPending;
+                    if (shouldPaginate) {
+                        BOOL hasMore = [resData[@"hasMore"] boolValue] || [resData[@"hasNext"] boolValue];
+                        NSInteger nextIndex = [resData[@"nextStartIndex"] integerValue] ?: [resData[@"startIndex"] integerValue] + rankTotalArr.count;
+                        if ((hasMore || rankTotalArr.count >= 200) && nextIndex > 0 && nextIndex < 1000) {
+                            if (nextIndex > self.lastRankFetchedIndex) {
+                                self.lastRankFetchedIndex = nextIndex;
+                                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1000 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+                                    [self queryRankPage:nextIndex];
+                                });
                             }
                         }
-                    } else {
-                        // 用户手动在 H5 榜单点击（如日榜、周榜、黄金PK榜、收我最多榜等）：保持前端视图独立，绝不触发后台自动翻页覆盖与海洋抢占！
-                        [self recordStage:@"诊断 · 捕获用户手动榜单交互回包，保持前端视图独立，跳过自动翻页与后台好友海洋并发扫描"];
                     }
                 }
             }
