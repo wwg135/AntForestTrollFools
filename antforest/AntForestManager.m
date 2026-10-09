@@ -1090,7 +1090,7 @@ NSString* getCurrentDateTimeString() {
 
 -(void)requestNextTakeLook {
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-    if (self.lastPkInteractionTime > 0 && now - self.lastPkInteractionTime < 15.0) {
+    if (self.lastPkInteractionTime > 0 && now - self.lastPkInteractionTime < 8.0) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [self requestNextTakeLook];
         });
@@ -6608,8 +6608,13 @@ static BOOL oceanPlanLoggedThisRound = NO;
             return;
         }
         NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-        if (self.lastPkInteractionTime > 0 && now - self.lastPkInteractionTime < 15.0) {
-            [self recordStage:@"诊断 · 收取跳过：用户正在浏览PK榜，延后本轮好友扫描"];
+        if (self.lastPkInteractionTime > 0 && now - self.lastPkInteractionTime < 8.0) {
+            [self recordStage:@"诊断 · 收取延后：用户正在浏览PK榜，5秒后自动重试"];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                if (self.enableAutoCollect && !self.isScanRunning && self.jsBridge) {
+                    [self autoCollectBubbles];
+                }
+            });
             return;
         }
         self.isScanRunning = YES;
@@ -7174,12 +7179,13 @@ static BOOL oceanPlanLoggedThisRound = NO;
             NSString *respId = [NSString stringWithFormat:@"%@", dict[@"responseId"] ?: (dict[@"callbackId"] ?: @"")];
             BOOL isOurSilentRpc = [respId containsString:@"af_silent_"];
             
-            BOOL isPkOrPvp = (resData[@"combineHandlerVOMap"][@"energyPvpInfo"] != nil ||
-                              dict[@"combineHandlerVOMap"][@"energyPvpInfo"] != nil ||
-                              resData[@"combineHandlerVOMap"][@"energyChallengeRank"] != nil ||
-                              dict[@"combineHandlerVOMap"][@"energyChallengeRank"] != nil ||
-                              resData[@"energyPvpInfo"] != nil || dict[@"energyPvpInfo"] != nil ||
-                              resData[@"energyChallengeRank"] != nil || dict[@"energyChallengeRank"] != nil ||
+            BOOL isHomePagePayload = (resData[@"userEnergy"] != nil || dict[@"userEnergy"] != nil ||
+                                      resData[@"combineHandlerVOMap"][@"userInfo"] != nil || dict[@"combineHandlerVOMap"][@"userInfo"] != nil ||
+                                      resData[@"combineHandlerVOMap"][@"userBaseInfo"] != nil || dict[@"combineHandlerVOMap"][@"userBaseInfo"] != nil ||
+                                      resData[@"bubbles"] != nil || dict[@"bubbles"] != nil ||
+                                      resData[@"wateringBubbles"] != nil || dict[@"wateringBubbles"] != nil);
+
+            BOOL isPkOrPvp = !isHomePagePayload && (
                               resData[@"rankDisplayParamsVO"] != nil || dict[@"rankDisplayParamsVO"] != nil ||
                               resData[@"dynamicPromoteVO"] != nil || dict[@"dynamicPromoteVO"] != nil ||
                               resData[@"promoteLineEnergy"] != nil || dict[@"promoteLineEnergy"] != nil ||
@@ -7198,7 +7204,7 @@ static BOOL oceanPlanLoggedThisRound = NO;
                               resData[@"pkTaskList"] != nil || dict[@"pkTaskList"] != nil ||
                               resData[@"pkTasks"] != nil || dict[@"pkTasks"] != nil ||
                               resData[@"totalData"] != nil || dict[@"totalData"] != nil ||
-                              (resData[@"myself"] && [resData[@"myself"][@"rank"] integerValue] > 0 && !resData[@"bubbles"] && !resData[@"wateringBubbles"] && !resData[@"userBaseInfo"] && !resData[@"totalDatas"] && !dict[@"totalDatas"] && (resData[@"rankDisplayParamsVO"] || resData[@"extendInfo"][@"rankHeadPortraitVOS"] || resData[@"totalData"])) ||
+                              (resData[@"myself"] && [resData[@"myself"][@"rank"] integerValue] > 0 && !resData[@"userBaseInfo"] && !resData[@"totalDatas"] && !dict[@"totalDatas"] && (resData[@"rankDisplayParamsVO"] || resData[@"extendInfo"][@"rankHeadPortraitVOS"] || resData[@"totalData"])) ||
                               [opType.lowercaseString containsString:@"pk"] ||
                               [opType.lowercaseString containsString:@"pvp"] ||
                               [opType.lowercaseString containsString:@"arena"] ||

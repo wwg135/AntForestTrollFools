@@ -61,9 +61,10 @@ static BOOL isEnergyRainURL(NSURL *url) {
 static BOOL isForestHomeURL(NSURL *url) {
     if (!url) return NO;
     if (isEnergyRainURL(url)) return NO;
-    NSString *str = url.absoluteString ?: @"";
-    if ([str containsString:@"exchange.html"] || [str containsString:@"listRank.html"] || [str containsString:@"cert.html"]) return NO;
-    return [str containsString:@"180020010001247580"] || ([str containsString:@"60000002"] && [str containsString:@"home.html"]);
+    NSString *str = [url.absoluteString lowercaseString] ?: @"";
+    if ([str containsString:@"exchange.html"] || [str containsString:@"listrank.html"] || [str containsString:@"cert.html"]) return NO;
+    if ([str containsString:@"pk"] || [str containsString:@"challenge"] || [str containsString:@"pvp"] || [str containsString:@"arena"] || [str containsString:@"rank"]) return NO;
+    return ([str containsString:@"180020010001247580"] && [str containsString:@"home.html"]) || ([str containsString:@"60000002"] && [str containsString:@"home.html"]);
 }
 
 static BOOL isSelfForestHomeURL(NSURL *url) {
