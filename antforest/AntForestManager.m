@@ -7164,7 +7164,18 @@ static BOOL oceanPlanLoggedThisRound = NO;
             
             BOOL isPkOrPvp = (resData[@"combineHandlerVOMap"][@"energyPvpInfo"] != nil ||
                               dict[@"combineHandlerVOMap"][@"energyPvpInfo"] != nil ||
+                              resData[@"combineHandlerVOMap"][@"energyChallengeRank"] != nil ||
+                              dict[@"combineHandlerVOMap"][@"energyChallengeRank"] != nil ||
                               resData[@"energyPvpInfo"] != nil || dict[@"energyPvpInfo"] != nil ||
+                              resData[@"energyChallengeRank"] != nil || dict[@"energyChallengeRank"] != nil ||
+                              resData[@"rankDisplayParamsVO"] != nil || dict[@"rankDisplayParamsVO"] != nil ||
+                              resData[@"dynamicPromoteVO"] != nil || dict[@"dynamicPromoteVO"] != nil ||
+                              resData[@"promoteLineEnergy"] != nil || dict[@"promoteLineEnergy"] != nil ||
+                              resData[@"nextRankLevelName"] != nil || dict[@"nextRankLevelName"] != nil ||
+                              resData[@"promoteCount"] != nil || dict[@"promoteCount"] != nil ||
+                              resData[@"extendInfo"][@"rankHeadPortraitVOS"] != nil ||
+                              dict[@"extendInfo"][@"rankHeadPortraitVOS"] != nil ||
+                              resData[@"rankHeadPortraitVOS"] != nil || dict[@"rankHeadPortraitVOS"] != nil ||
                               resData[@"userPkInfo"] != nil || dict[@"userPkInfo"] != nil ||
                               resData[@"pkRanking"] != nil || dict[@"pkRanking"] != nil ||
                               resData[@"pkRankList"] != nil || dict[@"pkRankList"] != nil ||
@@ -7174,9 +7185,11 @@ static BOOL oceanPlanLoggedThisRound = NO;
                               resData[@"challengeRank"] != nil || dict[@"challengeRank"] != nil ||
                               resData[@"pkTaskList"] != nil || dict[@"pkTaskList"] != nil ||
                               resData[@"pkTasks"] != nil || dict[@"pkTasks"] != nil ||
+                              (resData[@"myself"] && [resData[@"myself"][@"rank"] integerValue] > 0 && !resData[@"bubbles"] && !resData[@"wateringBubbles"] && !resData[@"userBaseInfo"]) ||
                               [opType.lowercaseString containsString:@"pk"] ||
                               [opType.lowercaseString containsString:@"pvp"] ||
-                              [opType.lowercaseString containsString:@"arena"]);
+                              [opType.lowercaseString containsString:@"arena"] ||
+                              [opType.lowercaseString containsString:@"challenge"]);
 
             if (isPkOrPvp && !isOurSilentRpc) {
                 // 用户在前端 H5 手动点击 PK 榜 / 黄金PK赛 / 擂台赛：
@@ -7195,7 +7208,7 @@ static BOOL oceanPlanLoggedThisRound = NO;
             NSString *signStr = [dict[@"data"] isKindOfClass:NSString.class] ? dict[@"data"] : ([resData[@"data"] isKindOfClass:NSString.class] ? resData[@"data"] : nil);
             BOOL isSignDateStr = (signStr.length >= 8 && signStr.length <= 15 && [signStr containsString:@"-"]);
             BOOL isSignResp = (([opType containsString:@"antiep.sign"] || [self.lastRpcOperationType containsString:@"antiep.sign"]) && isSignDateStr);
-            BOOL isManualRankRpc = (!isOurSilentRpc && (resData[@"friendRanking"] != nil || resData[@"totalDatas"] != nil || dict[@"friendRanking"] != nil || dict[@"totalDatas"] != nil));
+            BOOL isManualRankRpc = (!isOurSilentRpc && (resData[@"friendRanking"] != nil || resData[@"totalDatas"] != nil || dict[@"friendRanking"] != nil || dict[@"totalDatas"] != nil || isPkOrPvp));
             if (![AntForestManager isManorResponse:args] && ![opType containsString:@"antocean"] && !isManualRankRpc) {
                 if (resData[@"forestTasksNew"] || resData[@"energySignVO"] || resData[@"forestSignVOList"] || dict[@"forestSignVOList"] || resData[@"forestSignVO"] || dict[@"forestSignVO"] || resData[@"signModel"] || dict[@"signModel"] || taskInfoList || resData[@"taskList"] || dict[@"taskList"] || resData[@"drawAsset"] || resData[@"drawEntranceVO"] || resData[@"drawActivity"] || resData[@"drawPrize"] || resData[@"drawPrizes"] || resData[@"finishAwardResultVO"] || resData[@"receiveAwardResultVO"] || resData[@"awardResultVO"] || resData[@"finishVO"] || isSignResp || [opType containsString:@"antiep"] || [opType containsString:@"queryTaskList"] || [opType containsString:@"queryCommonSign"] || [opType containsString:@"finishTask"] || [opType containsString:@"receiveTaskAward"] || [opType containsString:@"draw"] || [opType containsString:@"exchangeVitality"] || [resData[@"code"] isEqualToString:@"400000040"] || [resData[@"code"] isEqualToString:@"400000004"] || [resData[@"code"] isEqualToString:@"400000030"] || [resData[@"code"] isEqualToString:@"B000000008"] || [resData[@"desc"] containsString:@"不支持rpc调用"] || [resData[@"desc"] containsString:@"无法领取"] || [dict[@"error"] integerValue] == 3000) {
                     [self handleVitalityTaskListResponse:dict];

@@ -331,12 +331,21 @@ static BOOL isPkOrPvpOrLeaderboardResponse(id value) {
     
     NSString *opType = [NSString stringWithFormat:@"%@", dict[@"operationType"] ?: (resData[@"operationType"] ?: @"")];
     NSString *opLower = [opType lowercaseString];
-    if ([opLower containsString:@"pk"] || [opLower containsString:@"pvp"] || [opLower containsString:@"arena"]) {
+    if ([opLower containsString:@"pk"] || [opLower containsString:@"pvp"] || [opLower containsString:@"arena"] || [opLower containsString:@"challenge"]) {
         return YES;
     }
     
     if (resData[@"combineHandlerVOMap"][@"energyPvpInfo"] || dict[@"combineHandlerVOMap"][@"energyPvpInfo"]) return YES;
+    if (resData[@"combineHandlerVOMap"][@"energyChallengeRank"] || dict[@"combineHandlerVOMap"][@"energyChallengeRank"]) return YES;
     if (resData[@"energyPvpInfo"] || dict[@"energyPvpInfo"]) return YES;
+    if (resData[@"energyChallengeRank"] || dict[@"energyChallengeRank"]) return YES;
+    if (resData[@"rankDisplayParamsVO"] || dict[@"rankDisplayParamsVO"]) return YES;
+    if (resData[@"dynamicPromoteVO"] || dict[@"dynamicPromoteVO"]) return YES;
+    if (resData[@"promoteLineEnergy"] || dict[@"promoteLineEnergy"]) return YES;
+    if (resData[@"nextRankLevelName"] || dict[@"nextRankLevelName"]) return YES;
+    if (resData[@"promoteCount"] || dict[@"promoteCount"]) return YES;
+    if (resData[@"extendInfo"][@"rankHeadPortraitVOS"] || dict[@"extendInfo"][@"rankHeadPortraitVOS"]) return YES;
+    if (resData[@"rankHeadPortraitVOS"] || dict[@"rankHeadPortraitVOS"]) return YES;
     if (resData[@"userPkInfo"] || dict[@"userPkInfo"]) return YES;
     if (resData[@"pkRanking"] || dict[@"pkRanking"]) return YES;
     if (resData[@"pkRankList"] || dict[@"pkRankList"]) return YES;
@@ -348,6 +357,7 @@ static BOOL isPkOrPvpOrLeaderboardResponse(id value) {
     if (resData[@"pkTasks"] || dict[@"pkTasks"]) return YES;
     if (resData[@"friendRanking"] || dict[@"friendRanking"]) return YES;
     if (resData[@"totalDatas"] || dict[@"totalDatas"]) return YES;
+    if (resData[@"myself"] && [resData[@"myself"][@"rank"] integerValue] > 0 && !resData[@"bubbles"] && !resData[@"wateringBubbles"] && !resData[@"userBaseInfo"]) return YES;
     
     return NO;
 }
@@ -2623,15 +2633,9 @@ static id portCallRPC(id self, SEL _cmd, id rpcConfig, id completeBlock) {
             AFProbeLog(@"\n🔍 [PatrolProbe-RPC-REQ]\n📦 %@", str);
             [[AntForestManager sharedInstance] recordProbeLog:[NSString stringWithFormat:@"[RPC-REQ] %@", str]];
             
-            BOOL isSignRelated = [str containsString:@"sign"] || [str containsString:@"Sign"] || [str containsString:@"SIGN"] ||
-                                 [str containsString:@"antiep"] || [str containsString:@"task"] || [str containsString:@"Task"] ||
-                                 [str containsString:@"taobao"] || [str containsString:@"daoliu"] ||
-                                 (opType.length && ([opType containsString:@"sign"] || [opType containsString:@"antiep"] || [opType containsString:@"task"] || [opType containsString:@"taobao"]));
-            if (isSignRelated) {
-                NSString *preview = (reqDataStr ?: str);
-                if (preview.length > 500) preview = [preview substringToIndex:500];
-                [[AntForestManager sharedInstance] recordStage:[NSString stringWithFormat:@"🎯 探针捕获·原生RPC请求：\n方法：%@\n入参：%@", opType ?: @"-", preview]];
-            }
+            NSString *preview = (reqDataStr ?: str);
+            if (preview.length > 500) preview = [preview substringToIndex:500];
+            [[AntForestManager sharedInstance] recordStage:[NSString stringWithFormat:@"🎯 探针·请求方法：%@\n入参：%@", opType ?: @"-", preview]];
         }
 #endif
     } @catch (NSException *e) {}
@@ -2749,17 +2753,12 @@ static void portDoFlushMessageQueue(id self, SEL _cmd, id msg, id url) {
         }
         
 #if ENABLE_PROBE_LOGS
-        BOOL isSignRelated = [msgStr containsString:@"sign"] || [msgStr containsString:@"Sign"] || [msgStr containsString:@"SIGN"] ||
-                             [msgStr containsString:@"antiep"] || [msgStr containsString:@"vitality"] || [msgStr containsString:@"ANTFOREST_ENERGY"] ||
-                             [msgStr containsString:@"task"] || [msgStr containsString:@"Task"] || [msgStr containsString:@"taobao"] || [msgStr containsString:@"daoliu"];
-        if (msgStr.length && (isSignRelated || !isNoiseProbeLog(msgStr))) {
+        if (msgStr.length && !isNoiseProbeLog(msgStr)) {
             AFProbeLog(@"\n🔍 [PatrolProbe-REQ]\n📍 URL: %@\n📦 Request: %@\n", urlStr, msgStr);
             [[AntForestManager sharedInstance] recordProbeLog:[NSString stringWithFormat:@"[REQ] URL: %@\nData: %@", urlStr, msgStr]];
             
-            if (isSignRelated) {
-                NSString *preview = msgStr.length > 500 ? [msgStr substringToIndex:500] : msgStr;
-                [[AntForestManager sharedInstance] recordStage:[NSString stringWithFormat:@"🎯 探针捕获·JSBridge调用：\n%@", preview]];
-            }
+            NSString *preview = msgStr.length > 500 ? [msgStr substringToIndex:500] : msgStr;
+            [[AntForestManager sharedInstance] recordStage:[NSString stringWithFormat:@"🎯 探针·JSBridge调用：\n%@", preview]];
         }
 #endif
     } @catch (NSException *e) {}
@@ -2787,17 +2786,11 @@ static id portTransformResponseData(id self, SEL _cmd, id value) {
         }
         if (!resStr) resStr = [value description];
         
-        BOOL isSignRelated = [resStr containsString:@"sign"] || [resStr containsString:@"Sign"] || [resStr containsString:@"SIGN"] ||
-                             [resStr containsString:@"antiep"] || [resStr containsString:@"vitality"] || [resStr containsString:@"ANTFOREST_ENERGY"] ||
-                             [resStr containsString:@"task"] || [resStr containsString:@"Task"] || [resStr containsString:@"taobao"] ||
-                             [resStr containsString:@"finishTask"] || [resStr containsString:@"receiveTask"];
-        if (resStr.length && (isSignRelated || !isNoiseProbeLog(resStr))) {
+        if (resStr.length && !isNoiseProbeLog(resStr)) {
             [[AntForestManager sharedInstance] recordProbeLog:[NSString stringWithFormat:@"[RES] %@", resStr]];
             
-            if (isSignRelated) {
-                NSString *preview = resStr.length > 500 ? [resStr substringToIndex:500] : resStr;
-                [[AntForestManager sharedInstance] recordStage:[NSString stringWithFormat:@"🎯 探针捕获·服务端RPC回包：\n%@", preview]];
-            }
+            NSString *preview = resStr.length > 500 ? [resStr substringToIndex:500] : resStr;
+            [[AntForestManager sharedInstance] recordStage:[NSString stringWithFormat:@"🎯 探针·服务端RPC回包：\n%@", preview]];
         }
     } @catch (NSException *e) {}
 #endif
