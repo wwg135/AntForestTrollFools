@@ -62,6 +62,7 @@ static BOOL reviveRewardRefreshNeeded = NO;
 static NSMutableSet<NSString *> *todayCollectedAnimalKeys = nil;
 static NSMutableDictionary<NSString *, NSNumber *> *lastAnimalCollectAttemptTimes = nil;
 static NSMutableSet<NSString *> *shieldReportedFriendsInRound = nil;
+static NSMutableSet<NSString *> *sDoubleCollectCheckedUsers = nil;
 
 // 活跃时间窗口：00:00 ~ 06:59:59 凌晨静默期（任务做任务、好友过期复活、海洋垃圾清理等静默等待早7点，保护阶梯奖励与风控安全）；07:00 ~ 23:59:59 活跃期
 static BOOL isWithinTaskActiveHours(void) {
@@ -96,6 +97,7 @@ dispatch_queue_t globalSerialQueueTest;
         todayCollectedAnimalKeys = [NSMutableSet set];
         lastAnimalCollectAttemptTimes = [NSMutableDictionary dictionary];
         shieldReportedFriendsInRound = [NSMutableSet set];
+        sDoubleCollectCheckedUsers = [NSMutableSet set];
         
         [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification * _Nonnull note) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(500 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
@@ -6644,8 +6646,14 @@ static BOOL oceanPlanLoggedThisRound = NO;
         selfPriorityCycle = cycle;
         [deferredFriendRankIds removeAllObjects];
         deferredRankedFriendIds = nil;
-        rankScanPending = NO;
-        @synchronized (self) { [pendingCollectBubbles removeAllObjects]; }
+        @synchronized (self) {
+            [pendingCollectBubbles removeAllObjects];
+            if (!sDoubleCollectCheckedUsers) {
+                sDoubleCollectCheckedUsers = [NSMutableSet set];
+            } else {
+                [sDoubleCollectCheckedUsers removeAllObjects];
+            }
+        }
         [shieldReportedFriendsInRound removeAllObjects];
         [self recordStage:@"本轮扫描开始"];
         if (self.enableSelfCollect && self.jsBridge) {
@@ -6956,7 +6964,13 @@ static BOOL oceanPlanLoggedThisRound = NO;
         if (!energy || energy.integerValue <= 0 || energy.integerValue > 2000) continue;
         NSString *userId = [bubble[@"userId"] description] ?: (self.myUserId ?: @"");
         NSString *bubbleId = [bubble[@"id"] description] ?: (isAnimalEnergy ? [NSString stringWithFormat:@"SETTLE_%ld_%ld", (long)[[NSDate date] timeIntervalSince1970], (long)energy.integerValue] : @"");
-        NSString *key = [NSString stringWithFormat:@"%@:%@:%ld", userId, bubbleId, (long)energy.integerValue];
+        NSString *respId = [NSString stringWithFormat:@"%@", rootDict[@"responseId"] ?: (rootDict[@"callbackId"] ?: @"")];
+        NSString *key = nil;
+        if (respId.length > 0) {
+            key = [NSString stringWithFormat:@"%@:%@:%@", respId, bubbleId, energy];
+        } else {
+            key = [NSString stringWithFormat:@"%@:%@:%ld", userId, bubbleId, (long)energy.integerValue];
+        }
         if (bubbleId.length && [recordedCollectedBubbles containsObject:key]) continue;
         if (bubbleId.length) { if (recordedCollectedBubbles.count > 1000) [recordedCollectedBubbles removeAllObjects]; [recordedCollectedBubbles addObject:key]; }
         if (bubbleId.length) {
@@ -6990,6 +7004,27 @@ static BOOL oceanPlanLoggedThisRound = NO;
                 ? [NSString stringWithFormat:@"成功收取自己能量：%ld g（今日累计 %ld g）", (long)energy.integerValue, (long)self.todayCollectedEnergy]
                 : [NSString stringWithFormat:@"成功收取%@的能量：%ld g（今日累计 %ld g）", source, (long)energy.integerValue, (long)self.todayCollectedEnergy]);
         [self recordStage:message];
+        
+        // 关键增强：适配“能量双击卡”！
+        // 若成功收取好友能量，且当前好友在本轮中未执行过双击卡复查，立即在 350ms 后安排二次气泡复查，确保单轮内收满两次！
+        if (!isSelf && userId.length > 0 && !isAnimalEnergy && self.isScanRunning && self.enableAutoCollect) {
+            BOOL shouldRecheck = NO;
+            @synchronized (self) {
+                if (!sDoubleCollectCheckedUsers) sDoubleCollectCheckedUsers = [NSMutableSet set];
+                if (![sDoubleCollectCheckedUsers containsObject:userId]) {
+                    [sDoubleCollectCheckedUsers addObject:userId];
+                    shouldRecheck = YES;
+                }
+            }
+            if (shouldRecheck) {
+                [self recordStage:[NSString stringWithFormat:@"诊断 · 检测到%@能量收取成功，启动能量双击卡复查...", source]];
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(350 * NSEC_PER_MSEC)), globalSerialQueueQuery, ^{
+                    if (self.enableAutoCollect && self.isScanRunning) {
+                        [[AntForestManager sharedInstance] queryFriendsBubbles:userId];
+                    }
+                });
+            }
+        }
     }
 }
 
