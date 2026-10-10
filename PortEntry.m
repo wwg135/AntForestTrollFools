@@ -3060,56 +3060,6 @@ static BOOL hookMethod(Class cls, SEL selector, IMP replacement, IMP *original) 
     return YES;
 }
 
-static BOOL isBlockedExternalScheme(NSURL *url) {
-    if (!url) return NO;
-    NSString *scheme = url.scheme.lowercaseString;
-    if (!scheme.length) return NO;
-    if ([scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"] || [scheme isEqualToString:@"alipay"] || [scheme isEqualToString:@"alipays"]) {
-        return NO;
-    }
-    // 拦截导流电商与第三方外部 App 协议，彻底杜绝唤起外部软件
-    if ([scheme isEqualToString:@"taobao"] ||
-        [scheme isEqualToString:@"tbopen"] ||
-        [scheme isEqualToString:@"fleamarket"] ||
-        [scheme isEqualToString:@"goofish"] ||
-        [scheme isEqualToString:@"tmall"] ||
-        [scheme isEqualToString:@"cainiao"] ||
-        [scheme isEqualToString:@"itaobao"]) {
-        return YES;
-    }
-    return NO;
-}
-
-static void (*originalOpenURLOptions)(UIApplication *self, SEL _cmd, NSURL *url, NSDictionary *options, void (^completionHandler)(BOOL success));
-static void portOpenURLOptions(UIApplication *self, SEL _cmd, NSURL *url, NSDictionary *options, void (^completionHandler)(BOOL success)) {
-    if (isBlockedExternalScheme(url)) {
-        [[AntForestManager sharedInstance] recordStage:[NSString stringWithFormat:@"任务流安全拦截 · 已拦截外部 App 跳转（%@）", url.scheme ?: @"未知"]];
-        if (completionHandler) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                completionHandler(NO);
-            });
-        }
-        return;
-    }
-    if (originalOpenURLOptions) {
-        originalOpenURLOptions(self, _cmd, url, options, completionHandler);
-    } else if (completionHandler) {
-        completionHandler(NO);
-    }
-}
-
-static BOOL (*originalOpenURL)(UIApplication *self, SEL _cmd, NSURL *url);
-static BOOL portOpenURL(UIApplication *self, SEL _cmd, NSURL *url) {
-    if (isBlockedExternalScheme(url)) {
-        [[AntForestManager sharedInstance] recordStage:[NSString stringWithFormat:@"任务流安全拦截 · 已拦截外部 App 跳转（%@）", url.scheme ?: @"未知"]];
-        return NO;
-    }
-    if (originalOpenURL) {
-        return originalOpenURL(self, _cmd, url);
-    }
-    return NO;
-}
-
 static void (*originalDTViewDidAppear)(UIViewController *self, SEL _cmd, BOOL animated);
 static void portDTViewDidAppear(UIViewController *self, SEL _cmd, BOOL animated) {
     if (originalDTViewDidAppear) originalDTViewDidAppear(self, _cmd, animated);
@@ -3128,12 +3078,6 @@ static void installHooks(void) {
         }
         if (!shouldInstall) return;
         initializeManager();
-        
-        Class appClass = [UIApplication class];
-        if (appClass) {
-            hookMethod(appClass, @selector(openURL:options:completionHandler:), (IMP)portOpenURLOptions, (IMP *)&originalOpenURLOptions);
-            hookMethod(appClass, @selector(openURL:), (IMP)portOpenURL, (IMP *)&originalOpenURL);
-        }
         [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *notification) {
             shouldRevealLeafOnNextForestAppearance = YES;
             [[AFStepSimulator shared] installAvailableHooks];
