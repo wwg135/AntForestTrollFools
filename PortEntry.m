@@ -325,14 +325,36 @@ static void startForestHomeWhenBridgeReady(id controller) {
     waitForBridge();
 }
 
+static inline BOOL isStrictPkOperationName(NSString *opType) {
+    if (!opType.length) return NO;
+    NSString *lower = [opType lowercaseString];
+    if ([lower containsString:@"energychallenge"] ||
+        [lower containsString:@"challengerank"] ||
+        [lower containsString:@"pvphome"] ||
+        [lower containsString:@"energypvp"] ||
+        [lower containsString:@"matchpvp"] ||
+        [lower containsString:@"filluserrobflag"]) {
+        return YES;
+    }
+    if ([lower hasSuffix:@".pk"] || [lower containsString:@".pk."] || [lower containsString:@"pkhome"]) {
+        return YES;
+    }
+    return NO;
+}
+
 static BOOL isPkOrPvpOrLeaderboardResponse(id value) {
     if (![value isKindOfClass:NSDictionary.class]) return NO;
     NSDictionary *dict = (NSDictionary *)value;
     NSDictionary *resData = [dict[@"resData"] isKindOfClass:NSDictionary.class] ? dict[@"resData"] : dict;
     
+    // 领奖励/活力/海洋任务等普通任务列表绝对不是 PK 榜
+    if (resData[@"taskInfoList"] || dict[@"taskInfoList"] || resData[@"taskList"] || dict[@"taskList"] ||
+        resData[@"antOceanTaskVOList"] || dict[@"antOceanTaskVOList"] || resData[@"signModel"] || dict[@"signModel"]) {
+        return NO;
+    }
+    
     NSString *opType = [NSString stringWithFormat:@"%@", dict[@"operationType"] ?: (resData[@"operationType"] ?: @"")];
-    NSString *opLower = [opType lowercaseString];
-    if ([opLower containsString:@"pk"] || [opLower containsString:@"pvp"] || [opLower containsString:@"arena"] || [opLower containsString:@"challenge"] || [opLower containsString:@"filluserrobflag"]) {
+    if (isStrictPkOperationName(opType)) {
         return YES;
     }
     
@@ -1725,7 +1747,7 @@ static void installEarnEnergyCollector(id controller) {
 
     [self.view addSubview:grabber];
     UILabel *versionLabel = [[UILabel alloc] init];
-    versionLabel.text = @"当前版本：v3.2.1 正式版";
+    versionLabel.text = @"当前版本：v3.2.2 正式版";
     versionLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightRegular];
     versionLabel.textColor = [UIColor systemGray2Color];
     versionLabel.textAlignment = NSTextAlignmentCenter;
@@ -2701,8 +2723,7 @@ static void portDoFlushMessageQueue(id self, SEL _cmd, id msg, id url) {
                 if (extractedOp.length) {
                     gLastRpcOperationType = [extractedOp copy];
                     [AntForestManager sharedInstance].lastRpcOperationType = [extractedOp copy];
-                    NSString *opLower = [extractedOp lowercaseString];
-                    if ([opLower containsString:@"pk"] || [opLower containsString:@"pvp"] || [opLower containsString:@"challenge"] || [opLower containsString:@"arena"] || [opLower containsString:@"filluserrobflag"]) {
+                    if (isStrictPkOperationName(extractedOp)) {
                         [AntForestManager sharedInstance].lastPkInteractionTime = [[NSDate date] timeIntervalSince1970];
                     }
                 }
@@ -3039,6 +3060,56 @@ static BOOL hookMethod(Class cls, SEL selector, IMP replacement, IMP *original) 
     return YES;
 }
 
+static BOOL isBlockedExternalScheme(NSURL *url) {
+    if (!url) return NO;
+    NSString *scheme = url.scheme.lowercaseString;
+    if (!scheme.length) return NO;
+    if ([scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"] || [scheme isEqualToString:@"alipay"] || [scheme isEqualToString:@"alipays"]) {
+        return NO;
+    }
+    // 拦截导流电商与第三方外部 App 协议，彻底杜绝唤起外部软件
+    if ([scheme isEqualToString:@"taobao"] ||
+        [scheme isEqualToString:@"tbopen"] ||
+        [scheme isEqualToString:@"fleamarket"] ||
+        [scheme isEqualToString:@"goofish"] ||
+        [scheme isEqualToString:@"tmall"] ||
+        [scheme isEqualToString:@"cainiao"] ||
+        [scheme isEqualToString:@"itaobao"]) {
+        return YES;
+    }
+    return NO;
+}
+
+static void (*originalOpenURLOptions)(UIApplication *self, SEL _cmd, NSURL *url, NSDictionary *options, void (^completionHandler)(BOOL success));
+static void portOpenURLOptions(UIApplication *self, SEL _cmd, NSURL *url, NSDictionary *options, void (^completionHandler)(BOOL success)) {
+    if (isBlockedExternalScheme(url)) {
+        [[AntForestManager sharedInstance] recordStage:[NSString stringWithFormat:@"任务流安全拦截 · 已拦截外部 App 跳转（%@）", url.scheme ?: @"未知"]];
+        if (completionHandler) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                completionHandler(NO);
+            });
+        }
+        return;
+    }
+    if (originalOpenURLOptions) {
+        originalOpenURLOptions(self, _cmd, url, options, completionHandler);
+    } else if (completionHandler) {
+        completionHandler(NO);
+    }
+}
+
+static BOOL (*originalOpenURL)(UIApplication *self, SEL _cmd, NSURL *url);
+static BOOL portOpenURL(UIApplication *self, SEL _cmd, NSURL *url) {
+    if (isBlockedExternalScheme(url)) {
+        [[AntForestManager sharedInstance] recordStage:[NSString stringWithFormat:@"任务流安全拦截 · 已拦截外部 App 跳转（%@）", url.scheme ?: @"未知"]];
+        return NO;
+    }
+    if (originalOpenURL) {
+        return originalOpenURL(self, _cmd, url);
+    }
+    return NO;
+}
+
 static void (*originalDTViewDidAppear)(UIViewController *self, SEL _cmd, BOOL animated);
 static void portDTViewDidAppear(UIViewController *self, SEL _cmd, BOOL animated) {
     if (originalDTViewDidAppear) originalDTViewDidAppear(self, _cmd, animated);
@@ -3057,6 +3128,12 @@ static void installHooks(void) {
         }
         if (!shouldInstall) return;
         initializeManager();
+        
+        Class appClass = [UIApplication class];
+        if (appClass) {
+            hookMethod(appClass, @selector(openURL:options:completionHandler:), (IMP)portOpenURLOptions, (IMP *)&originalOpenURLOptions);
+            hookMethod(appClass, @selector(openURL:), (IMP)portOpenURL, (IMP *)&originalOpenURL);
+        }
         [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *notification) {
             shouldRevealLeafOnNextForestAppearance = YES;
             [[AFStepSimulator shared] installAvailableHooks];

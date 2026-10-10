@@ -1047,6 +1047,25 @@ NSString* getCurrentDateTimeString() {
     return strRandom;
 }
 
+static const NSTimeInterval kPkInteractionAvoidanceDuration = 8.0;
+
+static inline BOOL isStrictPkOperationName(NSString *opType) {
+    if (!opType.length) return NO;
+    NSString *lower = [opType lowercaseString];
+    if ([lower containsString:@"energychallenge"] ||
+        [lower containsString:@"challengerank"] ||
+        [lower containsString:@"pvphome"] ||
+        [lower containsString:@"energypvp"] ||
+        [lower containsString:@"matchpvp"] ||
+        [lower containsString:@"filluserrobflag"]) {
+        return YES;
+    }
+    if ([lower hasSuffix:@".pk"] || [lower containsString:@".pk."] || [lower containsString:@"pkhome"]) {
+        return YES;
+    }
+    return NO;
+}
+
 //随机一个有能量的好友
 -(void)takeLook{
     NSString *version = @"20231208";
@@ -1090,8 +1109,8 @@ NSString* getCurrentDateTimeString() {
 
 -(void)requestNextTakeLook {
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-    if (self.lastPkInteractionTime > 0 && now - self.lastPkInteractionTime < 25.0) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    if (self.lastPkInteractionTime > 0 && now - self.lastPkInteractionTime < kPkInteractionAvoidanceDuration) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [self requestNextTakeLook];
         });
         return;
@@ -1349,10 +1368,6 @@ NSString* getCurrentDateTimeString() {
 
 - (void)safeFlushBridge:(id)bridge message:(NSString *)msg url:(NSString *)url {
     if (!bridge || !msg.length) return;
-    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-    if (bridge == self.jsBridge && self.lastPkInteractionTime > 0 && (now - self.lastPkInteractionTime < 25.0)) {
-        return;
-    }
     if ([NSThread isMainThread]) {
         if ([bridge respondsToSelector:@selector(_doFlushMessageQueue:url:)]) {
             [bridge _doFlushMessageQueue:msg url:url];
@@ -1394,7 +1409,7 @@ static NSTimeInterval lastMyBubblesQueryTime = 0;
 //查询能量球
 -(void)queryFriendsBubbles:(NSString*)friendId {
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-    if (self.lastPkInteractionTime > 0 && now - self.lastPkInteractionTime < 25.0) {
+    if (self.lastPkInteractionTime > 0 && now - self.lastPkInteractionTime < kPkInteractionAvoidanceDuration) {
         [self recordStage:@"诊断 · 气泡查询跳过：用户正在浏览PK榜"];
         return;
     }
@@ -2893,28 +2908,6 @@ static NSInteger sVitalityAutoRefreshRounds = 0;
 
 static WKWebView *sSilentTaskWebView = nil;
 
-static void triggerSilentTaskPushWindow(NSString *jumpUrl) {
-    if (!jumpUrl.length) return;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        AntForestManager *manager = [AntForestManager sharedInstance];
-        manager.lastSilentTaskTransitTimestamp = [[NSDate date] timeIntervalSince1970];
-        NSDictionary *params = @{
-            @"url": jumpUrl,
-            @"param": @{
-                @"transparent": @YES,
-                @"showTitleBar": @NO,
-                @"showLoading": @NO
-            }
-        };
-        NSData *data = [NSJSONSerialization dataWithJSONObject:params options:0 error:nil];
-        if (data) {
-            NSString *jsonStr = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-            NSString *js = [NSString stringWithFormat:@"try{if(window.AlipayJSBridge&&window.AlipayJSBridge.call){window.AlipayJSBridge.call('pushWindow',%@);}}catch(e){}", jsonStr];
-            [manager executeRewardTaskScriptOnWebView:js];
-        }
-    });
-}
-
 static void silentlyPrefetchTaskUrl(NSString *jumpUrl) {
     if (!jumpUrl.length) return;
     NSString *cleanUrl = jumpUrl;
@@ -2942,10 +2935,9 @@ static void silentlyPrefetchTaskUrl(NSString *jumpUrl) {
             [req setValue:ua forHTTPHeaderField:@"User-Agent"];
             [[[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:^(__unused NSData *d, __unused NSURLResponse *res, __unused NSError *err){}] resume];
             
-            // 针对淘宝等需要执行前端 JS (mtop 鉴权) 的外链，在真实端内容器全透明静默 pushWindow 加载达成完成状态
+            // 针对淘宝/导流等需执行前端鉴权的外链，在离屏纯静默微型 WebView 中加载（严禁 pushWindow 弹窗以防唤起外部 App 与绿屏卡死）
             BOOL isTaobaoOrDaoliu = [cleanUrl containsString:@"taobao.com"] || [cleanUrl containsString:@"starlink"] || [cleanUrl containsString:@"tmall.com"] || [cleanUrl containsString:@"goofish.com"] || [cleanUrl containsString:@"qiandao"] || [jumpUrl containsString:@"taobao"] || [jumpUrl containsString:@"starlink"];
             if (isTaobaoOrDaoliu) {
-                triggerSilentTaskPushWindow(cleanUrl);
                 dispatch_async(dispatch_get_main_queue(), ^{
                     @try {
                         if (!sSilentTaskWebView) {
@@ -2954,12 +2946,8 @@ static void silentlyPrefetchTaskUrl(NSString *jumpUrl) {
                             sSilentTaskWebView = [[WKWebView alloc] initWithFrame:CGRectMake(0, 0, 1, 1) configuration:config];
                             sSilentTaskWebView.customUserAgent = ua;
                             sSilentTaskWebView.alpha = 0.01;
+                            sSilentTaskWebView.hidden = YES;
                             sSilentTaskWebView.navigationDelegate = [AntForestManager sharedInstance];
-                        }
-                        UIWindow *window = [UIApplication sharedApplication].keyWindow ?: [UIApplication sharedApplication].windows.firstObject;
-                        if (window && sSilentTaskWebView.superview != window) {
-                            [window addSubview:sSilentTaskWebView];
-                            [window sendSubviewToBack:sSilentTaskWebView];
                         }
                         [sSilentTaskWebView loadRequest:req];
                     } @catch (NSException *e) {}
@@ -6539,7 +6527,7 @@ static BOOL oceanPlanLoggedThisRound = NO;
 //查询总排行 可以获取所有人的ID
 -(void)queryTotalRank{
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-    if (self.lastPkInteractionTime > 0 && now - self.lastPkInteractionTime < 25.0) {
+    if (self.lastPkInteractionTime > 0 && now - self.lastPkInteractionTime < kPkInteractionAvoidanceDuration) {
         [self recordStage:@"诊断 · 好友榜查询延后：用户正在浏览PK榜"];
         return;
     }
@@ -6622,9 +6610,9 @@ static BOOL oceanPlanLoggedThisRound = NO;
             return;
         }
         NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-        if (self.lastPkInteractionTime > 0 && now - self.lastPkInteractionTime < 25.0) {
-            [self recordStage:@"诊断 · 收取延后：用户正在浏览PK榜，10秒后自动重试"];
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (self.lastPkInteractionTime > 0 && now - self.lastPkInteractionTime < kPkInteractionAvoidanceDuration) {
+            [self recordStage:@"诊断 · 收取延后：用户正在浏览PK榜，5秒后自动重试"];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 if (self.enableAutoCollect && !self.isScanRunning && self.jsBridge) {
                     [self autoCollectBubbles];
                 }
@@ -6713,10 +6701,10 @@ static BOOL oceanPlanLoggedThisRound = NO;
         BOOL isAppInBackground = ([UIApplication sharedApplication].applicationState != UIApplicationStateActive);
         BOOL needsRankFetch = (self.friendsRank.count == 0) ||
                               (self.enableAutoRevive && isWithinTaskActiveHours() && reviveDailyCount() < 6 && isAppInBackground) ||
-                              (!lastRankFetchedDate || [[NSDate date] timeIntervalSinceDate:lastRankFetchedDate] > 600);
+                              (!lastRankFetchedDate || [[NSDate date] timeIntervalSinceDate:lastRankFetchedDate] > 120);
         if (self.enableAutoCollect && needsRankFetch && self.jsBridge) {
             lastRankFetchedDate = [NSDate date];
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2500 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(800 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
                 if (self.enableAutoCollect && cycle == collectionCycle && self.isScanRunning) {
                     [self queryTotalRank];
                 }
@@ -7216,14 +7204,18 @@ static BOOL oceanPlanLoggedThisRound = NO;
                     }
                 }
                 NSTimeInterval nowSec = [[NSDate date] timeIntervalSince1970];
-                if (self.lastPkInteractionTime > 0 && (nowSec - self.lastPkInteractionTime < 60.0)) {
+                if (self.lastPkInteractionTime > 0 && (nowSec - self.lastPkInteractionTime < kPkInteractionAvoidanceDuration)) {
                     if (!isHomePagePayload) {
                         isFillUserRobFlag = YES;
                     }
                 }
             }
 
-            BOOL isPkOrPvp = !isHomePagePayload && (
+            BOOL isTaskListPayload = (resData[@"taskInfoList"] != nil || dict[@"taskInfoList"] != nil ||
+                                      resData[@"taskList"] != nil || dict[@"taskList"] != nil ||
+                                      resData[@"antOceanTaskVOList"] != nil || dict[@"antOceanTaskVOList"] != nil);
+
+            BOOL isPkOrPvp = !isHomePagePayload && !isTaskListPayload && (
                               isFillUserRobFlag ||
                               resData[@"rankDisplayParamsVO"] != nil || dict[@"rankDisplayParamsVO"] != nil ||
                               resData[@"dynamicPromoteVO"] != nil || dict[@"dynamicPromoteVO"] != nil ||
@@ -7244,11 +7236,7 @@ static BOOL oceanPlanLoggedThisRound = NO;
                               resData[@"pkTasks"] != nil || dict[@"pkTasks"] != nil ||
                               resData[@"totalData"] != nil || dict[@"totalData"] != nil ||
                               (resData[@"myself"] && [resData[@"myself"][@"rank"] integerValue] > 0 && !resData[@"userBaseInfo"] && !resData[@"totalDatas"] && !dict[@"totalDatas"] && (resData[@"rankDisplayParamsVO"] || resData[@"extendInfo"][@"rankHeadPortraitVOS"] || resData[@"totalData"])) ||
-                              [opType.lowercaseString containsString:@"pk"] ||
-                              [opType.lowercaseString containsString:@"pvp"] ||
-                              [opType.lowercaseString containsString:@"arena"] ||
-                              [opType.lowercaseString containsString:@"challenge"] ||
-                              [opType.lowercaseString containsString:@"filluserrobflag"]);
+                              isStrictPkOperationName(opType));
 
             if (isPkOrPvp) {
                 self.lastPkInteractionTime = [[NSDate date] timeIntervalSince1970];
@@ -7802,7 +7790,23 @@ static BOOL oceanPlanLoggedThisRound = NO;
                 NSNumber *canCollectEnergy = [myDict objectForKey:@"canCollectEnergy"];
                 [self recordStage:[NSString stringWithFormat:@"诊断 · 本人能量状态：%@", [canCollectEnergy isEqualToNumber:@1] ? @"可收" : @"暂无成熟能量"]];
             }
-            if(resData && (resData[@"friendRanking"] || resData[@"totalDatas"])) {
+            // 严格隔离榜单类型：仅允许真正的“总榜”（queryEnergyRanking + periodType=total）进入好友总榜缓存与自动收取扫描
+            // 彻底杜绝 PK榜/排位赛/挑战榜/周榜 污染总榜并引发循环分页与卡死
+            NSString *opType = [NSString stringWithFormat:@"%@", dict[@"operationType"] ?: (resData[@"operationType"] ?: (self.lastRpcOperationType ?: @""))];
+            NSString *respId = [NSString stringWithFormat:@"%@", dict[@"responseId"] ?: (dict[@"callbackId"] ?: @"")];
+            NSString *periodType = resData[@"periodType"] ?: dict[@"periodType"];
+            NSString *rankType = resData[@"rankType"] ?: dict[@"rankType"];
+            BOOL isOurSilentRank = [respId containsString:@"af_silent_rank_"];
+            BOOL isEnergyRankingOp = [opType containsString:@"queryEnergyRanking"] &&
+                                     ![opType containsString:@"Challenge"] &&
+                                     ![opType.lowercaseString containsString:@"pk"];
+            BOOL isTotalRankResponse = NO;
+            if (isOurSilentRank || (isEnergyRankingOp && (!periodType.length || [periodType isEqualToString:@"total"]) && (!rankType.length || [rankType isEqualToString:@"energyRank"]))) {
+                if (!isStrictPkOperationName(opType) && !resData[@"energyChallengeRank"] && !dict[@"energyChallengeRank"] && !resData[@"energyPvpInfo"] && !dict[@"energyPvpInfo"] && !resData[@"rankDisplayParamsVO"] && !dict[@"rankDisplayParamsVO"]) {
+                    isTotalRankResponse = YES;
+                }
+            }
+            if(isTotalRankResponse && resData && (resData[@"friendRanking"] || resData[@"totalDatas"])) {
                 NSArray *rankArr = [resData[@"friendRanking"] isKindOfClass:NSArray.class] ? resData[@"friendRanking"] : resData[@"totalDatas"];
                 NSUInteger collectable = 0;
                 for (NSDictionary *dictRank in rankArr) if ([[dictRank objectForKey:@"canCollectEnergy"] isEqualToNumber:@1]) collectable++;
@@ -7828,8 +7832,8 @@ static BOOL oceanPlanLoggedThisRound = NO;
                     }
                 }
             }
-            //匹配排行
-            NSArray *rankTotalArr = [resData[@"totalDatas"] isKindOfClass:NSArray.class] ? resData[@"totalDatas"] : ([resData[@"friendRanking"] isKindOfClass:NSArray.class] ? resData[@"friendRanking"] : nil);
+            //匹配排行（仅在确认是总榜回包时更新 friendsRank 与分页，绝不覆盖其他榜单）
+            NSArray *rankTotalArr = isTotalRankResponse ? ([resData[@"totalDatas"] isKindOfClass:NSArray.class] ? resData[@"totalDatas"] : ([resData[@"friendRanking"] isKindOfClass:NSArray.class] ? resData[@"friendRanking"] : nil)) : nil;
             if (rankTotalArr.count > 0) {
                 NSMutableDictionary *fr = [[AntForestManager sharedInstance] friendsRank];
                 NSMutableDictionary *fn = [[AntForestManager sharedInstance] friendsName];

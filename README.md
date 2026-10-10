@@ -10,7 +10,7 @@
 
 ## 效果图
 
-| 收取记录面板（v3.2.1 正式版） | 功能设置面板 |
+| 收取记录面板（v3.2.2 正式版） | 功能设置面板 |
 | :---: | :---: |
 | ![收取记录面板](docs/ui-preview.png) | ![功能设置面板](docs/ui-settings.png) |
 
@@ -38,7 +38,18 @@
 - 收取日志：最新记录显示在顶部；保留开关状态、本轮扫描开始/结束、浇水赠能、好友浇水和成功收取结果，并区分自己与好友能量。
 - 能量统计：今日显示 g；累计满 1,000 g 后按两位小数换算为 kg；收取成功回包会去重计入统计。
 
-> v3.2.1 正式版：iOS 15 及以上请使用 [`AntForestPort-v3.2.1.dylib`](build/AntForestPort-v3.2.1.dylib)；iOS 14 请使用独立兼容包 [`AntForestPort-v3.2.1-iOS14.dylib`](build/AntForestPort-v3.2.1-iOS14.dylib)。包含 PK 榜触底分页“加载中 ···”无限转圈彻底根治、PK 浏览全链路静默保护与首页即时恢复等关键修复。产物均为 `arm64 + arm64e` 通用 dylib。
+> v3.2.2 正式版：iOS 15 及以上请使用 [`AntForestPort-v3.2.2.dylib`](build/AntForestPort-v3.2.2.dylib)；iOS 14 请使用独立兼容包 [`AntForestPort-v3.2.2-iOS14.dylib`](build/AntForestPort-v3.2.2-iOS14.dylib)。包含外链导流跳转与绿屏拦截、榜单回包精准物理隔离、好友扫描恢复秒级极速等关键修复。产物均为 `arm64 + arm64e` 通用 dylib。
+
+## v3.2.2 正式版更新说明
+
+- **🛡️ 彻底杜绝领奖励任务唤起外部 App（淘宝/闲鱼）与全屏纯绿卡死**：
+  - **移除端内可见 `pushWindow`**：导流类任务不再向支付宝界面栈推入任何 H5 控制器，改由纯离屏隐藏微型 Web 容器与后台网络会话静默完成，对 UI 栈零侵入；
+  - **系统级外部协议拦截防火墙**：在底层全局 Hook 了 `[UIApplication openURL:options:completionHandler:]` 与 `openURL:`，100% 拦截 `taobao://`、`fleamarket://`、`tbopen://`、`tmall://`、`goofish://`、`cainiao://` 等第三方电商唤端 Scheme，永不跳出支付宝，彻底杜绝不可关闭的全屏纯绿卡死。
+- **⚡️ 榜单回包精准物理隔离，好友能量极速扫描与 PK 榜丝滑并存**：
+  - **精准隔离总榜与其他榜单**：仅允许真正的“好友总排行榜”（`queryEnergyRanking` + `periodType=total`）进入好友缓存与自动收取扫描；PK 挑战榜、黄金排位赛、周榜等回包绝对不污染 `friendsRank`，绝不触发好友气泡扫描，绝不触发后台翻页 `queryRankPage`，彻底解决 PK 榜转圈卡死；
+  - **收窄 PK 识别与解除误伤**：排除常规任务中的 challenge 误判，移除底层 Bridge 消息丢弃逻辑，让出通道时间从 25 秒缩减至 8 秒；
+  - **排行榜拉取节流优化**：榜单节流从 600 秒优化至 120 秒，初始延迟缩短为 800ms，每轮 5 分钟循环均可秒级并发获取 200 人排行榜，恢复好友能量秒级极速收割。
+- **🏷️ 控制板版本号规范更新**：控制板主标题下正式更新为 `当前版本：v3.2.2 正式版`。
 
 ## v3.2.1 正式版更新说明
 
